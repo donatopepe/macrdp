@@ -2907,6 +2907,7 @@ impl RdpServer {
                 // produces SVC messages — microseconds of work. Lock released
                 // before the (potentially long) socket write.
                 let mut this = this.lock().await;
+                let diagnostics = this.diagnostics.clone();
 
                 // (2b-iv-B) Once the lossy-audio-over-UDP path is live (reliable
                 // handshake negotiated + tunnel bound + lossy DVC open), ship the
@@ -2929,7 +2930,6 @@ impl RdpServer {
 
                 // Static rdpsnd over TCP (default; also the pre-negotiation path
                 // before the lossy DVC is live).
-                let diagnostics = this.diagnostics.clone();
                 let encoded = {
                     let Some(rdpsnd) = this.get_svc_processor::<RdpsndServer>() else {
                         warn!("No rdpsnd channel, dropping wave");
