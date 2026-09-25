@@ -272,8 +272,10 @@ pub fn record_av_offset(offset_ms: i64) {
 /// This is telemetry-only: no resampling or playback correction occurs here.
 pub fn record_av_clock_pair(audio_pts_ms: i64, video_pts_ms: i64) {
     let Some(stats) = global() else { return };
+    if stats.av_samples.load(Ordering::Relaxed) == 0 {
+        return;
+    }
     let offset_ms = audio_pts_ms.saturating_sub(video_pts_ms);
-    record_av_offset(offset_ms);
     let Ok(mut clock) = stats.av_clock.state.lock() else {
         return;
     };
