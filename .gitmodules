@@ -1,0 +1,3 @@
+[submodule "reference/xrdp-linux"]
+	path = reference/xrdp-linux
+	url = https://github.com/neutrinolabs/xrdp.git
