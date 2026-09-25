@@ -43,7 +43,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>RUST_LOG</key>
-        <string>macrdp::input::macos=debug,macrdp=info</string>
+        <string>macrdp=info,rustls=error,ironrdp_server::encoder=error,ironrdp_server::server=error</string>
     </dict>
 </dict>
 </plist>
