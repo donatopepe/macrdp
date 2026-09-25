@@ -225,6 +225,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
 - [x] **Adjacent EGFX event coalescing** — consecutive `ServerEvent::Egfx` batches now merge
   their ordered DVC message vectors before socket dispatch. No cross-channel reorder, no
   post-encode frame drop, H.264 frame order preserved. Full write coalescing remains upstream-sensitive.
+- [x] **VideoToolbox timestamp ownership** — `submitted_at` is reclaimed on pixel-buffer creation
+  failure and rejected encode submission; accepted frames transfer ownership to callback.
 - [ ] **Perf (upstream candidates, vendored server — do NOT land as new divergences):** from
   the same audit: (a) `SharedWriter`/dispatch write coalescing — every fragment/event is its
   own `write_all` = 2 boxed futures + syscall + flush (`server.rs:2643` + git-pinned

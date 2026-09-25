@@ -216,8 +216,8 @@ mod ffi {
     use anyhow::{anyhow, bail, Result};
     use std::ffi::c_void;
     use std::ptr;
-    use std::time::Instant;
     use std::sync::mpsc;
+    use std::time::Instant;
 
     pub(super) type OSStatus = i32;
     pub(super) type Boolean = u8;
@@ -1035,6 +1035,9 @@ mod ffi {
             )
         };
         if status != 0 || pbuf.is_null() {
+            // VideoToolbox has not received sourceFrameRefCon yet; reclaim the
+            // submission timestamp on this early failure path.
+            unsafe { drop(Box::from_raw(submitted_at as *mut Instant)) };
             bail!("CVPixelBufferCreate failed: {status}");
         }
 
@@ -1145,7 +1148,7 @@ mod ffi {
             if encode_status != 0 {
                 // No callback will reclaim sourceFrameRefCon on a rejected
                 // submission, so reclaim it here.
-                unsafe { drop(Box::from_raw(submitted_at as *mut Instant)) };
+                drop(Box::from_raw(submitted_at as *mut Instant));
                 Err(anyhow!(
                     "VTCompressionSessionEncodeFrame failed: OSStatus {encode_status}"
                 ))
@@ -1207,7 +1210,10 @@ mod ffi {
         let _ = tx.send(frame);
     }
 
-    unsafe fn extract_frame(sbuf: CMSampleBufferRef, encode_latency_ms: u32) -> Result<EncodedFrame> {
+    unsafe fn extract_frame(
+        sbuf: CMSampleBufferRef,
+        encode_latency_ms: u32,
+    ) -> Result<EncodedFrame> {
         let bbuf = CMSampleBufferGetDataBuffer(sbuf);
         if bbuf.is_null() {
             bail!("CMSampleBufferGetDataBuffer returned null");
