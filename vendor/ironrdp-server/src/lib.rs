@@ -5,6 +5,7 @@
 pub use {tokio, tokio_rustls};
 
 mod macros;
+mod outbound;
 
 pub mod autodetect;
 mod builder;
@@ -45,6 +46,7 @@ pub use multitransport::listener::{ListenerConfig, UdpMultitransportListener};
 pub use multitransport::{
     CookieRegistry, MultitransportProvider, TunnelSender, encode_initiate_request, tunnel_channel,
 };
+pub use outbound::{EnqueueError, OutboundClass, OutboundPacket, OutboundScheduler};
 pub use rdcamera::{
     CameraSampleSink, CameraServerMessage, RDCAMERA_CHANNEL_NAME, RdCameraDeviceProcessor, RdCameraServer,
     RdCameraServerFactory,
