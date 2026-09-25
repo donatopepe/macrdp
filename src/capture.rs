@@ -920,6 +920,9 @@ mod macos {
     pub struct ScreenCaptureUpdates {
         stream: AsyncSCStream,
         pending: std::collections::VecDeque<DisplayUpdate>,
+        /// Bound legacy update backlog so stale rectangles do not accumulate
+        /// behind a slow socket writer.
+        pending_limit: usize,
         // Force a full-frame seed on the first sample so the client's
         // bitmap cache starts in a known-good state; SCK's dirty rects
         // for frame 0 may not cover everything.
@@ -1216,6 +1219,11 @@ mod macos {
             Ok(Self {
                 stream,
                 pending: std::collections::VecDeque::new(),
+                pending_limit: std::env::var("MACRDP_DISPLAY_PENDING_LIMIT")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .filter(|&v| v > 0)
+                    .unwrap_or(32),
                 seeded: false,
                 force_full_frame,
                 cursor,
@@ -1408,6 +1416,11 @@ mod macos {
                 }
 
                 if let Some(update) = self.pending.pop_front() {
+                    if let Some(stats) = crate::stats::global() {
+                        stats
+                            .display_pending
+                            .store(self.pending.len() as u32, Ordering::Relaxed);
+                    }
                     return Ok(Some(update));
                 }
 
@@ -1493,9 +1506,17 @@ mod macos {
                     }
                 };
 
-                // Skip non-renderable frames (Idle, Blank, Suspended, Stopped).
+                // Skip non-renderable frames before touching the pixel buffer.
+                if let Some(stats) = crate::stats::global() {
+                    stats
+                        .capture_buffered
+                        .store(self.stream.buffered_count() as u32, Ordering::Relaxed);
+                }
                 if let Some(status) = sample.frame_status() {
                     if !status.has_content() {
+                        if let Some(stats) = crate::stats::global() {
+                            stats.capture_sample_drops.fetch_add(1, Ordering::Relaxed);
+                        }
                         continue;
                     }
                 }
@@ -1527,6 +1548,28 @@ mod macos {
                         force_full_frame = self.force_full_frame,
                         "capture: first frame delivered"
                     );
+                }
+
+                if let Some(stats) = crate::stats::global() {
+                    #[cfg(target_os = "macos")]
+                    if let Some(display_time) = sample.display_time() {
+                        let now = unsafe { libc::mach_absolute_time() };
+                        let elapsed = now.saturating_sub(display_time);
+                        let mut timebase = libc::mach_timebase_info {
+                            numer: 0,
+                            denom: 0,
+                        };
+                        if unsafe { libc::mach_timebase_info(&mut timebase) } == 0
+                            && timebase.denom != 0
+                        {
+                            let age_ms = elapsed
+                                .saturating_mul(u64::from(timebase.numer))
+                                .checked_div(u64::from(timebase.denom))
+                                .unwrap_or(0)
+                                / 1_000_000;
+                            stats.capture_age_ms.store(age_ms as u32, Ordering::Relaxed);
+                        }
+                    }
                 }
 
                 // EGFX/H.264 path: submit the full frame to the encoder. Once
@@ -1686,6 +1729,20 @@ mod macos {
                             self.pending.push_back(update);
                         }
                     }
+                }
+                if self.pending.len() > self.pending_limit {
+                    let dropped = self.pending.len() - self.pending_limit;
+                    self.pending.drain(..dropped);
+                    if let Some(stats) = crate::stats::global() {
+                        stats
+                            .capture_sample_drops
+                            .fetch_add(dropped as u64, Ordering::Relaxed);
+                    }
+                }
+                if let Some(stats) = crate::stats::global() {
+                    stats
+                        .display_pending
+                        .store(self.pending.len() as u32, Ordering::Relaxed);
                 }
                 self.seeded = true;
             }

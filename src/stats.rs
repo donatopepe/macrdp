@@ -51,6 +51,30 @@ pub struct SessionStats {
     /// Effective frame rate (capped by the adaptive floor under congestion).
     pub fps: AtomicU32,
     pub frames_sent: AtomicU64,
+    /// Number of captures dropped before VideoToolbox submission.
+    pub capture_drops: AtomicU64,
+    /// Number of ScreenCaptureKit samples discarded before processing.
+    pub capture_sample_drops: AtomicU64,
+    /// Current SCK sample queue depth, when telemetry is enabled.
+    pub capture_buffered: AtomicU32,
+    /// Current pending legacy bitmap-update queue depth.
+    pub display_pending: AtomicU32,
+    /// Last measured age from SCK display timestamp to processing, in ms.
+    pub capture_age_ms: AtomicU32,
+    /// Last VideoToolbox output age from encode submission to callback, in ms.
+    pub encode_latency_ms: AtomicU32,
+    /// Last ship duration from encoded callback to event enqueue, in ms.
+    pub ship_latency_ms: AtomicU32,
+    /// Number of encoded frames waiting for ship processing.
+    pub encoded_pending: AtomicU32,
+    /// Number of outbound ServerEvent items waiting for dispatch.
+    pub server_event_queue: AtomicU32,
+    /// Number of socket writes that exceeded the diagnostic stall threshold.
+    pub socket_write_stalls: AtomicU64,
+    /// Most recent socket write duration, in ms.
+    pub socket_write_ms: AtomicU32,
+    /// Best-effort process CPU percentage sampled by the diagnostics loop.
+    pub cpu_percent: AtomicU32,
     pub adaptive: AtomicBool,
     pub aac: AtomicBool,
 }
@@ -61,7 +85,11 @@ impl SessionStats {
             concat!(
                 "{{\"connected\":{},\"width\":{},\"height\":{},\"bitrate_bps\":{},",
                 "\"ceiling_bps\":{},\"rtt_ms\":{},\"queue_delay_ms\":{},\"fps\":{},",
-                "\"frames_sent\":{},\"adaptive\":{},\"aac\":{}}}"
+                "\"frames_sent\":{},\"capture_drops\":{},\"capture_sample_drops\":{},",
+                "\"capture_buffered\":{},\"display_pending\":{},\"capture_age_ms\":{},",
+                "\"encode_latency_ms\":{},\"ship_latency_ms\":{},\"encoded_pending\":{},",
+                "\"server_event_queue\":{},\"socket_write_stalls\":{},\"socket_write_ms\":{},",
+                "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
             ),
             self.connected.load(Ordering::Relaxed),
             self.width.load(Ordering::Relaxed),
@@ -72,6 +100,18 @@ impl SessionStats {
             self.queue_delay_ms.load(Ordering::Relaxed),
             self.fps.load(Ordering::Relaxed),
             self.frames_sent.load(Ordering::Relaxed),
+            self.capture_drops.load(Ordering::Relaxed),
+            self.capture_sample_drops.load(Ordering::Relaxed),
+            self.capture_buffered.load(Ordering::Relaxed),
+            self.display_pending.load(Ordering::Relaxed),
+            self.capture_age_ms.load(Ordering::Relaxed),
+            self.encode_latency_ms.load(Ordering::Relaxed),
+            self.ship_latency_ms.load(Ordering::Relaxed),
+            self.encoded_pending.load(Ordering::Relaxed),
+            self.server_event_queue.load(Ordering::Relaxed),
+            self.socket_write_stalls.load(Ordering::Relaxed),
+            self.socket_write_ms.load(Ordering::Relaxed),
+            self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
         )
