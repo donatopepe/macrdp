@@ -2407,6 +2407,7 @@ impl Gfx {
             // Fresh throttle counters for this connection.
             ctx.submitted.store(0, Ordering::Relaxed);
             ctx.shipped.store(0, Ordering::Relaxed);
+            ctx.encoded_pending.store(0, Ordering::Relaxed);
             let gfx = self.clone();
             let shipped = ctx.shipped.clone();
             let encoded_pending = ctx.encoded_pending.clone();
