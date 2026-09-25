@@ -2745,12 +2745,15 @@ impl Gfx {
                         (u64::from(frame_id), Instant::now());
                 }
                 match sent {
-                    Some(frame_id) if f.is_keyframe => debug!(
+                    Some(frame_id) if f.is_keyframe => info!(
                         frame_id,
+                        surface_id,
                         ?self.wire_format,
+                        pts = f.pts,
                         param_sets = ps_count,
                         param_bytes = ps_bytes,
                         payload_bytes = payload.len(),
+                        timestamp_ms = ts_ms,
                         "EGFX shipped keyframe (IDR)"
                     ),
                     Some(frame_id) => trace!(
@@ -2760,6 +2763,7 @@ impl Gfx {
                         "EGFX shipped frame"
                     ),
                     None => debug!(
+                        surface_id,
                         keyframe = f.is_keyframe,
                         param_sets = ps_count,
                         bytes = payload.len(),
@@ -3039,7 +3043,12 @@ impl GraphicsPipelineHandler for GfxHandler {
     // the QoE/frame-ack callback upstream in #1345) is accepted but unused: macrdp
     // derives its decode-backlog floor from `frame_id`/`last_acked_frame_id` below.
     fn on_frame_ack(&mut self, frame_id: u32, queue_depth: u32, _total_frames_decoded: u32) {
-        trace!(frame_id, queue_depth, "EGFX frame ack");
+        debug!(
+            frame_id,
+            queue_depth,
+            total_frames_decoded = _total_frames_decoded,
+            "EGFX frame ack"
+        );
         // Feed ack-driven IDR recovery (EGFX-on-lossy): record liveness, and note
         // whether the client suspended acks (queueDepth == SUSPEND_FRAME_
         // ACKNOWLEDGEMENT 0xFFFFFFFF) — with acks off, loss can't be inferred.
