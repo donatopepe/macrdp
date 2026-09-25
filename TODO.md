@@ -353,7 +353,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
   SCReAM RFC 8298, NADA RFC 8698.
 - [x] **A/V offset EWMA + drift telemetry** — source audio/video PTS feed `av_offset_ewma_ms`,
   `av_offset_ewma_samples`, and `av_drift_ppm`; playback is untouched. Correction policy still
-  waits for scheduler integration and more live drift data.
+  waits for scheduler integration and more live drift data. Live session currently shows offset
+  around -27 ms; no correction is applied automatically.
 - [ ] **A/V desync under packet loss** (user-reported 2026-06-29, after P3). Audio drifts
   from video under drops, most apparent on the TCP path. Root constraint: **RDP has no A/V
   sync primitive** (RDPSND + EGFX are independent channels, no shared clock/PTS) → true
