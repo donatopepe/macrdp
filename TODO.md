@@ -253,8 +253,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
   socket yet; adapter migration remains next step because `write_all` is cancellation-unsafe.
 - [~] **Live socket-owner adapter** — blocked safely at design boundary: current
   `FramedWrite::write_all` is not cancellation-safe and can duplicate partial frames on retry.
-  Implement only after adding one owner task with complete-buffer handoff and shutdown drain;
-  no live path mutation in current cycle.
+  Scheduler core remains isolated/tested; next implementation must add complete-buffer handoff,
+  shutdown drain, and a fake writer test before touching live `client_loop`.
 - [ ] **Perf (upstream candidates, vendored server — do NOT land as new divergences):** from
   the same audit: (a) `SharedWriter`/dispatch write coalescing — every fragment/event is its
   own `write_all` = 2 boxed futures + syscall + flush (`server.rs:2643` + git-pinned
