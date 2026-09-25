@@ -69,7 +69,9 @@ APP_DIR="$HOME/Applications" packaging/install-launchagent.sh
 Grant **Screen Recording** and **Accessibility** to `macrdp.app` in System
 Settings → Privacy & Security, then restart the agent. The default local setup
 listens on `127.0.0.1:3390`; set `BIND="0.0.0.0:3390"` in
-`~/Library/Application Support/macrdp/config.env` for LAN/VPN access.
+`~/Library/Application Support/macrdp/config.env` for LAN/VPN access. The
+included example already uses `0.0.0.0:3390`; restrict the bind address or use
+a VPN when the Mac is not on a trusted network.
 
 The local certificate is deliberately self-signed. It stabilizes this Mac's
 code identity; it is not an Apple Developer ID, is not trusted by other Macs,
