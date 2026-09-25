@@ -122,6 +122,10 @@ pub struct SessionStats {
     pub av_offset_ms: AtomicI64,
     /// Number of valid audio/video PTS pairs observed.
     pub av_samples: AtomicU64,
+    /// EWMA of audio-minus-video source PTS offset, in milliseconds.
+    pub av_offset_ewma_ms: AtomicI64,
+    /// Number of offset samples folded into EWMA.
+    pub av_offset_ewma_samples: AtomicU64,
     pub aac: AtomicBool,
 }
 
@@ -144,6 +148,7 @@ impl SessionStats {
                 "\"audio_queue_p50_ms\":{},\"audio_queue_p95_ms\":{},\"audio_queue_max_ms\":{},",
                 "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
                 "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
+                "\"av_offset_ewma_ms\":{},\"av_offset_ewma_samples\":{},",
                 "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
             ),
             self.connected.load(Ordering::Relaxed),
@@ -195,6 +200,8 @@ impl SessionStats {
             self.video_pts_ms.load(Ordering::Relaxed),
             self.av_offset_ms.load(Ordering::Relaxed),
             self.av_samples.load(Ordering::Relaxed),
+            self.av_offset_ewma_ms.load(Ordering::Relaxed),
+            self.av_offset_ewma_samples.load(Ordering::Relaxed),
             self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
@@ -226,6 +233,22 @@ pub fn set_diagnostics(handle: ironrdp_server::DiagnosticsHandle) {
 
 pub fn diagnostics() -> Option<&'static ironrdp_server::DiagnosticsHandle> {
     DIAGNOSTICS.get()
+}
+
+/// Fold one source-clock offset into an EWMA. This pure update keeps initial
+/// offset and ongoing jitter visible without changing playback.
+pub fn record_av_offset(offset_ms: i64) {
+    let Some(stats) = global() else { return };
+    let old = stats.av_offset_ewma_ms.load(Ordering::Relaxed);
+    let samples = stats.av_offset_ewma_samples.load(Ordering::Relaxed);
+    let next = if samples == 0 {
+        offset_ms
+    } else {
+        // alpha = 1/8: stable enough for a 60/43 Hz pair, responsive to drift.
+        old.saturating_add((offset_ms.saturating_sub(old)) / 8)
+    };
+    stats.av_offset_ewma_ms.store(next, Ordering::Relaxed);
+    stats.av_offset_ewma_samples.fetch_add(1, Ordering::Relaxed);
 }
 
 fn publish_window(

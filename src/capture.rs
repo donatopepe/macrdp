@@ -1567,9 +1567,9 @@ mod macos {
                             .unwrap_or(0);
                         stats.video_pts_ms.store(video_ms, Ordering::Relaxed);
                         let audio_ms = stats.audio_pts_ms.load(Ordering::Relaxed);
-                        stats
-                            .av_offset_ms
-                            .store(audio_ms.saturating_sub(video_ms), Ordering::Relaxed);
+                        let offset_ms = audio_ms.saturating_sub(video_ms);
+                        stats.av_offset_ms.store(offset_ms, Ordering::Relaxed);
+                        crate::stats::record_av_offset(offset_ms);
                     }
                     #[cfg(target_os = "macos")]
                     if let Some(display_time) = sample.display_time() {

@@ -586,10 +586,10 @@ async fn capture_loop(
                         .unwrap_or(0);
                     stats.audio_pts_ms.store(audio_ms, Ordering::Relaxed);
                     let video_ms = stats.video_pts_ms.load(Ordering::Relaxed);
-                    stats
-                        .av_offset_ms
-                        .store(audio_ms.saturating_sub(video_ms), Ordering::Relaxed);
+                    let offset_ms = audio_ms.saturating_sub(video_ms);
+                    stats.av_offset_ms.store(offset_ms, Ordering::Relaxed);
                     stats.av_samples.fetch_add(1, Ordering::Relaxed);
+                    crate::stats::record_av_offset(offset_ms);
                 }
             }
 
