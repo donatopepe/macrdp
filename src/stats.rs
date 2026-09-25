@@ -490,4 +490,14 @@ mod tests {
         }
         assert_eq!(window.percentiles(), (50, 95, 100));
     }
+
+    #[test]
+    fn av_clock_drift_estimator_tracks_positive_slope() {
+        let stats = Arc::new(SessionStats::default());
+        let _ = GLOBAL.set(Arc::clone(&stats));
+        stats.av_samples.store(1, Ordering::Relaxed);
+        record_av_clock_pair(1000, 1000);
+        record_av_clock_pair(2010, 2000);
+        assert!(stats.av_drift_ppm.load(Ordering::Relaxed) > 0);
+    }
 }
