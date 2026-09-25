@@ -59,6 +59,8 @@ pub struct SessionStats {
     pub capture_buffered: AtomicU32,
     /// Current pending legacy bitmap-update queue depth.
     pub display_pending: AtomicU32,
+    /// Number of legacy display queue overflows followed by full-frame resync.
+    pub display_overflow_resyncs: AtomicU64,
     /// Last measured age from SCK display timestamp to processing, in ms.
     pub capture_age_ms: AtomicU32,
     /// Last VideoToolbox output age from encode submission to callback, in ms.
@@ -128,7 +130,7 @@ impl SessionStats {
                 "{{\"connected\":{},\"width\":{},\"height\":{},\"bitrate_bps\":{},",
                 "\"ceiling_bps\":{},\"rtt_ms\":{},\"queue_delay_ms\":{},\"fps\":{},",
                 "\"frames_sent\":{},\"capture_drops\":{},\"capture_sample_drops\":{},",
-                "\"capture_buffered\":{},\"display_pending\":{},\"capture_age_ms\":{},",
+                "\"capture_buffered\":{},\"display_pending\":{},\"display_overflow_resyncs\":{},\"capture_age_ms\":{},",
                 "\"encode_latency_ms\":{},\"ship_latency_ms\":{},\"encoded_pending\":{},",
                 "\"server_event_queue\":{},\"socket_write_stalls\":{},\"socket_write_ms\":{},",
                 "\"audio_queue\":{},\"audio_queue_ms\":{},\"audio_drops\":{},",
@@ -155,6 +157,7 @@ impl SessionStats {
             self.capture_sample_drops.load(Ordering::Relaxed),
             self.capture_buffered.load(Ordering::Relaxed),
             self.display_pending.load(Ordering::Relaxed),
+            self.display_overflow_resyncs.load(Ordering::Relaxed),
             self.capture_age_ms.load(Ordering::Relaxed),
             self.encode_latency_ms.load(Ordering::Relaxed),
             self.ship_latency_ms.load(Ordering::Relaxed),

@@ -923,6 +923,9 @@ mod macos {
         /// Bound legacy update backlog so stale rectangles do not accumulate
         /// behind a slow socket writer.
         pending_limit: usize,
+        /// True after queue overflow; next captured sample is emitted as a
+        /// full-frame resynchronization instead of stale dirty rectangles.
+        resync_full_frame: bool,
         // Force a full-frame seed on the first sample so the client's
         // bitmap cache starts in a known-good state; SCK's dirty rects
         // for frame 0 may not cover everything.
@@ -1224,6 +1227,7 @@ mod macos {
                     .and_then(|v| v.trim().parse::<usize>().ok())
                     .filter(|&v| v > 0)
                     .unwrap_or(32),
+                resync_full_frame: false,
                 seeded: false,
                 force_full_frame,
                 cursor,
@@ -1702,11 +1706,12 @@ mod macos {
                 // After that, SCK's dirty_rects tells us what changed; if the
                 // attachment is missing (older macOS, no key), fall back to
                 // the full frame.
-                let dirty = if !self.seeded || self.force_full_frame {
+                let dirty = if !self.seeded || self.force_full_frame || self.resync_full_frame {
                     None
                 } else {
                     sample.dirty_rects()
                 };
+                let resync_sample = self.resync_full_frame;
 
                 let rects: Vec<(u16, u16, u16, u16)> = match dirty {
                     Some(list) if !list.is_empty() => list
@@ -1746,12 +1751,24 @@ mod macos {
                 }
                 if self.pending.len() > self.pending_limit {
                     let dropped = self.pending.len() - self.pending_limit;
-                    self.pending.drain(..dropped);
+                    self.pending.clear();
+                    self.resync_full_frame = true;
                     if let Some(stats) = crate::stats::global() {
                         stats
                             .capture_sample_drops
                             .fetch_add(dropped as u64, Ordering::Relaxed);
+                        stats
+                            .display_overflow_resyncs
+                            .fetch_add(1, Ordering::Relaxed);
                     }
+                    tracing::debug!(
+                        dropped,
+                        pending_limit = self.pending_limit,
+                        "legacy display queue overflow; scheduling full-frame resync"
+                    );
+                }
+                if resync_sample && self.pending.len() <= self.pending_limit {
+                    self.resync_full_frame = false;
                 }
                 if let Some(stats) = crate::stats::global() {
                     stats
