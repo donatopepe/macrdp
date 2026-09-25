@@ -3090,15 +3090,18 @@ impl RdpServer {
         let this = Rc::clone(&s);
         let mut ev_receiver = ev_receiver.lock().await;
         let dispatch_events = async move {
-            let mut events = Vec::with_capacity(100);
+            // Keep each dispatch turn bounded. Draining an unbounded event
+            // queue in one turn lets a video burst hold the server mutex and
+            // SharedWriter for seconds, starving fresh audio and control. A
+            // later turn preserves FIFO order while giving audio/pdu tasks a
+            // chance to run between batches.
+            const MAX_EVENT_BATCH: usize = 100;
+            let mut events = Vec::with_capacity(MAX_EVENT_BATCH);
             loop {
-                let nevents = ev_receiver.recv_many(&mut events, 100).await;
+                let nevents = ev_receiver.recv_many(&mut events, MAX_EVENT_BATCH).await;
                 if nevents == 0 {
                     debug!("No sever events.. stopping");
                     break Ok(RunState::Disconnect);
-                }
-                while let Ok(ev) = ev_receiver.try_recv() {
-                    events.push(ev);
                 }
                 let mut this = this.lock().await;
                 if let Some(diag) = &this.diagnostics {
