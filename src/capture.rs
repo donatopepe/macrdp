@@ -1526,6 +1526,9 @@ mod macos {
                 }
 
                 let Some(pixel_buffer) = sample.image_buffer() else {
+                    if let Some(stats) = crate::stats::global() {
+                        stats.capture_superseded.fetch_add(1, Ordering::Relaxed);
+                    }
                     continue;
                 };
 

@@ -55,6 +55,8 @@ pub struct SessionStats {
     pub capture_drops: AtomicU64,
     /// Number of ScreenCaptureKit samples discarded before processing.
     pub capture_sample_drops: AtomicU64,
+    /// Number of screen samples superseded by a newer sample before conversion.
+    pub capture_superseded: AtomicU64,
     /// Current SCK sample queue depth, when telemetry is enabled.
     pub capture_buffered: AtomicU32,
     /// Current pending legacy bitmap-update queue depth.
@@ -130,7 +132,7 @@ impl SessionStats {
                 "{{\"connected\":{},\"width\":{},\"height\":{},\"bitrate_bps\":{},",
                 "\"ceiling_bps\":{},\"rtt_ms\":{},\"queue_delay_ms\":{},\"fps\":{},",
                 "\"frames_sent\":{},\"capture_drops\":{},\"capture_sample_drops\":{},",
-                "\"capture_buffered\":{},\"display_pending\":{},\"display_overflow_resyncs\":{},\"capture_age_ms\":{},",
+                "\"capture_superseded\":{},\"capture_buffered\":{},\"display_pending\":{},\"display_overflow_resyncs\":{},\"capture_age_ms\":{},",
                 "\"encode_latency_ms\":{},\"ship_latency_ms\":{},\"encoded_pending\":{},",
                 "\"server_event_queue\":{},\"socket_write_stalls\":{},\"socket_write_ms\":{},",
                 "\"audio_queue\":{},\"audio_queue_ms\":{},\"audio_drops\":{},",
@@ -155,6 +157,7 @@ impl SessionStats {
             self.frames_sent.load(Ordering::Relaxed),
             self.capture_drops.load(Ordering::Relaxed),
             self.capture_sample_drops.load(Ordering::Relaxed),
+            self.capture_superseded.load(Ordering::Relaxed),
             self.capture_buffered.load(Ordering::Relaxed),
             self.display_pending.load(Ordering::Relaxed),
             self.display_overflow_resyncs.load(Ordering::Relaxed),
