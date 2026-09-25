@@ -222,6 +222,9 @@ then delete; promote a parked item to *In flight* when work actually starts.
   flag before waiting; new non-audio writes yield until the audio wave is admitted. Existing
   in-progress writes remain non-preemptible, H.264 ordering is unchanged, and telemetry remains
   opt-in. This bounds new video/control overtaking of queued audio but is not full batching.
+- [x] **Adjacent EGFX event coalescing** — consecutive `ServerEvent::Egfx` batches now merge
+  their ordered DVC message vectors before socket dispatch. No cross-channel reorder, no
+  post-encode frame drop, H.264 frame order preserved. Full write coalescing remains upstream-sensitive.
 - [ ] **Perf (upstream candidates, vendored server — do NOT land as new divergences):** from
   the same audit: (a) `SharedWriter`/dispatch write coalescing — every fragment/event is its
   own `write_all` = 2 boxed futures + syscall + flush (`server.rs:2643` + git-pinned

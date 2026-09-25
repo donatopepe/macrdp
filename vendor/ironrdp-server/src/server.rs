@@ -2362,6 +2362,40 @@ impl RdpServer {
         Ok((RunState::Continue, encoder))
     }
 
+    #[cfg(feature = "egfx")]
+    fn coalesce_adjacent_egfx(events: &mut Vec<ServerEvent>) -> usize {
+        if events.len() < 2 {
+            return 0;
+        }
+        let has_adjacent = events.windows(2).any(|pair| {
+            matches!(&pair[0], ServerEvent::Egfx(EgfxServerMessage::SendMessages { .. }))
+                && matches!(&pair[1], ServerEvent::Egfx(EgfxServerMessage::SendMessages { .. }))
+        });
+        if !has_adjacent {
+            return 0;
+        }
+
+        let mut merged = Vec::with_capacity(events.len());
+        let mut merged_messages = 0;
+        for event in events.drain(..) {
+            match event {
+                ServerEvent::Egfx(EgfxServerMessage::SendMessages { messages }) => {
+                    if let Some(ServerEvent::Egfx(EgfxServerMessage::SendMessages { messages: previous })) =
+                        merged.last_mut()
+                    {
+                        merged_messages += messages.len();
+                        previous.extend(messages);
+                    } else {
+                        merged.push(ServerEvent::Egfx(EgfxServerMessage::SendMessages { messages }));
+                    }
+                }
+                other => merged.push(other),
+            }
+        }
+        *events = merged;
+        merged_messages
+    }
+
     async fn dispatch_server_events(
         &mut self,
         events: &mut Vec<ServerEvent>,
@@ -2443,6 +2477,13 @@ impl RdpServer {
                 events.extend(clipboard); // 1: not starved by video
                 events.extend(middle); // 2: EGFX video + the rest
                 events.extend(rdpdr); // 3: bulk drive writes yield to video
+            }
+        }
+        #[cfg(feature = "egfx")]
+        {
+            let merged_messages = Self::coalesce_adjacent_egfx(events);
+            if merged_messages > 0 {
+                debug!(merged_messages, "coalesced adjacent EGFX DVC messages");
             }
         }
         for event in events.drain(..) {
