@@ -22,7 +22,7 @@
 
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// The live snapshot. Every field is an atomic so the encode path can update it
 /// lock-free; the listener reads it under no lock either. Values are best-effort
@@ -126,7 +126,24 @@ pub struct SessionStats {
     pub av_offset_ewma_ms: AtomicI64,
     /// Number of offset samples folded into EWMA.
     pub av_offset_ewma_samples: AtomicU64,
+    /// EWMA source-clock drift in parts per million (audio relative to video).
+    pub av_drift_ppm: AtomicI64,
     pub aac: AtomicBool,
+    av_clock: AvClockTracker,
+}
+
+#[derive(Default)]
+struct AvClockTracker {
+    state: Mutex<AvClockState>,
+}
+
+#[derive(Default)]
+struct AvClockState {
+    samples: u64,
+    ewma_offset_ms: i64,
+    anchor_pts_ms: Option<i64>,
+    anchor_offset_ms: i64,
+    drift_ppm: i64,
 }
 
 impl SessionStats {
@@ -149,6 +166,7 @@ impl SessionStats {
                 "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
                 "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
                 "\"av_offset_ewma_ms\":{},\"av_offset_ewma_samples\":{},",
+                "\"av_drift_ppm\":{},",
                 "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
             ),
             self.connected.load(Ordering::Relaxed),
@@ -202,6 +220,7 @@ impl SessionStats {
             self.av_samples.load(Ordering::Relaxed),
             self.av_offset_ewma_ms.load(Ordering::Relaxed),
             self.av_offset_ewma_samples.load(Ordering::Relaxed),
+            self.av_drift_ppm.load(Ordering::Relaxed),
             self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
@@ -249,6 +268,35 @@ pub fn record_av_offset(offset_ms: i64) {
     };
     stats.av_offset_ewma_ms.store(next, Ordering::Relaxed);
     stats.av_offset_ewma_samples.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record synchronized source PTS pair and estimate long-term clock drift.
+/// This is telemetry-only: no resampling or playback correction occurs here.
+pub fn record_av_clock_pair(audio_pts_ms: i64, video_pts_ms: i64) {
+    let Some(stats) = global() else { return };
+    let offset_ms = audio_pts_ms.saturating_sub(video_pts_ms);
+    record_av_offset(offset_ms);
+    let Ok(mut clock) = stats.av_clock.state.lock() else {
+        return;
+    };
+    if let Some(anchor) = clock.anchor_pts_ms {
+        let elapsed = video_pts_ms.saturating_sub(anchor);
+        if elapsed >= 1_000 {
+            let offset_delta = offset_ms.saturating_sub(clock.anchor_offset_ms);
+            // offset_delta / elapsed is fractional clock error; ppm = ×1e6.
+            let instant_ppm = offset_delta.saturating_mul(1_000_000) / elapsed;
+            clock.drift_ppm = clock
+                .drift_ppm
+                .saturating_add((instant_ppm.saturating_sub(clock.drift_ppm)) / 8);
+            stats.av_drift_ppm.store(clock.drift_ppm, Ordering::Relaxed);
+            clock.anchor_pts_ms = Some(video_pts_ms);
+            clock.anchor_offset_ms = offset_ms;
+        }
+    } else {
+        clock.anchor_pts_ms = Some(video_pts_ms);
+        clock.anchor_offset_ms = offset_ms;
+    }
+    clock.samples = clock.samples.saturating_add(1);
 }
 
 fn publish_window(

@@ -1570,6 +1570,7 @@ mod macos {
                         let offset_ms = audio_ms.saturating_sub(video_ms);
                         stats.av_offset_ms.store(offset_ms, Ordering::Relaxed);
                         crate::stats::record_av_offset(offset_ms);
+                        crate::stats::record_av_clock_pair(audio_ms, video_ms);
                     }
                     #[cfg(target_os = "macos")]
                     if let Some(display_time) = sample.display_time() {
