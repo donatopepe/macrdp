@@ -2446,6 +2446,8 @@ async fn async_main() -> Result<()> {
         audio_queue: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         audio_queue_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         audio_drops: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        audio_write_stalls: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        audio_write_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
     };
     if let Some(stats) = crate::stats::global() {
         // Reuse the same atomics exposed by the loopback endpoint.
@@ -2456,6 +2458,8 @@ async fn async_main() -> Result<()> {
         diagnostics.audio_queue = stats.audio_queue.clone();
         diagnostics.audio_queue_ms = stats.audio_queue_ms.clone();
         diagnostics.audio_drops = stats.audio_drops.clone();
+        diagnostics.audio_write_stalls = stats.audio_write_stalls.clone();
+        diagnostics.audio_write_ms = stats.audio_write_ms.clone();
     }
 
     // EGFX/H.264 video pipeline (macOS-only; opt-in via --enable-h264). One

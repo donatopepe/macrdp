@@ -467,6 +467,8 @@ pub struct DiagnosticsHandle {
     pub audio_queue: Arc<AtomicU32>,
     pub audio_queue_ms: Arc<AtomicU32>,
     pub audio_drops: Arc<AtomicU64>,
+    pub audio_write_stalls: Arc<AtomicU64>,
+    pub audio_write_ms: Arc<AtomicU32>,
 }
 
 pub struct RdpServer {
@@ -2927,6 +2929,7 @@ impl RdpServer {
 
                 // Static rdpsnd over TCP (default; also the pre-negotiation path
                 // before the lossy DVC is live).
+                let diagnostics = this.diagnostics.clone();
                 let encoded = {
                     let Some(rdpsnd) = this.get_svc_processor::<RdpsndServer>() else {
                         warn!("No rdpsnd channel, dropping wave");
@@ -2947,7 +2950,16 @@ impl RdpServer {
                 };
                 drop(this);
 
+                let audio_started = Instant::now();
                 audio_writer.write_all(&encoded).await?;
+                if let Some(diag) = diagnostics {
+                    let elapsed = audio_started.elapsed();
+                    if elapsed >= Duration::from_millis(10) {
+                        diag.audio_write_stalls.fetch_add(1, Ordering::Relaxed);
+                    }
+                    diag.audio_write_ms
+                        .store(elapsed.as_millis().min(u128::from(u32::MAX)) as u32, Ordering::Relaxed);
+                }
                 audio_shipped_ms += wave_ms;
             }
         };
