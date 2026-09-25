@@ -251,6 +251,10 @@ then delete; promote a parked item to *In flight* when work actually starts.
   urgent audio/control priority, weighted data fairness, FIFO EGFX behavior, and local enqueue/
   reject/sent packet+byte counters in `vendor/ironrdp-server/src/outbound.rs`. Not wired to live
   socket yet; adapter migration remains next step because `write_all` is cancellation-unsafe.
+- [~] **Live socket-owner adapter** — blocked safely at design boundary: current
+  `FramedWrite::write_all` is not cancellation-safe and can duplicate partial frames on retry.
+  Implement only after adding one owner task with complete-buffer handoff and shutdown drain;
+  no live path mutation in current cycle.
 - [ ] **Perf (upstream candidates, vendored server — do NOT land as new divergences):** from
   the same audit: (a) `SharedWriter`/dispatch write coalescing — every fragment/event is its
   own `write_all` = 2 boxed futures + syscall + flush (`server.rs:2643` + git-pinned
