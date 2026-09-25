@@ -1567,6 +1567,9 @@ fn args_from_config(path: &Path) -> Result<Args> {
     if on("HIDPI", false) {
         argv.push("--hidpi".into());
     }
+    if on("NO_CLIENT_RESOLUTION", false) {
+        argv.push("--no-client-resolution".into());
+    }
     if on("UNMINIMIZE", false) {
         argv.push("--unminimize-on-switch".into());
     }
@@ -2969,6 +2972,7 @@ mod config_tests {
              ENABLE_H264=1\n\
              ENABLE_AAC=0\n\
              HIDPI=1\n\
+             NO_CLIENT_RESOLUTION=1\n\
              UNMINIMIZE=1\n\
              VIRTUAL_DISPLAY=1\n\
              VD_WIDTH=2560\n\
@@ -2987,6 +2991,7 @@ mod config_tests {
         assert!(args.enable_h264);
         assert!(!args.enable_aac);
         assert!(args.hidpi);
+        assert!(args.no_client_resolution);
         assert!(args.unminimize_on_switch);
         assert!(args.virtual_display);
         assert_eq!(args.width, Some(2560));
