@@ -59,8 +59,8 @@ pub use rdpeusb::{
     UsbHandle, UsbPipe,
 };
 pub use server::{
-    ConnectionHandler, Credentials, DiagnosticsHandle, PostConnectionAction, RdpServer, RdpServerOptions,
-    RdpServerSecurity, ServerEvent, ServerEventSender, tcp_srtt_ms,
+    ConnectionHandler, Credentials, DiagnosticsHandle, LatencyWindow, PostConnectionAction, RdpServer,
+    RdpServerOptions, RdpServerSecurity, ServerEvent, ServerEventSender, tcp_srtt_ms,
 };
 pub use sound::{
     AudioWave, AudioWaveReceiver, AudioWaveSendError, AudioWaveSender, RdpsndServerHandler, RdpsndServerMessage,

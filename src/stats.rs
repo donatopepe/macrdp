@@ -83,6 +83,30 @@ pub struct SessionStats {
     pub audio_write_stalls: Arc<AtomicU64>,
     /// Most recent audio socket-write duration, in ms.
     pub audio_write_ms: Arc<AtomicU32>,
+    /// Rolling p50/p95/max capture age in ms.
+    pub capture_age_p50_ms: AtomicU32,
+    pub capture_age_p95_ms: AtomicU32,
+    pub capture_age_max_ms: AtomicU32,
+    /// Rolling p50/p95/max encode latency in ms.
+    pub encode_latency_p50_ms: AtomicU32,
+    pub encode_latency_p95_ms: AtomicU32,
+    pub encode_latency_max_ms: AtomicU32,
+    /// Rolling p50/p95/max ship latency in ms.
+    pub ship_latency_p50_ms: AtomicU32,
+    pub ship_latency_p95_ms: AtomicU32,
+    pub ship_latency_max_ms: AtomicU32,
+    /// Rolling p50/p95/max socket wait in ms.
+    pub socket_write_p50_ms: AtomicU32,
+    pub socket_write_p95_ms: AtomicU32,
+    pub socket_write_max_ms: AtomicU32,
+    /// Rolling p50/p95/max audio queue depth in ms.
+    pub audio_queue_p50_ms: AtomicU32,
+    pub audio_queue_p95_ms: AtomicU32,
+    pub audio_queue_max_ms: AtomicU32,
+    /// Rolling p50/p95/max audio socket wait in ms.
+    pub audio_write_p50_ms: AtomicU32,
+    pub audio_write_p95_ms: AtomicU32,
+    pub audio_write_max_ms: AtomicU32,
     /// Best-effort process CPU percentage sampled by the diagnostics loop.
     pub cpu_percent: AtomicU32,
     pub adaptive: AtomicBool,
@@ -101,6 +125,12 @@ impl SessionStats {
                 "\"server_event_queue\":{},\"socket_write_stalls\":{},\"socket_write_ms\":{},",
                 "\"audio_queue\":{},\"audio_queue_ms\":{},\"audio_drops\":{},",
                 "\"audio_write_stalls\":{},\"audio_write_ms\":{},",
+                "\"capture_age_p50_ms\":{},\"capture_age_p95_ms\":{},\"capture_age_max_ms\":{},",
+                "\"encode_latency_p50_ms\":{},\"encode_latency_p95_ms\":{},\"encode_latency_max_ms\":{},",
+                "\"ship_latency_p50_ms\":{},\"ship_latency_p95_ms\":{},\"ship_latency_max_ms\":{},",
+                "\"socket_write_p50_ms\":{},\"socket_write_p95_ms\":{},\"socket_write_max_ms\":{},",
+                "\"audio_queue_p50_ms\":{},\"audio_queue_p95_ms\":{},\"audio_queue_max_ms\":{},",
+                "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
                 "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
             ),
             self.connected.load(Ordering::Relaxed),
@@ -128,6 +158,24 @@ impl SessionStats {
             self.audio_drops.load(Ordering::Relaxed),
             self.audio_write_stalls.load(Ordering::Relaxed),
             self.audio_write_ms.load(Ordering::Relaxed),
+            self.capture_age_p50_ms.load(Ordering::Relaxed),
+            self.capture_age_p95_ms.load(Ordering::Relaxed),
+            self.capture_age_max_ms.load(Ordering::Relaxed),
+            self.encode_latency_p50_ms.load(Ordering::Relaxed),
+            self.encode_latency_p95_ms.load(Ordering::Relaxed),
+            self.encode_latency_max_ms.load(Ordering::Relaxed),
+            self.ship_latency_p50_ms.load(Ordering::Relaxed),
+            self.ship_latency_p95_ms.load(Ordering::Relaxed),
+            self.ship_latency_max_ms.load(Ordering::Relaxed),
+            self.socket_write_p50_ms.load(Ordering::Relaxed),
+            self.socket_write_p95_ms.load(Ordering::Relaxed),
+            self.socket_write_max_ms.load(Ordering::Relaxed),
+            self.audio_queue_p50_ms.load(Ordering::Relaxed),
+            self.audio_queue_p95_ms.load(Ordering::Relaxed),
+            self.audio_queue_max_ms.load(Ordering::Relaxed),
+            self.audio_write_p50_ms.load(Ordering::Relaxed),
+            self.audio_write_p95_ms.load(Ordering::Relaxed),
+            self.audio_write_max_ms.load(Ordering::Relaxed),
             self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
@@ -136,6 +184,7 @@ impl SessionStats {
 }
 
 static GLOBAL: OnceLock<Arc<SessionStats>> = OnceLock::new();
+static DIAGNOSTICS: OnceLock<ironrdp_server::DiagnosticsHandle> = OnceLock::new();
 
 /// Turn telemetry on: create (idempotently) the shared snapshot and return it.
 /// Called once from `main.rs` when the endpoint is enabled.
@@ -152,6 +201,67 @@ pub fn global() -> Option<&'static Arc<SessionStats>> {
     GLOBAL.get()
 }
 
+pub fn set_diagnostics(handle: ironrdp_server::DiagnosticsHandle) {
+    let _ = DIAGNOSTICS.set(handle);
+}
+
+pub fn diagnostics() -> Option<&'static ironrdp_server::DiagnosticsHandle> {
+    DIAGNOSTICS.get()
+}
+
+fn publish_window(
+    window: &ironrdp_server::LatencyWindow,
+    p50: &AtomicU32,
+    p95: &AtomicU32,
+    max: &AtomicU32,
+) {
+    let (a, b, c) = window.percentiles();
+    p50.store(a, Ordering::Relaxed);
+    p95.store(b, Ordering::Relaxed);
+    max.store(c, Ordering::Relaxed);
+}
+
+pub fn publish_latency_windows() {
+    let Some(diag) = diagnostics() else { return };
+    let Some(stats) = global() else { return };
+    publish_window(
+        &diag.capture_age_window,
+        &stats.capture_age_p50_ms,
+        &stats.capture_age_p95_ms,
+        &stats.capture_age_max_ms,
+    );
+    publish_window(
+        &diag.encode_latency_window,
+        &stats.encode_latency_p50_ms,
+        &stats.encode_latency_p95_ms,
+        &stats.encode_latency_max_ms,
+    );
+    publish_window(
+        &diag.ship_latency_window,
+        &stats.ship_latency_p50_ms,
+        &stats.ship_latency_p95_ms,
+        &stats.ship_latency_max_ms,
+    );
+    publish_window(
+        &diag.socket_write_window,
+        &stats.socket_write_p50_ms,
+        &stats.socket_write_p95_ms,
+        &stats.socket_write_max_ms,
+    );
+    publish_window(
+        &diag.audio_queue_window,
+        &stats.audio_queue_p50_ms,
+        &stats.audio_queue_p95_ms,
+        &stats.audio_queue_max_ms,
+    );
+    publish_window(
+        &diag.audio_write_window,
+        &stats.audio_write_p50_ms,
+        &stats.audio_write_p95_ms,
+        &stats.audio_write_max_ms,
+    );
+}
+
 /// Sample macOS process CPU without adding work to capture, encode, or socket
 /// paths. Value is aggregate CPU percentage (100 = one fully busy core).
 #[cfg(target_os = "macos")]
@@ -165,6 +275,7 @@ pub fn spawn_cpu_sampler() {
         ticker.tick().await;
         loop {
             ticker.tick().await;
+            publish_latency_windows();
             let current = process_cpu_snapshot();
             let wall_ns = current.wall_ns.saturating_sub(previous.wall_ns);
             let cpu_ns = current.cpu_ns.saturating_sub(previous.cpu_ns);

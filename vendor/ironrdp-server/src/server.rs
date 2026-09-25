@@ -456,6 +456,50 @@ pub fn tcp_srtt_ms(_stream: &tokio::net::TcpStream) -> Option<u32> {
     None
 }
 
+/// Small lock-free rolling latency sample window. Writers replace one slot;
+/// readers take best-effort snapshots for p50/p95 telemetry. Only wired when
+/// application diagnostics are enabled, so default runtime has no sample cost.
+#[derive(Clone)]
+pub struct LatencyWindow {
+    cursor: Arc<AtomicU64>,
+    values: Arc<[AtomicU32]>,
+}
+
+impl Default for LatencyWindow {
+    fn default() -> Self {
+        let values: Vec<AtomicU32> = (0..128).map(|_| AtomicU32::new(0)).collect();
+        Self {
+            cursor: Arc::new(AtomicU64::new(0)),
+            values: Arc::from(values.into_boxed_slice()),
+        }
+    }
+}
+
+impl LatencyWindow {
+    pub fn record(&self, value_ms: u32) {
+        let index = self.cursor.fetch_add(1, Ordering::Relaxed) as usize % self.values.len();
+        self.values[index].store(value_ms, Ordering::Relaxed);
+    }
+
+    /// Returns (p50, p95, max) from most recent samples. Snapshot may race one
+    /// writer; values are diagnostics only and never control transport.
+    pub fn percentiles(&self) -> (u32, u32, u32) {
+        let count = self.cursor.load(Ordering::Relaxed).min(self.values.len() as u64) as usize;
+        if count == 0 {
+            return (0, 0, 0);
+        }
+        let mut values: Vec<u32> = self
+            .values
+            .iter()
+            .take(count)
+            .map(|value| value.load(Ordering::Relaxed))
+            .collect();
+        values.sort_unstable();
+        let rank = |percent: usize| ((values.len() * percent).saturating_add(99) / 100).saturating_sub(1);
+        (values[rank(50)], values[rank(95)], *values.last().unwrap_or(&0))
+    }
+}
+
 /// Optional application-owned diagnostics gauges. All fields are atomics so
 /// server instrumentation never takes a lock or changes default behavior when
 /// absent.
@@ -469,6 +513,12 @@ pub struct DiagnosticsHandle {
     pub audio_drops: Arc<AtomicU64>,
     pub audio_write_stalls: Arc<AtomicU64>,
     pub audio_write_ms: Arc<AtomicU32>,
+    pub capture_age_window: LatencyWindow,
+    pub encode_latency_window: LatencyWindow,
+    pub ship_latency_window: LatencyWindow,
+    pub socket_write_window: LatencyWindow,
+    pub audio_queue_window: LatencyWindow,
+    pub audio_write_window: LatencyWindow,
 }
 
 pub struct RdpServer {
@@ -2860,11 +2910,10 @@ impl RdpServer {
                 };
                 let diagnostics = { this.lock().await.diagnostics.clone() };
                 if let Some(diag) = diagnostics {
+                    let queue_ms = audio_receiver.queued_duration_ms().max(0.0).min(f64::from(u32::MAX)) as u32;
                     diag.audio_queue.store(audio_receiver.len() as u32, Ordering::Relaxed);
-                    diag.audio_queue_ms.store(
-                        audio_receiver.queued_duration_ms().max(0.0).min(f64::from(u32::MAX)) as u32,
-                        Ordering::Relaxed,
-                    );
+                    diag.audio_queue_ms.store(queue_ms, Ordering::Relaxed);
+                    diag.audio_queue_window.record(queue_ms);
                     diag.audio_drops.store(audio_receiver.dropped(), Ordering::Relaxed);
                 }
 
@@ -2957,8 +3006,9 @@ impl RdpServer {
                     if elapsed >= Duration::from_millis(10) {
                         diag.audio_write_stalls.fetch_add(1, Ordering::Relaxed);
                     }
-                    diag.audio_write_ms
-                        .store(elapsed.as_millis().min(u128::from(u32::MAX)) as u32, Ordering::Relaxed);
+                    let elapsed_ms = elapsed.as_millis().min(u128::from(u32::MAX)) as u32;
+                    diag.audio_write_ms.store(elapsed_ms, Ordering::Relaxed);
+                    diag.audio_write_window.record(elapsed_ms);
                 }
                 audio_shipped_ms += wave_ms;
             }
@@ -3996,8 +4046,9 @@ where
                 if elapsed >= Duration::from_millis(10) {
                     diag.socket_write_stalls.fetch_add(1, Ordering::Relaxed);
                 }
-                diag.socket_write_ms
-                    .store(elapsed.as_millis().min(u128::from(u32::MAX)) as u32, Ordering::Relaxed);
+                let elapsed_ms = elapsed.as_millis().min(u128::from(u32::MAX)) as u32;
+                diag.socket_write_ms.store(elapsed_ms, Ordering::Relaxed);
+                diag.socket_write_window.record(elapsed_ms);
             }
             Ok(())
         })

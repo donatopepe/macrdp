@@ -1555,10 +1555,7 @@ mod macos {
                     if let Some(display_time) = sample.display_time() {
                         let now = unsafe { libc::mach_absolute_time() };
                         let elapsed = now.saturating_sub(display_time);
-                        let mut timebase = libc::mach_timebase_info {
-                            numer: 0,
-                            denom: 0,
-                        };
+                        let mut timebase = libc::mach_timebase_info { numer: 0, denom: 0 };
                         if unsafe { libc::mach_timebase_info(&mut timebase) } == 0
                             && timebase.denom != 0
                         {
@@ -1567,7 +1564,11 @@ mod macos {
                                 .checked_div(u64::from(timebase.denom))
                                 .unwrap_or(0)
                                 / 1_000_000;
-                            stats.capture_age_ms.store(age_ms as u32, Ordering::Relaxed);
+                            let age_ms = age_ms.min(u64::from(u32::MAX)) as u32;
+                            stats.capture_age_ms.store(age_ms, Ordering::Relaxed);
+                            if let Some(diag) = crate::stats::diagnostics() {
+                                diag.capture_age_window.record(age_ms);
+                            }
                         }
                     }
                 }

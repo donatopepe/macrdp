@@ -2310,14 +2310,21 @@ impl Gfx {
                     stats
                         .encode_latency_ms
                         .store(last.encode_latency_ms, Ordering::Relaxed);
-                    stats.ship_latency_ms.store(
-                        last.ready_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
-                        Ordering::Relaxed,
-                    );
-                    stats.encoded_pending.store(
-                        encoded_pending.load(Ordering::Relaxed),
-                        Ordering::Relaxed,
-                    );
+                    let ship_latency_ms = last
+                        .ready_at
+                        .elapsed()
+                        .as_millis()
+                        .min(u128::from(u32::MAX)) as u32;
+                    stats
+                        .ship_latency_ms
+                        .store(ship_latency_ms, Ordering::Relaxed);
+                    if let Some(diag) = crate::stats::diagnostics() {
+                        diag.encode_latency_window.record(last.encode_latency_ms);
+                        diag.ship_latency_window.record(ship_latency_ms);
+                    }
+                    stats
+                        .encoded_pending
+                        .store(encoded_pending.load(Ordering::Relaxed), Ordering::Relaxed);
                 }
             }
             if let Err(e) = self.ship_frames(&frames) {
