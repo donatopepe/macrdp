@@ -3,8 +3,42 @@
 Wraps the `macrdp` binary in a stably-signed `.app` bundle and runs it as a
 per-user **LaunchAgent**. The point is not double-click UX (macrdp is a
 flag-driven server) — it's a **stable signed identity at a fixed path** so the
-Screen Recording / Accessibility TCC grants survive rebuilds, plus
+Screen Recording / Accessibility TCC grants can survive rebuilds, plus
 non-interactive autostart via the Keychain.
+
+## Local signing certificate
+
+`macrdp.app` needs a stable local code-signing identity for reliable TCC
+behavior. `packaging/make-app.sh` now creates one automatically when
+`macrdp Local Code Signing` is missing:
+
+```bash
+packaging/create-local-signing-cert.sh
+# or let make-app.sh do it:
+packaging/make-app.sh
+```
+
+The script creates a self-signed code-signing certificate and matching private
+key in the current user's login Keychain. Private material stays in Keychain
+and is never written to Git. Certificate lasts 10 years by default; override
+with `LOCAL_CERT_DAYS`.
+
+This is **not** an Apple Developer ID certificate. It is trusted only on the
+Mac where it was created, cannot be notarized, and does not make a distributed
+DMG trusted on other Macs. Other users must create their own local identity or
+use an official paid Apple Developer ID for distribution. Ad-hoc signing is
+still available with `CODESIGN_IDENTITY=-` or
+`AUTO_CREATE_LOCAL_CERT=0`, but each rebuilt binary gets a new code hash and
+macOS may ask for Screen Recording / Accessibility again.
+
+If Keychain asks for approval, allow `/usr/bin/codesign` to use the private key
+(or unlock the login Keychain and rerun the command). Verify identity:
+
+```bash
+security find-key -l 'macrdp Local Code Signing' -s -t private \
+  "$HOME/Library/Keychains/login.keychain-db"
+codesign -dvv "$HOME/Applications/macrdp.app" 2>&1 | grep -E 'Authority|Identifier'
+```
 
 The LaunchAgent runs the **signed binary directly** as
 `macrdp --config <config.env>` — the binary parses the same `key=value` file the
@@ -56,8 +90,8 @@ Optional **`packaging/dmg-background.png`** sets a window background.
 ## One-time setup
 
 ```bash
-# 1. Build + install the bundle (ad-hoc signed) to /Applications.
-#    Use APP_DIR=$HOME/Applications to avoid sudo.
+# 1. Build + install the bundle. A local self-signed identity is created
+#    automatically if it is missing. Use APP_DIR=$HOME/Applications to avoid sudo.
 packaging/make-app.sh
 
 # 2. Store the macOS account password so launchd can start headless.
@@ -128,10 +162,12 @@ reader registered with `system_profiler SPSmartCardsDataType`.
   BUNDLE_PREFIX="com.acme" packaging/install-launchagent.sh
   BUNDLE_PREFIX="com.acme" gui/make-tray-app.sh
   ```
-- **Ad-hoc signing is local-only.** `make-app.sh` ad-hoc signs by default
-  (`CODESIGN_IDENTITY=-`), which is fine for your own machine but Gatekeeper
-  quarantines it on anyone else's. For distribution, sign with a Developer ID
-  and notarize:
+- **Local self-signing is local-only.** `make-app.sh` automatically creates or
+  reuses `macrdp Local Code Signing`. This is suitable for the Mac where the
+  app is built and helps keep TCC identity stable, but it is not an Apple
+  Developer ID, is not trusted by other Macs, and cannot be notarized. For
+  distribution, sign with a Developer ID and notarize. To explicitly use
+  ad-hoc signing instead, set `AUTO_CREATE_LOCAL_CERT=0 CODESIGN_IDENTITY=-`:
 
   ```bash
   # one-time: store notary credentials in the keychain

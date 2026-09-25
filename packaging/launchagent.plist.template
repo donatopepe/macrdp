@@ -43,7 +43,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>RUST_LOG</key>
-        <string>info</string>
+        <string>macrdp::input::macos=debug,macrdp=info</string>
     </dict>
 </dict>
 </plist>

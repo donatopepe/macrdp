@@ -186,6 +186,27 @@ fn is_remappable_shortcut(vk: u16) -> bool {
     )
 }
 
+/// MacBook top-row keys default to brightness/media controls. RDP sends F1-F12
+/// as ordinary PS/2 scan codes; SecondaryFn makes macOS interpret them as
+/// actual function keys, equivalent to holding Fn on local hardware.
+fn is_function_key_vk(vk: u16) -> bool {
+    matches!(
+        vk,
+        0x7A // F1
+            | 0x78 // F2
+            | 0x63 // F3
+            | 0x76 // F4
+            | 0x60 // F5
+            | 0x61 // F6
+            | 0x62 // F7
+            | 0x64 // F8
+            | 0x65 // F9
+            | 0x6D // F10
+            | 0x67 // F11
+            | 0x6F // F12
+    )
+}
+
 #[cfg(test)]
 mod coord_tests {
     use super::{is_remappable_shortcut, map_client_to_display};
@@ -204,6 +225,17 @@ mod coord_tests {
         assert!(!is_remappable_shortcut(0x0C));
         // Arrows / nav keys are untouched (e.g. left arrow 0x7B).
         assert!(!is_remappable_shortcut(0x7B));
+    }
+
+    #[test]
+    fn function_key_vk_set_matches_mac_keycodes() {
+        for vk in [
+            0x7A, 0x78, 0x63, 0x76, 0x60, 0x61, 0x62, 0x64, 0x65, 0x6D, 0x67, 0x6F,
+        ] {
+            assert!(super::is_function_key_vk(vk), "vk {vk:#x} should be F-key");
+        }
+        assert!(!super::is_function_key_vk(0x48)); // volume up
+        assert!(!super::is_function_key_vk(0x31)); // space
     }
 
     #[test]
@@ -370,8 +402,8 @@ mod macos {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use super::is_remappable_shortcut;
     use super::scancodes::{is_numeric_pad_vk, scancode_to_cgkeycode};
+    use super::{is_function_key_vk, is_remappable_shortcut};
 
     use anyhow::{anyhow, Result};
     use core_graphics::display::CGDisplay;
@@ -595,10 +627,16 @@ mod macos {
     }
 
     pub struct Inner {
+        // CombinedSessionState source used for ordinary input and app-level
+        // shortcuts.
         source: CGEventSource,
-        // Secondary source used *only* to mirror modifier FlagsChanged
-        // events. See `Inner::new` for why one source isn't enough.
+        // HIDSystemState source used only to mirror modifier FlagsChanged
+        // events so WindowServer symbolic hotkeys see them.
         source_hid: CGEventSource,
+        // Private source reserved for F1-F12. SecondaryFn can become sticky
+        // in a CoreGraphics source; isolating F-key events prevents that bit
+        // from disabling subsequent ordinary remote input.
+        source_fn: CGEventSource,
         last_x: f64,
         last_y: f64,
         left_down: bool,
@@ -682,6 +720,8 @@ mod macos {
                 .map_err(|_| anyhow!("CGEventSource::new(CombinedSessionState) failed"))?;
             let source_hid = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
                 .map_err(|_| anyhow!("CGEventSource::new(HIDSystemState) failed"))?;
+            let source_fn = CGEventSource::new(CGEventSourceStateID::Private)
+                .map_err(|_| anyhow!("CGEventSource::new(Private) failed"))?;
             // Start the workspace-frontmost poller so the global MRU
             // tracks ALL focus changes (Dock clicks, app launches, etc.),
             // not just our Cmd+Tab commits. Idempotent — only one thread
@@ -708,6 +748,7 @@ mod macos {
             Ok(Self {
                 source,
                 source_hid,
+                source_fn,
                 last_x: 0.0,
                 last_y: 0.0,
                 left_down: false,
@@ -762,6 +803,7 @@ mod macos {
 
         pub fn keyboard(&mut self, event: KeyboardEvent) {
             mark_input_activity();
+            tracing::debug!(event = ?event, "RDP keyboard event received");
             match event {
                 KeyboardEvent::Pressed { code, extended } => self.key(code, extended, true),
                 KeyboardEvent::Released { code, extended } => self.key(code, extended, false),
@@ -834,6 +876,18 @@ mod macos {
                 return;
             };
             self.refresh_auto_layout();
+            let before = self.mods.cg_flags();
+            let is_fkey = is_function_key_vk(vk);
+            tracing::debug!(
+                scancode = format!("0x{scancode:02X}"),
+                extended,
+                down,
+                vk = format!("0x{vk:02X}"),
+                is_fkey,
+                before_flags = format!("0x{:016X}", before.bits()),
+                source = if is_fkey { "private" } else { "combined" },
+                "input key begin"
+            );
 
             // Modifier path: update per-side state and emit FlagsChanged
             // mirrored to both sources. We do this BEFORE any of the
@@ -850,6 +904,13 @@ mod macos {
                     flags = format!("0x{:08X}", self.mods.cg_flags().bits()),
                     changed,
                     "key post (modifier)"
+                );
+                tracing::debug!(
+                    vk = format!("0x{vk:02X}"),
+                    down,
+                    changed,
+                    after_flags = format!("0x{:016X}", self.mods.cg_flags().bits()),
+                    "input modifier state"
                 );
                 if changed {
                     self.post_flags_changed(vk);
@@ -891,7 +952,8 @@ mod macos {
                 down,
                 vk = format!("0x{vk:02X}"),
                 is_modifier = false,
-                flags = format!("0x{:08X}", self.mods.cg_flags().bits()),
+                flags = format!("0x{:016X}", self.mods.cg_flags().bits()),
+                is_fkey,
                 "key post"
             );
 
@@ -905,10 +967,12 @@ mod macos {
             // tracked in `consumed_keys` so the bare key-up doesn't reach
             // the focused app either.
             if down && self.try_symbolic_hotkey(vk) {
+                tracing::debug!(vk = format!("0x{vk:02X}"), "input key swallowed symbolic hotkey");
                 self.consumed_keys.insert(vk);
                 return;
             }
             if !down && self.consumed_keys.remove(&vk) {
+                tracing::debug!(vk = format!("0x{vk:02X}"), "input key swallowed consumed release");
                 return;
             }
 
@@ -922,6 +986,7 @@ mod macos {
             // there.
             if !down && self.remapped_keys.remove(&vk) {
                 self.post_ctrl_as_cmd(vk, false);
+                tracing::debug!(vk = format!("0x{vk:02X}"), "input key handled ctrl-to-cmd release");
                 return;
             }
             if down
@@ -932,6 +997,7 @@ mod macos {
                 && is_remappable_shortcut(vk)
                 && !frontmost_is_excluded()
             {
+                tracing::debug!(vk = format!("0x{vk:02X}"), "input key handled ctrl-to-cmd press");
                 self.post_ctrl_as_cmd(vk, true);
                 self.remapped_keys.insert(vk);
                 return;
@@ -966,6 +1032,14 @@ mod macos {
                             if let Ok(ev) =
                                 CGEvent::new_keyboard_event(self.source.clone(), 0, true)
                             {
+                                // Unicode events have no keycode path that
+                                // can clear source-carried special flags.
+                                // Reset flags explicitly so F1-F12's
+                                // SecondaryFn cannot poison the next letter.
+                                let mut flags = self.mods.cg_flags();
+                                flags.remove(CGEventFlags::CGEventFlagSecondaryFn);
+                                flags.remove(CGEventFlags::CGEventFlagNumericPad);
+                                ev.set_flags(flags);
                                 ev.set_string_from_utf16_unchecked(&utf16);
                                 ev.post(CGEventTapLocation::HID);
                             }
@@ -975,19 +1049,48 @@ mod macos {
                 return;
             }
 
-            let Ok(ev) = CGEvent::new_keyboard_event(self.source.clone(), vk, down) else {
+            // Use isolated private source for F1-F12. All other keys stay on
+            // CombinedSessionState; this prevents SecondaryFn from leaking
+            // into ordinary remote input after an F-key event.
+            let event_source = if is_function_key_vk(vk) {
+                &self.source_fn
+            } else {
+                &self.source
+            };
+            let Ok(ev) = CGEvent::new_keyboard_event(event_source.clone(), vk, down) else {
                 warn!(vk, down, "CGEvent::new_keyboard_event failed");
                 return;
             };
+            let generated_flags = ev.get_flags();
             let mut flags = self.mods.cg_flags();
+            // Only F-key events carry SecondaryFn. Private source isolates its
+            // state from ordinary CombinedSessionState input.
+            if is_function_key_vk(vk) {
+                flags |= CGEventFlags::CGEventFlagSecondaryFn;
+            }
             // macOS adds CGEventFlagNumericPad on events from the numeric
             // keypad. Some apps (Finder for arrow navigation, games) key off
             // it. The keypad vk range is in the `scancodes` module.
             if is_numeric_pad_vk(vk) {
                 flags |= CGEventFlags::CGEventFlagNumericPad;
+            } else {
+                flags.remove(CGEventFlags::CGEventFlagNumericPad);
             }
             ev.set_flags(flags);
+            let final_flags = ev.get_flags();
+            tracing::debug!(
+                vk = format!("0x{vk:02X}"),
+                down,
+                is_fkey,
+                source = if is_fkey { "private" } else { "combined" },
+                generated_flags = format!("0x{:016X}", generated_flags.bits()),
+                requested_flags = format!("0x{:016X}", flags.bits()),
+                final_flags = format!("0x{:016X}", final_flags.bits()),
+                event_type = ?ev.get_type(),
+                "input CGEvent before post"
+            );
             ev.post(CGEventTapLocation::HID);
+            tracing::debug!(vk = format!("0x{vk:02X}"), down, "input CGEvent posted");
         }
 
         /// Emit a FlagsChanged event for `vk` from both sources. We send
@@ -1004,7 +1107,12 @@ mod macos {
         /// hotkeys but not both.
         fn post_flags_changed(&self, vk: u16) {
             let flags = self.mods.cg_flags();
-            for source in [&self.source, &self.source_hid] {
+            tracing::debug!(
+                vk = format!("0x{vk:02X}"),
+                flags = format!("0x{:016X}", flags.bits()),
+                "input modifier flags begin"
+            );
+            for (source_name, source) in [("combined", &self.source), ("hid", &self.source_hid)] {
                 // `down` parameter is ignored for FlagsChanged: macOS
                 // derives press-vs-release purely from the diff between
                 // the prior flags state and the new flags carried on the
@@ -1013,9 +1121,21 @@ mod macos {
                     warn!(vk, "CGEvent::new_keyboard_event failed (modifier)");
                     continue;
                 };
+                let generated_flags = ev.get_flags();
                 ev.set_flags(flags);
                 ev.set_type(CGEventType::FlagsChanged);
+                let final_flags = ev.get_flags();
+                tracing::debug!(
+                    vk = format!("0x{vk:02X}"),
+                    source = source_name,
+                    generated_flags = format!("0x{:016X}", generated_flags.bits()),
+                    requested_flags = format!("0x{:016X}", flags.bits()),
+                    final_flags = format!("0x{:016X}", final_flags.bits()),
+                    event_type = ?ev.get_type(),
+                    "input modifier flags before post"
+                );
                 ev.post(CGEventTapLocation::HID);
+                tracing::debug!(vk = format!("0x{vk:02X}"), source = source_name, "input modifier flags posted");
             }
         }
 
@@ -1222,14 +1342,31 @@ mod macos {
             // For unicode, send a "null" keycode and set the string. Only fire
             // on key-down — Mac doesn't have a release-side for typed text.
             if !down {
+                tracing::debug!(code = format!("0x{c:04X}"), "unicode release ignored");
                 return;
             }
+            tracing::debug!(code = format!("0x{c:04X}"), "unicode input begin");
             let Ok(ev) = CGEvent::new_keyboard_event(self.source.clone(), 0, true) else {
                 warn!("unicode CGEvent create failed");
                 return;
             };
+            let generated_flags = ev.get_flags();
+            let mut flags = self.mods.cg_flags();
+            flags.remove(CGEventFlags::CGEventFlagSecondaryFn);
+            flags.remove(CGEventFlags::CGEventFlagNumericPad);
+            ev.set_flags(flags);
+            let final_flags = ev.get_flags();
             ev.set_string_from_utf16_unchecked(&[c]);
+            tracing::debug!(
+                code = format!("0x{c:04X}"),
+                generated_flags = format!("0x{:016X}", generated_flags.bits()),
+                requested_flags = format!("0x{:016X}", flags.bits()),
+                final_flags = format!("0x{:016X}", final_flags.bits()),
+                event_type = ?ev.get_type(),
+                "unicode CGEvent before post"
+            );
             ev.post(CGEventTapLocation::HID);
+            tracing::debug!(code = format!("0x{c:04X}"), "unicode CGEvent posted");
         }
 
         pub fn mouse(

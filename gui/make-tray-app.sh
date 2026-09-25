@@ -5,12 +5,24 @@
 # Env overrides:
 #   APP_DIR=/Applications              # install location (default /Applications)
 #   CODESIGN_IDENTITY="-"             # "-" = ad-hoc; or a Developer ID name
+#   AUTO_CREATE_LOCAL_CERT=1           # create local cert if missing (default 1)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GUI_DIR="$REPO_ROOT/gui"
 APP_DIR="${APP_DIR:-/Applications}"
-IDENTITY="${CODESIGN_IDENTITY:--}"
+LOCAL_CERT_NAME="${LOCAL_CERT_NAME:-macrdp Local Code Signing}"
+AUTO_CREATE_LOCAL_CERT="${AUTO_CREATE_LOCAL_CERT:-1}"
+if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+    IDENTITY="$CODESIGN_IDENTITY"
+elif security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$LOCAL_CERT_NAME\""; then
+    IDENTITY="$LOCAL_CERT_NAME"
+elif [ "$AUTO_CREATE_LOCAL_CERT" = "1" ]; then
+    "$REPO_ROOT/packaging/create-local-signing-cert.sh" "$LOCAL_CERT_NAME"
+    IDENTITY="$LOCAL_CERT_NAME"
+else
+    IDENTITY="-"
+fi
 APP_NAME="macrdpController.app"
 # MUST match the BUNDLE_PREFIX used by packaging/{make-app,install-launchagent}.sh.
 # The controller derives the server's LaunchAgent label by stripping ".controller"
@@ -66,9 +78,13 @@ if [ -n "$ICON_SRC" ]; then
     echo "==> app icon: $(basename "$ICON_SRC")"
 fi
 
-# Ad-hoc ("-") can't use a secure timestamp; a real Developer ID must
-# (notarization requires it).
-if [ "$IDENTITY" = "-" ]; then TS="--timestamp=none"; else TS="--timestamp"; fi
+# Ad-hoc and local self-signed identities cannot use a secure timestamp;
+# a real Developer ID must (notarization requires it).
+if [ "$IDENTITY" = "-" ] || [ "$IDENTITY" = "$LOCAL_CERT_NAME" ]; then
+    TS="--timestamp=none"
+else
+    TS="--timestamp"
+fi
 
 # Optional: embed + activate the macrdp Camera CoreMediaIO system extension
 # (camera redirection Phase 3). CAMERA_EXTENSION=1 builds the extension via

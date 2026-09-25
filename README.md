@@ -1,12 +1,42 @@
-# macrdp
+# macrdp — Donato Pepe distribution
 
-[![Latest release](https://img.shields.io/github/v/release/clintcan/macrdp?sort=semver&label=release)](https://github.com/clintcan/macrdp/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/clintcan)
 
+> **Derivative project / attribution**
+>
+> This repository is a personal derivative distribution of
+> [macrdp](https://github.com/clintcan/macrdp), originally created and
+> maintained by **Clint Christopher Canada**. It also uses
+> [IronRDP](https://github.com/Devolutions/IronRDP), originally created and
+> maintained by its upstream authors. Original copyright notices and license
+> files are retained. This repository does not claim original ownership of
+> upstream code; changes made here are documented below.
+>
 A native RDP server for macOS, written in Rust on top of [IronRDP]. Connect from `mstsc`, Microsoft Remote Desktop, or FreeRDP to drive your Mac desktop with keyboard, mouse, real-cursor-shape forwarding, text + image clipboard sync, Mac↔Windows file copy, **read-write drive redirection** (mount the client's drives in Finder), **smart-card redirection** (use the client's smart card from macOS apps), system audio forwarding, and optional H.264 video (EGFX/AVC420, hardware-encoded). NLA/CredSSP is supported. Authenticates against your local Mac account via PAM.
 
 This is the macOS equivalent of `xrdp`. Not a client, not a VNC bridge.
+
+## Derivative changes in this repository
+
+This distribution adds or carries the following local changes on top of the
+upstream project:
+
+- Italian / Italian-Pro keyboard layout support for RDP clients, including
+  server-side non-US layout translation.
+- macOS F1–F12 forwarding without requiring the physical `Fn` key. Function
+  events use an isolated CoreGraphics source and `SecondaryFn`, preventing F-key
+  state from affecting later ordinary remote input.
+- Stable local self-signed code-signing workflow for macOS app packaging:
+  `packaging/create-local-signing-cert.sh` creates the certificate and private
+  key in the user's login Keychain; `packaging/make-app.sh` uses it
+  automatically.
+- App-based LaunchAgent setup with stable bundle identity, Keychain-backed
+  password startup, TCC permission guidance, and detailed input diagnostics.
+- Debug logging for RDP keyboard events, scancode/keycode translation,
+  modifier state, CoreGraphics flags, event source, and post confirmation.
+
+These changes are local maintenance and integration work. They do not replace
+upstream ownership or upstream license terms.
 
 ## Status
 
@@ -26,9 +56,36 @@ Details and the path to closing the gaps: [docs/production-readiness-roadmap.md]
 
 ## Quick start
 
+For a persistent macOS installation, use the automated app setup. It builds the
+release binary, creates/imports the local signing identity if needed, signs the
+app, installs the LaunchAgent, and keeps the private key in Keychain:
+
+```bash
+APP_DIR="$HOME/Applications" packaging/make-app.sh
+security add-generic-password -s macrdp -a "$(id -un)" -w 'YOUR_PASSWORD'
+APP_DIR="$HOME/Applications" packaging/install-launchagent.sh
+```
+
+Grant **Screen Recording** and **Accessibility** to `macrdp.app` in System
+Settings → Privacy & Security, then restart the agent. The default local setup
+listens on `127.0.0.1:3390`; set `BIND="0.0.0.0:3390"` in
+`~/Library/Application Support/macrdp/config.env` for LAN/VPN access.
+
+The local certificate is deliberately self-signed. It stabilizes this Mac's
+code identity; it is not an Apple Developer ID, is not trusted by other Macs,
+and cannot be notarized. For distribution, use an official Apple Developer ID
+and notarization. To force ad-hoc signing instead:
+
+```bash
+AUTO_CREATE_LOCAL_CERT=0 CODESIGN_IDENTITY=- \
+  APP_DIR="$HOME/Applications" packaging/make-app.sh
+```
+
+Manual CLI mode remains available:
+
 ```bash
 cargo build --release
-codesign -s - --force target/release/macrdp   # ad-hoc sign so TCC grants persist
+codesign -s - --force target/release/macrdp   # ad-hoc sign; local machine only
 ./target/release/macrdp
 ```
 
@@ -135,3 +192,13 @@ macrdp is free and open source. If it's helped you out, you can buy me a coffee 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option. Being permissively licensed, a productized/notarized build may be sold commercially with support — that's selling the product, not a license exemption.
 
 [IronRDP]: https://github.com/Devolutions/IronRDP
+
+## Attribution and licensing
+
+This repository is a derivative work. See `LICENSE-MIT` and `LICENSE-APACHE`
+for the retained upstream license terms and copyright notices. Upstream project:
+[clintcan/macrdp](https://github.com/clintcan/macrdp). Local changes are
+identified in **Derivative changes in this repository** above.
+
+The Git history retains the upstream authors and commits; local commits should
+identify Donato Pepe's changes rather than rewriting upstream authorship.
