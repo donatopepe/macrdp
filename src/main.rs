@@ -1710,6 +1710,7 @@ fn args_from_config(path: &Path) -> Result<Args> {
             "MACRDP_HEALTHCHECK_TIMEOUT_SECS",
         ),
         ("HEALTHCHECK_FAILURES", "MACRDP_HEALTHCHECK_FAILURES"),
+        ("EVENT_QUEUE_HIGH", "MACRDP_EVENT_QUEUE_HIGH"),
         // Blank recovery (the mstsc reconnect-blank auto-heal, needs
         // --enable-h264) + the auto-reconnect cookie. Env-driven like the
         // guard (read in h264.rs per connection / main.rs at server build,
