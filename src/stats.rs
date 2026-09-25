@@ -68,11 +68,11 @@ pub struct SessionStats {
     /// Number of encoded frames waiting for ship processing.
     pub encoded_pending: AtomicU32,
     /// Number of outbound ServerEvent items waiting for dispatch.
-    pub server_event_queue: AtomicU32,
+    pub server_event_queue: Arc<AtomicU32>,
     /// Number of socket writes that exceeded the diagnostic stall threshold.
-    pub socket_write_stalls: AtomicU64,
+    pub socket_write_stalls: Arc<AtomicU64>,
     /// Most recent socket write duration, in ms.
-    pub socket_write_ms: AtomicU32,
+    pub socket_write_ms: Arc<AtomicU32>,
     /// Best-effort process CPU percentage sampled by the diagnostics loop.
     pub cpu_percent: AtomicU32,
     pub adaptive: AtomicBool,

@@ -2420,6 +2420,18 @@ async fn async_main() -> Result<()> {
     // link-aware blank-recovery gate + the adaptive-bitrate seed in h264.rs.
     // 0 = unknown.
     let link_rtt_ms = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let mut diagnostics = ironrdp_server::DiagnosticsHandle {
+        event_queue: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        socket_write_stalls: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        socket_write_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+    };
+    if let Some(stats) = crate::stats::global() {
+        // Reuse the same atomics exposed by the loopback endpoint.
+        // `--stats-endpoint` is required before server assembly below.
+        diagnostics.event_queue = stats.server_event_queue.clone();
+        diagnostics.socket_write_stalls = stats.socket_write_stalls.clone();
+        diagnostics.socket_write_ms = stats.socket_write_ms.clone();
+    }
 
     // EGFX/H.264 video pipeline (macOS-only; opt-in via --enable-h264). One
     // clone drives the builder's GfxServerFactory (protocol side); another
@@ -2623,6 +2635,9 @@ async fn async_main() -> Result<()> {
     // connection (divergence 15) into this cell; the H.264 pipeline reads it
     // for link-aware blank-recovery gating + adaptive-bitrate seeding.
     server.set_link_rtt_handle(link_rtt_ms.clone());
+    if let Some(stats) = crate::stats::global() {
+        server.set_diagnostics_handle(diagnostics);
+    }
 
     // Client-resolution auto-adopt: the vendored acceptor reads the desktop
     // size the client requests in its GCC Client Core Data and negotiates

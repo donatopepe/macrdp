@@ -206,6 +206,8 @@ struct ConnectionContext {
     /// `shipped`.
     submitted: Arc<AtomicU64>,
     shipped: Arc<AtomicU64>,
+    /// Number of encoded frames currently waiting for ship processing.
+    encoded_pending: Arc<AtomicU32>,
     /// Dimensions the surface + encoder were created with (in
     /// `setup_locked`, from the live `SharedDesktopSize`). `ship_frames`
     /// builds its AVC420 regions from these — not from a fresh
@@ -1899,6 +1901,9 @@ impl Gfx {
                     trace!(
                         "EGFX at bitrate floor + congested; dropping capture (frame-rate floor)"
                     );
+                    if let Some(stats) = crate::stats::global() {
+                        stats.capture_drops.fetch_add(1, Ordering::Relaxed);
+                    }
                     return Ok(true);
                 }
                 if at_floor && ctx.adaptive_congested {
@@ -1922,6 +1927,9 @@ impl Gfx {
                     outstanding,
                     "EGFX pipeline full; dropping capture to latest"
                 );
+                if let Some(stats) = crate::stats::global() {
+                    stats.capture_drops.fetch_add(1, Ordering::Relaxed);
+                }
                 return Ok(true); // still the active path; just dropped this frame
             }
             // EGFX-on-UDP frame-ack backpressure: on the UDP tunnel there's no
@@ -1959,6 +1967,9 @@ impl Gfx {
                             lag,
                             "EGFX-on-UDP lag high; dropping capture (trickle floor)"
                         );
+                        if let Some(stats) = crate::stats::global() {
+                            stats.capture_drops.fetch_add(1, Ordering::Relaxed);
+                        }
                         return Ok(true);
                     }
                     ctx.last_throttle_ship = now;
@@ -2016,6 +2027,13 @@ impl Gfx {
             }
             encoder.encode_bgra(bgra, stride, force_keyframe)?;
             ctx.submitted.fetch_add(1, Ordering::Relaxed);
+            ctx.encoded_pending.fetch_add(1, Ordering::Relaxed);
+            if let Some(stats) = crate::stats::global() {
+                stats.encoded_pending.store(
+                    ctx.encoded_pending.load(Ordering::Relaxed),
+                    Ordering::Relaxed,
+                );
+            }
         }
         Ok(true)
     }
@@ -2273,7 +2291,12 @@ impl Gfx {
     /// capture tick. Bumps `shipped` per frame so the capture thread's
     /// drop-to-latest throttle can bound the pipeline depth. Exits when the
     /// channel closes (encoder dropped on connection teardown).
-    fn ship_loop(&self, rx: std::sync::mpsc::Receiver<EncodedFrame>, shipped: Arc<AtomicU64>) {
+    fn ship_loop(
+        &self,
+        rx: std::sync::mpsc::Receiver<EncodedFrame>,
+        shipped: Arc<AtomicU64>,
+        encoded_pending: Arc<AtomicU32>,
+    ) {
         while let Ok(frame) = rx.recv() {
             // Sweep up any others VT delivered alongside it (keeps order).
             let mut frames = vec![frame];
@@ -2281,6 +2304,7 @@ impl Gfx {
                 frames.push(f);
             }
             let n = frames.len() as u64;
+            encoded_pending.fetch_sub(n as u32, Ordering::Relaxed);
             if let Err(e) = self.ship_frames(&frames) {
                 warn!(error = ?e, "EGFX ship_frames failed");
             }
@@ -2370,9 +2394,10 @@ impl Gfx {
             ctx.shipped.store(0, Ordering::Relaxed);
             let gfx = self.clone();
             let shipped = ctx.shipped.clone();
+            let encoded_pending = ctx.encoded_pending.clone();
             std::thread::Builder::new()
                 .name("egfx-ship".into())
-                .spawn(move || gfx.ship_loop(rx, shipped))
+                .spawn(move || gfx.ship_loop(rx, shipped, encoded_pending))
                 .map_err(|e| anyhow!("EGFX: failed to spawn ship thread: {e}"))?;
             info!("EGFX VideoToolbox encoder initialized + ship thread started");
         }
@@ -2846,6 +2871,7 @@ impl GfxServerFactory for Gfx {
             egfx_declined: egfx_declined.clone(),
             submitted: Arc::new(AtomicU64::new(0)),
             shipped: Arc::new(AtomicU64::new(0)),
+            encoded_pending: Arc::new(AtomicU32::new(0)),
             dims: (0, 0),
             last_ack_at: Instant::now(),
             last_ack_advance_at: Instant::now(),

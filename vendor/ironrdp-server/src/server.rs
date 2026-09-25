@@ -3,7 +3,7 @@ use core::net::{IpAddr, SocketAddr};
 use core::time::Duration;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context as _, Result, bail};
@@ -456,6 +456,16 @@ pub fn tcp_srtt_ms(_stream: &tokio::net::TcpStream) -> Option<u32> {
     None
 }
 
+/// Optional application-owned diagnostics gauges. All fields are atomics so
+/// server instrumentation never takes a lock or changes default behavior when
+/// absent.
+#[derive(Clone)]
+pub struct DiagnosticsHandle {
+    pub event_queue: Arc<AtomicU32>,
+    pub socket_write_stalls: Arc<AtomicU64>,
+    pub socket_write_ms: Arc<AtomicU32>,
+}
+
 pub struct RdpServer {
     opts: RdpServerOptions,
     // FIXME: replace with a channel and poll/process the handler?
@@ -486,6 +496,8 @@ pub struct RdpServer {
     gfx_handle: Option<crate::gfx::GfxServerHandle>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
+    /// Optional socket diagnostics shared with the application.
+    diagnostics: Option<crate::DiagnosticsHandle>,
     /// Dedicated bounded channel for outbound `Wave` PDUs. Audio
     /// dispatch (the `dispatch_audio` task spawned in `client_loop`)
     /// reads from this receiver independently of the unified
@@ -1195,6 +1207,7 @@ impl RdpServer {
             gfx_handle: None,
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
+            diagnostics: None,
             audio_receiver: Arc::new(Mutex::new(audio_receiver)),
             creds: None,
             local_addr: None,
@@ -1249,6 +1262,11 @@ impl RdpServer {
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Install opt-in socket diagnostics supplied by the application.
+    pub fn set_diagnostics_handle(&mut self, handle: crate::DiagnosticsHandle) {
+        self.diagnostics = Some(handle);
     }
 
     /// Returns the shared "display suppressed" flag — true while the
@@ -2731,7 +2749,7 @@ impl RdpServer {
     {
         debug!("Starting client loop");
         let mut display_updates = self.display.lock().await.updates().await?;
-        let mut writer = SharedWriter::new(writer);
+        let mut writer = SharedWriter::new(writer, self.diagnostics.clone());
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
         let mut audio_writer = writer.clone();
@@ -2941,7 +2959,11 @@ impl RdpServer {
                 while let Ok(ev) = ev_receiver.try_recv() {
                     events.push(ev);
                 }
+                let queued = ev_receiver.len().saturating_add(events.len());
                 let mut this = this.lock().await;
+                if let Some(diag) = &this.diagnostics {
+                    diag.event_queue.store(queued as u32, Ordering::Relaxed);
+                }
                 match this
                     .dispatch_server_events(&mut events, &mut event_writer, io_channel_id, user_channel_id)
                     .await?
@@ -3920,12 +3942,14 @@ async fn deactivate_all(
 
 struct SharedWriter<'w, W: FramedWrite> {
     writer: Rc<Mutex<&'w mut W>>,
+    diagnostics: Option<DiagnosticsHandle>,
 }
 
 impl<W: FramedWrite> Clone for SharedWriter<'_, W> {
     fn clone(&self) -> Self {
         Self {
             writer: Rc::clone(&self.writer),
+            diagnostics: self.diagnostics.clone(),
         }
     }
 }
@@ -3941,18 +3965,27 @@ where
 
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
         Box::pin(async {
+            let started = Instant::now();
             let mut writer = self.writer.lock().await;
-
             writer.write_all(buf).await?;
+            let elapsed = started.elapsed();
+            if let Some(diag) = &self.diagnostics {
+                if elapsed >= Duration::from_millis(10) {
+                    diag.socket_write_stalls.fetch_add(1, Ordering::Relaxed);
+                }
+                diag.socket_write_ms
+                    .store(elapsed.as_millis().min(u128::from(u32::MAX)) as u32, Ordering::Relaxed);
+            }
             Ok(())
         })
     }
 }
 
 impl<'a, W: FramedWrite> SharedWriter<'a, W> {
-    fn new(writer: &'a mut W) -> Self {
+    fn new(writer: &'a mut W, diagnostics: Option<DiagnosticsHandle>) -> Self {
         Self {
             writer: Rc::new(Mutex::new(writer)),
+            diagnostics,
         }
     }
 }
