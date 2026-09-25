@@ -139,8 +139,6 @@ struct AvClockTracker {
 
 #[derive(Default)]
 struct AvClockState {
-    samples: u64,
-    ewma_offset_ms: i64,
     anchor_pts_ms: Option<i64>,
     anchor_offset_ms: i64,
     drift_ppm: i64,
@@ -296,7 +294,6 @@ pub fn record_av_clock_pair(audio_pts_ms: i64, video_pts_ms: i64) {
         clock.anchor_pts_ms = Some(video_pts_ms);
         clock.anchor_offset_ms = offset_ms;
     }
-    clock.samples = clock.samples.saturating_add(1);
 }
 
 fn publish_window(
