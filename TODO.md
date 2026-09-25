@@ -214,6 +214,10 @@ then delete; promote a parked item to *In flight* when work actually starts.
   (4) it's a video hot-path (`next_update`) change, which project guidance says not to touch
   without a verified payoff. Revisit only if a HiDPI-under-contention smoothness problem is
   actually observed and traced to this copy. **Do NOT re-list as a "clean win."**
+- [x] **Rolling latency percentiles + opt-in CPU sampling** — implemented in `stats.rs` and
+  vendored diagnostics. CPU sampler runs every 2 s only with `STATS_ENDPOINT=1`; p50/p95/max
+  windows cover capture age, encode/ship latency, socket wait, audio queue age, and audio write wait.
+  Remaining: validate live values after next deployed build.
 - [ ] **Perf (upstream candidates, vendored server — do NOT land as new divergences):** from
   the same audit: (a) `SharedWriter`/dispatch write coalescing — every fragment/event is its
   own `write_all` = 2 boxed futures + syscall + flush (`server.rs:2643` + git-pinned
