@@ -17,7 +17,7 @@ use ironrdp_rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServerHandler}
 // on the Linux cross-compile stub this name is unused.
 #[cfg(target_os = "macos")]
 use ironrdp_rdpsnd::server::RdpsndServerMessage;
-use ironrdp_server::{AudioWave, ServerEvent, ServerEventSender, SoundServerFactory};
+use ironrdp_server::{ServerEvent, ServerEventSender, SoundServerFactory};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -33,7 +33,7 @@ const CHANNELS: u16 = 2;
 const BITS_PER_SAMPLE: u16 = 16;
 
 type Sender = Arc<Mutex<Option<mpsc::UnboundedSender<ServerEvent>>>>;
-type AudioSender = Arc<Mutex<Option<mpsc::Sender<AudioWave>>>>;
+type AudioSender = Arc<Mutex<Option<ironrdp_server::AudioWaveSender>>>;
 
 #[derive(Debug)]
 pub struct MacRdpsnd {
@@ -126,7 +126,7 @@ impl SoundServerFactory for MacRdpsnd {
         })
     }
 
-    fn set_audio_sender(&mut self, audio_sender: mpsc::Sender<AudioWave>) {
+    fn set_audio_sender(&mut self, audio_sender: ironrdp_server::AudioWaveSender) {
         *self.audio_sender.lock().unwrap() = Some(audio_sender);
     }
 }
@@ -408,7 +408,7 @@ async fn capture_loop(
     // window for set_sender to populate the Mutex. Lazy-resolve here gives
     // the same robustness without paying for a lock on every wave.
     let mut s: Option<mpsc::UnboundedSender<ServerEvent>> = None;
-    let mut audio_s: Option<mpsc::Sender<AudioWave>> = None;
+    let mut audio_s: Option<ironrdp_server::AudioWaveSender> = None;
 
     // AAC encoder, present only when the client negotiated WAVE_FORMAT_AAC_MS
     // (`--enable-aac` and the client advertised AAC decode). Built up front so
@@ -738,11 +738,15 @@ async fn capture_loop(
                         // SCK ring buffer and lose newer audio anyway). Use
                         // try_send: on Full, log+drop; on Closed, exit.
                         match audio_ref.try_send((data, ts_ms, duration_ms)) {
-                            Ok(()) => {}
-                            Err(mpsc::error::TrySendError::Full(_)) => {
-                                debug!("audio channel full; dropping wave (dispatch_audio behind)");
+                            Ok(true) => {
+                                debug!(
+                                    queue_len = audio_ref.len(),
+                                    queue_capacity = audio_ref.capacity(),
+                                    "audio jitter buffer full; dropped oldest wave"
+                                );
                             }
-                            Err(mpsc::error::TrySendError::Closed(_)) => return Ok(()),
+                            Ok(false) => {}
+                            Err(ironrdp_server::AudioWaveSendError::Closed(_)) => return Ok(()),
                         }
                     } else {
                         // Audio sender not wired (older server build / non-macrdp

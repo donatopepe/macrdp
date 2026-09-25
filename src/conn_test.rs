@@ -77,7 +77,7 @@ impl RdpServerDisplay for TestDisplay {
 /// connected. Holding the `audio_sender` here (and never sending) makes the
 /// audio arm park forever, so the session lives until it's torn down for real.
 struct KeepAliveSound {
-    audio_sender: Option<tokio::sync::mpsc::Sender<ironrdp_server::AudioWave>>,
+    audio_sender: Option<ironrdp_server::AudioWaveSender>,
 }
 impl ironrdp_server::ServerEventSender for KeepAliveSound {
     fn set_sender(
@@ -112,10 +112,7 @@ impl ironrdp_server::SoundServerFactory for KeepAliveSound {
         }
         Box::new(NoAudio)
     }
-    fn set_audio_sender(
-        &mut self,
-        audio_sender: tokio::sync::mpsc::Sender<ironrdp_server::AudioWave>,
-    ) {
+    fn set_audio_sender(&mut self, audio_sender: ironrdp_server::AudioWaveSender) {
         // Hold it so the receiver stays open (never sends).
         self.audio_sender = Some(audio_sender);
     }

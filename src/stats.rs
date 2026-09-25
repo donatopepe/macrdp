@@ -73,6 +73,12 @@ pub struct SessionStats {
     pub socket_write_stalls: Arc<AtomicU64>,
     /// Most recent socket write duration, in ms.
     pub socket_write_ms: Arc<AtomicU32>,
+    /// Current queued audio waves in newest-first jitter buffer.
+    pub audio_queue: Arc<AtomicU32>,
+    /// Queued audio duration, in ms.
+    pub audio_queue_ms: Arc<AtomicU32>,
+    /// Waves evicted from audio queue because producer outran socket dispatch.
+    pub audio_drops: Arc<AtomicU64>,
     /// Best-effort process CPU percentage sampled by the diagnostics loop.
     pub cpu_percent: AtomicU32,
     pub adaptive: AtomicBool,
@@ -89,6 +95,7 @@ impl SessionStats {
                 "\"capture_buffered\":{},\"display_pending\":{},\"capture_age_ms\":{},",
                 "\"encode_latency_ms\":{},\"ship_latency_ms\":{},\"encoded_pending\":{},",
                 "\"server_event_queue\":{},\"socket_write_stalls\":{},\"socket_write_ms\":{},",
+                "\"audio_queue\":{},\"audio_queue_ms\":{},\"audio_drops\":{},",
                 "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
             ),
             self.connected.load(Ordering::Relaxed),
@@ -111,6 +118,9 @@ impl SessionStats {
             self.server_event_queue.load(Ordering::Relaxed),
             self.socket_write_stalls.load(Ordering::Relaxed),
             self.socket_write_ms.load(Ordering::Relaxed),
+            self.audio_queue.load(Ordering::Relaxed),
+            self.audio_queue_ms.load(Ordering::Relaxed),
+            self.audio_drops.load(Ordering::Relaxed),
             self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),

@@ -1,6 +1,10 @@
 pub use ironrdp_rdpsnd::server::{RdpsndServerHandler, RdpsndServerMessage};
 
-use tokio::sync::mpsc;
+use std::collections::VecDeque;
+use std::fmt;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 
 use crate::ServerEventSender;
 
@@ -21,19 +25,160 @@ use crate::ServerEventSender;
 /// PCM-bytes-to-ms assumption in the audio-lag model would collapse.
 pub type AudioWave = (Vec<u8>, u32, Option<f64>);
 
+/// Result of inserting one wave into bounded audio jitter buffer.
+#[derive(Debug)]
+pub enum AudioWaveSendError {
+    Closed(AudioWave),
+}
+
+struct AudioWaveQueueInner {
+    queue: Mutex<VecDeque<AudioWave>>,
+    capacity: usize,
+    notify: Notify,
+    sender_count: AtomicUsize,
+    receiver_alive: AtomicBool,
+    dropped: AtomicU64,
+}
+
+/// Producer handle for audio jitter buffer. Synchronous by design: capture
+/// thread never awaits full queue. Full queue drops oldest wave, keeps newest.
+pub struct AudioWaveSender {
+    inner: Arc<AudioWaveQueueInner>,
+}
+
+impl fmt::Debug for AudioWaveSender {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AudioWaveSender")
+            .field("len", &self.len())
+            .field("capacity", &self.capacity())
+            .finish()
+    }
+}
+
+impl AudioWaveSender {
+    pub fn try_send(&self, wave: AudioWave) -> Result<bool, AudioWaveSendError> {
+        if !self.inner.receiver_alive.load(Ordering::Acquire) {
+            return Err(AudioWaveSendError::Closed(wave));
+        }
+        let mut queue = self.inner.queue.lock().expect("audio queue mutex poisoned");
+        if !self.inner.receiver_alive.load(Ordering::Acquire) {
+            return Err(AudioWaveSendError::Closed(wave));
+        }
+        let dropped = if queue.len() >= self.inner.capacity {
+            queue.pop_front();
+            self.inner.dropped.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            false
+        };
+        queue.push_back(wave);
+        drop(queue);
+        self.inner.notify.notify_one();
+        Ok(dropped)
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.queue.lock().expect("audio queue mutex poisoned").len()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.inner.dropped.load(Ordering::Relaxed)
+    }
+}
+
+impl Clone for AudioWaveSender {
+    fn clone(&self) -> Self {
+        self.inner.sender_count.fetch_add(1, Ordering::Relaxed);
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl Drop for AudioWaveSender {
+    fn drop(&mut self) {
+        if self.inner.sender_count.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.inner.notify.notify_waiters();
+        }
+    }
+}
+
+pub struct AudioWaveReceiver {
+    inner: Arc<AudioWaveQueueInner>,
+}
+
+impl AudioWaveReceiver {
+    pub async fn recv(&mut self) -> Option<AudioWave> {
+        loop {
+            let notified = self.inner.notify.notified();
+            if let Some(wave) = self.inner.queue.lock().expect("audio queue mutex poisoned").pop_front() {
+                return Some(wave);
+            }
+            if self.inner.sender_count.load(Ordering::Acquire) == 0 {
+                return None;
+            }
+            notified.await;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.inner.queue.lock().expect("audio queue mutex poisoned").clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.queue.lock().expect("audio queue mutex poisoned").len()
+    }
+
+    pub fn queued_duration_ms(&self) -> f64 {
+        self.inner
+            .queue
+            .lock()
+            .expect("audio queue mutex poisoned")
+            .iter()
+            .map(|(data, _, duration)| duration.unwrap_or_else(|| data.len() as f64 / 176.4))
+            .sum()
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.inner.dropped.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for AudioWaveReceiver {
+    fn drop(&mut self) {
+        self.inner.receiver_alive.store(false, Ordering::Release);
+        self.inner.notify.notify_waiters();
+    }
+}
+
+/// Capacity 16 is roughly 350 ms at 44.1-kHz AAC waves. It absorbs short
+/// socket bursts without permitting multi-second stale audio.
+pub fn audio_wave_channel(capacity: usize) -> (AudioWaveSender, AudioWaveReceiver) {
+    assert!(capacity > 0, "audio queue capacity must be non-zero");
+    let inner = Arc::new(AudioWaveQueueInner {
+        queue: Mutex::new(VecDeque::with_capacity(capacity)),
+        capacity,
+        notify: Notify::new(),
+        sender_count: AtomicUsize::new(1),
+        receiver_alive: AtomicBool::new(true),
+        dropped: AtomicU64::new(0),
+    });
+    (
+        AudioWaveSender {
+            inner: Arc::clone(&inner),
+        },
+        AudioWaveReceiver { inner },
+    )
+}
+
 pub trait SoundServerFactory: ServerEventSender {
     fn build_backend(&self) -> Box<dyn RdpsndServerHandler>;
 
-    /// Hands the audio backend a dedicated bounded sender for `Wave`
-    /// PDUs. Default impl is a no-op for backends that haven't been
-    /// updated yet — those still funnel waves through the unified
-    /// `ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(...))` channel,
-    /// but they lose the audio-dispatch isolation. Update the backend
-    /// to override this and emit Wave PDUs via `audio_sender` instead.
-    ///
-    /// Channel is bounded (capacity sized to ~1 s of audio at our
-    /// 42.78 waves/s steady-state rate) so the capture loop naturally
-    /// backpressures (skips at the SCK level) instead of letting an
-    /// unbounded queue grow if the dispatch task ever stalls.
-    fn set_audio_sender(&mut self, _audio_sender: mpsc::Sender<AudioWave>) {}
+    /// Dedicated bounded newest-first audio jitter buffer. Full queue drops
+    /// oldest wave instead of blocking ScreenCaptureKit.
+    fn set_audio_sender(&mut self, _audio_sender: AudioWaveSender) {}
 }

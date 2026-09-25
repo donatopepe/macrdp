@@ -464,6 +464,9 @@ pub struct DiagnosticsHandle {
     pub event_queue: Arc<AtomicU32>,
     pub socket_write_stalls: Arc<AtomicU64>,
     pub socket_write_ms: Arc<AtomicU32>,
+    pub audio_queue: Arc<AtomicU32>,
+    pub audio_queue_ms: Arc<AtomicU32>,
+    pub audio_drops: Arc<AtomicU64>,
 }
 
 pub struct RdpServer {
@@ -498,16 +501,10 @@ pub struct RdpServer {
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     /// Optional socket diagnostics shared with the application.
     diagnostics: Option<crate::DiagnosticsHandle>,
-    /// Dedicated bounded channel for outbound `Wave` PDUs. Audio
-    /// dispatch (the `dispatch_audio` task spawned in `client_loop`)
-    /// reads from this receiver independently of the unified
-    /// `ServerEvent` stream, so inbound cliprdr/PDU pressure on the
-    /// per-connection `Mutex<Self>` doesn't starve audio output. The
-    /// audio backend (e.g., `MacRdpsnd`) gets the sender via
-    /// `SoundServerFactory::set_audio_sender`. Bounded capacity caps
-    /// the queue at ~1 s of audio so capture-side backpressure kicks
-    /// in before the queue grows unbounded if dispatch ever stalls.
-    audio_receiver: Arc<Mutex<mpsc::Receiver<crate::AudioWave>>>,
+    /// Dedicated bounded newest-first audio jitter buffer. Audio dispatch reads
+    /// independently from unified events; when full, oldest wave is discarded
+    /// so a blocked video socket cannot turn into seconds of stale audio.
+    audio_receiver: Arc<Mutex<crate::AudioWaveReceiver>>,
     creds: Option<Credentials>,
     local_addr: Option<SocketAddr>,
     autodetect: Option<AutoDetectManager>,
@@ -1160,12 +1157,10 @@ impl RdpServer {
         #[cfg(feature = "egfx")] mut gfx_factory: Option<Box<dyn GfxServerFactory>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
-        // Bounded channel sized to ~1 s of audio at our steady-state
-        // 42.78 waves/s (1029 samples/wave at 44.1 kHz). Backpressures
-        // the capture loop's `send().await` rather than queuing
-        // indefinitely if dispatch ever stalls — losses then happen at
-        // the SCK ring buffer instead of server-side.
-        let (audio_sender, audio_receiver) = mpsc::channel::<crate::AudioWave>(50);
+        // Bounded newest-first jitter buffer. Capacity 16 is roughly 350 ms
+        // for 1024-frame AAC waves; it absorbs short socket bursts while
+        // dropping oldest audio before latency grows without bound.
+        let (audio_sender, audio_receiver) = crate::audio_wave_channel(16);
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
             cliprdr.set_sender(ev_sender.clone());
         }
@@ -2835,6 +2830,8 @@ impl RdpServer {
         // accurate regardless of resampler chunk size.
         let this = Rc::clone(&s);
         let mut audio_receiver = audio_receiver.lock().await;
+        // A reconnect must never inherit audio captured for prior connection.
+        audio_receiver.clear();
         let dispatch_audio = async move {
             // Task-local audio-lag state. Reset per connection because the
             // task is spawned fresh inside client_loop.
@@ -2859,6 +2856,15 @@ impl RdpServer {
                         break Ok(RunState::Disconnect);
                     }
                 };
+                let diagnostics = { this.lock().await.diagnostics.clone() };
+                if let Some(diag) = diagnostics {
+                    diag.audio_queue.store(audio_receiver.len() as u32, Ordering::Relaxed);
+                    diag.audio_queue_ms.store(
+                        audio_receiver.queued_duration_ms().max(0.0).min(f64::from(u32::MAX)) as u32,
+                        Ordering::Relaxed,
+                    );
+                    diag.audio_drops.store(audio_receiver.dropped(), Ordering::Relaxed);
+                }
 
                 // PCM waves leave `duration_ms` None and we derive the
                 // playback time from byte length (BYTES_PER_MS). A compressed

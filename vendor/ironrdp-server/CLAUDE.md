@@ -1,8 +1,8 @@
 # vendor/ironrdp-server — divergence log
 
 Local fork of ironrdp-server 0.10.0, pulled in via `[patch.crates-io]` in
-`Cargo.toml`. The audio-lag control in the dedicated `dispatch_audio` task
-(carved out of `dispatch_server_events`) is the live divergence. Keep this
+`Cargo.toml`. The audio-lag control and bounded newest-first jitter buffer in the dedicated
+`dispatch_audio` task (carved out of `dispatch_server_events`) are live divergences. Keep this
 vendor dir until (2)/(3)/(4)/(5)/(6)/(8)/(9)/(10)/(11)/(12)/(13)/(14)/(15)/(16)/(18)/(19)/(20)/(21)/(22)/(23) below are upstreamed
 AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1c682 pin bump — see (7).)
 **(23) is now UPSTREAMED — Devolutions/IronRDP#1476 MERGED 2026-09-08 (`5198cde0`) — so it drops at the
@@ -13,7 +13,7 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     direction-flip LANDED upstream (PR #1276, merged 2026-05-21) — do NOT
     treat that as the reason this fork exists; it's superseded locally by (2).
 
-(2) Cross-batch audio-lag tracker (NOT upstreamed): replaces the per-batch cap
+(2) Cross-batch audio-lag tracker and bounded newest-first jitter buffer (NOT upstreamed): replaces the per-batch cap
     with a cumulative buffer-depth model (`audio_shipped_ms` vs wall-clock
     `audio_clock_start`) so slow drift from many small client pauses is caught,
     not just one big stall. Drops oldest waves when the projected client buffer

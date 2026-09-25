@@ -2443,6 +2443,9 @@ async fn async_main() -> Result<()> {
         event_queue: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         socket_write_stalls: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         socket_write_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        audio_queue: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        audio_queue_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        audio_drops: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     if let Some(stats) = crate::stats::global() {
         // Reuse the same atomics exposed by the loopback endpoint.
@@ -2450,6 +2453,9 @@ async fn async_main() -> Result<()> {
         diagnostics.event_queue = stats.server_event_queue.clone();
         diagnostics.socket_write_stalls = stats.socket_write_stalls.clone();
         diagnostics.socket_write_ms = stats.socket_write_ms.clone();
+        diagnostics.audio_queue = stats.audio_queue.clone();
+        diagnostics.audio_queue_ms = stats.audio_queue_ms.clone();
+        diagnostics.audio_drops = stats.audio_drops.clone();
     }
 
     // EGFX/H.264 video pipeline (macOS-only; opt-in via --enable-h264). One
@@ -2654,7 +2660,7 @@ async fn async_main() -> Result<()> {
     // connection (divergence 15) into this cell; the H.264 pipeline reads it
     // for link-aware blank-recovery gating + adaptive-bitrate seeding.
     server.set_link_rtt_handle(link_rtt_ms.clone());
-    if let Some(stats) = crate::stats::global() {
+    if crate::stats::global().is_some() {
         server.set_diagnostics_handle(diagnostics);
     }
 
