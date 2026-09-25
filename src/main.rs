@@ -1891,13 +1891,6 @@ async fn async_main() -> Result<()> {
         file_promise_lazy::reap_stale();
     });
 
-    // Opt-in process CPU sampler. Runs on separate Tokio worker and publishes
-    // aggregate process CPU percentage; never touches capture/encode hot paths.
-    if args.stats_endpoint {
-        #[cfg(target_os = "macos")]
-        crate::stats::spawn_cpu_sampler();
-    }
-
     // Arm the health-check watchdog on the long-lived, launchd-watched process
     // so a hung-but-alive runtime — which KeepAlive can't tell from a healthy
     // one — gets bounced into a restart. Skipped by default when interactive
@@ -1924,6 +1917,10 @@ async fn async_main() -> Result<()> {
             .store(args.enable_aac, std::sync::atomic::Ordering::Relaxed);
         let port = crate::stats::default_port();
         tokio::spawn(crate::stats::serve(port, stats));
+        // Start after `stats::enable()` so the sampler gets the shared snapshot.
+        // It runs on a Tokio worker and never touches capture/encode hot paths.
+        #[cfg(target_os = "macos")]
+        crate::stats::spawn_cpu_sampler();
     }
 
     if args.make_primary && !args.virtual_display {
