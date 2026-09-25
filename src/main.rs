@@ -1564,6 +1564,12 @@ fn args_from_config(path: &Path) -> Result<Args> {
     if on("ENABLE_AAC", false) {
         argv.push("--enable-aac".into());
     }
+    if let Some(bitrate) = cfg.get("AAC_BITRATE") {
+        if !bitrate.is_empty() {
+            argv.push("--aac-bitrate".into());
+            argv.push(bitrate.clone());
+        }
+    }
     if on("HIDPI", false) {
         argv.push("--hidpi".into());
     }
@@ -2971,6 +2977,7 @@ mod config_tests {
              USERNAME=alice\n\
              ENABLE_H264=1\n\
              ENABLE_AAC=0\n\
+             AAC_BITRATE=192000\n\
              HIDPI=1\n\
              NO_CLIENT_RESOLUTION=1\n\
              UNMINIMIZE=1\n\
@@ -2990,6 +2997,7 @@ mod config_tests {
         assert_eq!(args.username.as_deref(), Some("alice"));
         assert!(args.enable_h264);
         assert!(!args.enable_aac);
+        assert_eq!(args.aac_bitrate, 192_000);
         assert!(args.hidpi);
         assert!(args.no_client_resolution);
         assert!(args.unminimize_on_switch);
