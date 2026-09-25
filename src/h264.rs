@@ -2305,6 +2305,21 @@ impl Gfx {
             }
             let n = frames.len() as u64;
             encoded_pending.fetch_sub(n as u32, Ordering::Relaxed);
+            if let Some(stats) = crate::stats::global() {
+                if let Some(last) = frames.last() {
+                    stats
+                        .encode_latency_ms
+                        .store(last.encode_latency_ms, Ordering::Relaxed);
+                    stats.ship_latency_ms.store(
+                        last.ready_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
+                        Ordering::Relaxed,
+                    );
+                    stats.encoded_pending.store(
+                        encoded_pending.load(Ordering::Relaxed),
+                        Ordering::Relaxed,
+                    );
+                }
+            }
             if let Err(e) = self.ship_frames(&frames) {
                 warn!(error = ?e, "EGFX ship_frames failed");
             }

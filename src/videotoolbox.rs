@@ -23,6 +23,7 @@
 
 use std::ffi::c_void;
 use std::sync::mpsc;
+use std::time::Instant;
 
 use anyhow::{anyhow, bail, Result};
 
@@ -41,6 +42,10 @@ pub struct EncodedFrame {
     /// SPS / PPS NAL units (raw, no length prefix and no start code).
     /// Populated only on keyframes — empty on non-keyframes.
     pub parameter_sets: Vec<Vec<u8>>,
+    /// Time spent inside VideoToolbox from submission to callback.
+    pub encode_latency_ms: u32,
+    /// Monotonic callback timestamp used to measure ship/event delay.
+    pub ready_at: Instant,
 }
 
 pub struct Encoder {
@@ -211,6 +216,7 @@ mod ffi {
     use anyhow::{anyhow, bail, Result};
     use std::ffi::c_void;
     use std::ptr;
+    use std::time::Instant;
     use std::sync::mpsc;
 
     pub(super) type OSStatus = i32;
@@ -1013,6 +1019,11 @@ mod ffi {
             K_CV_PIXEL_FORMAT_TYPE_32_BGRA
         };
         let mut pbuf: CVPixelBufferRef = ptr::null();
+        // VideoToolbox invokes output_callback exactly once for each accepted
+        // frame. Carry submission time through sourceFrameRefCon so diagnostics
+        // measure encoder latency without adding a lock or a hot-path clock
+        // read in the capture thread.
+        let submitted_at = Box::into_raw(Box::new(Instant::now())) as *mut c_void;
         let status = unsafe {
             CVPixelBufferCreate(
                 ptr::null(),
@@ -1125,13 +1136,16 @@ mod ffi {
                 presentation,
                 duration,
                 frame_props,
-                ptr::null_mut(),
+                submitted_at,
                 &mut info_flags,
             );
             if !frame_props.is_null() {
                 CFRelease(frame_props);
             }
             if encode_status != 0 {
+                // No callback will reclaim sourceFrameRefCon on a rejected
+                // submission, so reclaim it here.
+                unsafe { drop(Box::from_raw(submitted_at as *mut Instant)) };
                 Err(anyhow!(
                     "VTCompressionSessionEncodeFrame failed: OSStatus {encode_status}"
                 ))
@@ -1166,11 +1180,19 @@ mod ffi {
     /// lifetime is tied to the Encoder, not the callback.
     unsafe extern "C" fn output_callback(
         output_callback_ref_con: *mut c_void,
-        _source_frame_ref_con: *mut c_void,
+        source_frame_ref_con: *mut c_void,
         status: OSStatus,
         _info_flags: VTEncodeInfoFlags,
         sample_buffer: CMSampleBufferRef,
     ) {
+        let encode_latency_ms = if source_frame_ref_con.is_null() {
+            0
+        } else {
+            // SAFETY: encode_frame transfers this Box to VideoToolbox, which
+            // returns it exactly once through sourceFrameRefCon.
+            let submitted_at = Box::from_raw(source_frame_ref_con as *mut Instant);
+            submitted_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32
+        };
         if status != 0 || sample_buffer.is_null() || output_callback_ref_con.is_null() {
             // TODO(phase-2-step-2): surface this via the channel as an
             // error variant so the EGFX bridge can react (drop session,
@@ -1179,13 +1201,13 @@ mod ffi {
             return;
         }
         let tx = &*(output_callback_ref_con as *const mpsc::Sender<EncodedFrame>);
-        let Ok(frame) = extract_frame(sample_buffer) else {
+        let Ok(frame) = extract_frame(sample_buffer, encode_latency_ms) else {
             return;
         };
         let _ = tx.send(frame);
     }
 
-    unsafe fn extract_frame(sbuf: CMSampleBufferRef) -> Result<EncodedFrame> {
+    unsafe fn extract_frame(sbuf: CMSampleBufferRef, encode_latency_ms: u32) -> Result<EncodedFrame> {
         let bbuf = CMSampleBufferGetDataBuffer(sbuf);
         if bbuf.is_null() {
             bail!("CMSampleBufferGetDataBuffer returned null");
@@ -1255,6 +1277,8 @@ mod ffi {
             is_keyframe,
             pts,
             parameter_sets,
+            encode_latency_ms,
+            ready_at: Instant::now(),
         })
     }
 }

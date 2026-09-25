@@ -2959,16 +2959,21 @@ impl RdpServer {
                 while let Ok(ev) = ev_receiver.try_recv() {
                     events.push(ev);
                 }
-                let queued = ev_receiver.len().saturating_add(events.len());
                 let mut this = this.lock().await;
                 if let Some(diag) = &this.diagnostics {
+                    let queued = ev_receiver.len().saturating_add(events.len());
                     diag.event_queue.store(queued as u32, Ordering::Relaxed);
                 }
                 match this
                     .dispatch_server_events(&mut events, &mut event_writer, io_channel_id, user_channel_id)
                     .await?
                 {
-                    RunState::Continue => continue,
+                    RunState::Continue => {
+                        if let Some(diag) = &this.diagnostics {
+                            diag.event_queue.store(ev_receiver.len() as u32, Ordering::Relaxed);
+                        }
+                        continue;
+                    }
                     state => break Ok(state),
                 }
             }
@@ -3965,11 +3970,11 @@ where
 
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
         Box::pin(async {
-            let started = Instant::now();
+            let started = self.diagnostics.as_ref().map(|_| Instant::now());
             let mut writer = self.writer.lock().await;
             writer.write_all(buf).await?;
-            let elapsed = started.elapsed();
-            if let Some(diag) = &self.diagnostics {
+            if let (Some(diag), Some(started)) = (&self.diagnostics, started) {
+                let elapsed = started.elapsed();
                 if elapsed >= Duration::from_millis(10) {
                     diag.socket_write_stalls.fetch_add(1, Ordering::Relaxed);
                 }
