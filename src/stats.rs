@@ -414,4 +414,13 @@ mod tests {
         let b = global().expect("enabled");
         assert!(Arc::ptr_eq(&a, b));
     }
+
+    #[test]
+    fn latency_window_reports_expected_percentiles() {
+        let window = ironrdp_server::LatencyWindow::default();
+        for value in 1..=100 {
+            window.record(value);
+        }
+        assert_eq!(window.percentiles(), (50, 95, 100));
+    }
 }
