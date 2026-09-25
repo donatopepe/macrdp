@@ -47,10 +47,6 @@ impl OutboundClass {
             Self::Bulk => 5,
         }
     }
-
-    const fn is_urgent(self) -> bool {
-        matches!(self, Self::Control | Self::Audio)
-    }
 }
 
 /// One complete wire buffer. Scheduler never splits or mutates `bytes`.
