@@ -576,6 +576,23 @@ async fn capture_loop(
                 }
             }
 
+            let audio_pts = sample.presentation_timestamp();
+            if audio_pts.is_valid() && audio_pts.timescale > 0 {
+                if let Some(stats) = crate::stats::global() {
+                    let audio_ms = audio_pts
+                        .value
+                        .saturating_mul(1000)
+                        .checked_div(i64::from(audio_pts.timescale))
+                        .unwrap_or(0);
+                    stats.audio_pts_ms.store(audio_ms, Ordering::Relaxed);
+                    let video_ms = stats.video_pts_ms.load(Ordering::Relaxed);
+                    stats
+                        .av_offset_ms
+                        .store(audio_ms.saturating_sub(video_ms), Ordering::Relaxed);
+                    stats.av_samples.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+
             let Some(list) = sample.audio_buffer_list() else {
                 continue;
             };

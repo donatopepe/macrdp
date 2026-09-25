@@ -1551,6 +1551,19 @@ mod macos {
                 }
 
                 if let Some(stats) = crate::stats::global() {
+                    let video_pts = sample.presentation_timestamp();
+                    if video_pts.is_valid() && video_pts.timescale > 0 {
+                        let video_ms = video_pts
+                            .value
+                            .saturating_mul(1000)
+                            .checked_div(i64::from(video_pts.timescale))
+                            .unwrap_or(0);
+                        stats.video_pts_ms.store(video_ms, Ordering::Relaxed);
+                        let audio_ms = stats.audio_pts_ms.load(Ordering::Relaxed);
+                        stats
+                            .av_offset_ms
+                            .store(audio_ms.saturating_sub(video_ms), Ordering::Relaxed);
+                    }
                     #[cfg(target_os = "macos")]
                     if let Some(display_time) = sample.display_time() {
                         let now = unsafe { libc::mach_absolute_time() };

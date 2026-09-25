@@ -21,7 +21,7 @@
 //! model as the other helper channels (see docs/macos-gotchas.md).
 
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 /// The live snapshot. Every field is an atomic so the encode path can update it
@@ -110,6 +110,14 @@ pub struct SessionStats {
     /// Best-effort process CPU percentage sampled by the diagnostics loop.
     pub cpu_percent: AtomicU32,
     pub adaptive: AtomicBool,
+    /// Latest ScreenCaptureKit audio presentation timestamp, normalized to ms.
+    pub audio_pts_ms: AtomicI64,
+    /// Latest ScreenCaptureKit video presentation timestamp, normalized to ms.
+    pub video_pts_ms: AtomicI64,
+    /// Latest audio PTS minus video PTS. Positive means audio source is ahead.
+    pub av_offset_ms: AtomicI64,
+    /// Number of valid audio/video PTS pairs observed.
+    pub av_samples: AtomicU64,
     pub aac: AtomicBool,
 }
 
@@ -131,6 +139,7 @@ impl SessionStats {
                 "\"socket_write_p50_ms\":{},\"socket_write_p95_ms\":{},\"socket_write_max_ms\":{},",
                 "\"audio_queue_p50_ms\":{},\"audio_queue_p95_ms\":{},\"audio_queue_max_ms\":{},",
                 "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
+                "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
                 "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
             ),
             self.connected.load(Ordering::Relaxed),
@@ -176,6 +185,10 @@ impl SessionStats {
             self.audio_write_p50_ms.load(Ordering::Relaxed),
             self.audio_write_p95_ms.load(Ordering::Relaxed),
             self.audio_write_max_ms.load(Ordering::Relaxed),
+            self.audio_pts_ms.load(Ordering::Relaxed),
+            self.video_pts_ms.load(Ordering::Relaxed),
+            self.av_offset_ms.load(Ordering::Relaxed),
+            self.av_samples.load(Ordering::Relaxed),
             self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
