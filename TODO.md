@@ -217,7 +217,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
 - [x] **Rolling latency percentiles + opt-in CPU sampling** — implemented in `stats.rs` and
   vendored diagnostics. CPU sampler runs every 2 s only with `STATS_ENDPOINT=1`; p50/p95/max
   windows cover capture age, encode/ship latency, socket wait, audio queue age, and audio write wait.
-  Remaining: validate live values after next deployed build.
+  Deployment is validated; values remain zero only when no RDP client is connected.
 - [x] **Audio reservation fairness on SharedWriter** — fresh audio now raises a reservation
   flag before waiting; new non-audio writes yield until the audio wave is admitted. Existing
   in-progress writes remain non-preemptible, H.264 ordering is unchanged, and telemetry remains
