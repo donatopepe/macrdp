@@ -1294,6 +1294,9 @@ pub struct Gfx {
     /// into each connection's context at setup. 0 = unknown. Drives the blank
     /// detector's RTT gate and the adaptive-bitrate seed.
     link_rtt_ms: Arc<AtomicU32>,
+    /// Optional pre-encode ServerEvent queue gauge. Present only with telemetry.
+    event_queue: Option<Arc<AtomicU32>>,
+    event_queue_high: u32,
     /// Link RTT (ms) at or above which a new connection's adaptive bitrate is
     /// seeded at ceiling/3 instead of the full ceiling (the controller climbs
     /// from there). `MACRDP_ADAPTIVE_SEED_RTT_MS`, default 50; 0 disables.
@@ -1322,8 +1325,14 @@ impl Gfx {
         adaptive_bitrate: bool,
         congestion_retransmits: Arc<AtomicU64>,
         link_rtt_ms: Arc<AtomicU32>,
+        event_queue: Option<Arc<AtomicU32>>,
     ) -> Self {
         let wire_format = WireFormat::from_env();
+        let event_queue_high = std::env::var("MACRDP_EVENT_QUEUE_HIGH")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(512);
         let (recovery_enabled, recovery_params) = recovery_config_from_env();
         let max_frame_lag = std::env::var("MACRDP_UDP_EGFX_MAX_FRAME_LAG")
             .ok()
@@ -1548,6 +1557,8 @@ impl Gfx {
             blank_params,
             consecutive_blank_drops: Arc::new(AtomicU32::new(0)),
             link_rtt_ms,
+            event_queue,
+            event_queue_high,
             adaptive_seed_rtt_ms,
             reactivate_request: Arc::new(AtomicU32::new(0)),
         }
@@ -1626,6 +1637,22 @@ impl Gfx {
             };
             if !ctx.is_ready {
                 return Ok(false); // channel not negotiated yet (or non-EGFX client)
+            }
+            // Telemetry-only pre-encode backpressure: an unbounded event queue
+            // means the socket/event dispatcher is behind. Drop this capture
+            // before VideoToolbox submission; H.264 reference ordering remains
+            // valid because encoder never sees the dropped frame. Disabled when
+            // telemetry is off, preserving default runtime behavior.
+            if self
+                .event_queue
+                .as_ref()
+                .is_some_and(|queue| queue.load(Ordering::Relaxed) >= self.event_queue_high)
+            {
+                if let Some(stats) = crate::stats::global() {
+                    stats.capture_drops.fetch_add(1, Ordering::Relaxed);
+                }
+                trace!("EGFX event queue high; dropping capture before encode");
+                return Ok(true);
             }
             // Arm the keyframe BEFORE the throttle check so a large change that
             // lands on a dropped frame still forces the IDR on the next encoded

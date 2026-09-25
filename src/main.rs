@@ -2490,6 +2490,7 @@ async fn async_main() -> Result<()> {
             args.adaptive_bitrate,
             congestion_retransmits.clone(),
             link_rtt_ms.clone(),
+            crate::stats::global().map(|stats| stats.server_event_queue.clone()),
         )
     });
 

@@ -225,6 +225,9 @@ then delete; promote a parked item to *In flight* when work actually starts.
 - [x] **Adjacent EGFX event coalescing** — consecutive `ServerEvent::Egfx` batches now merge
   their ordered DVC message vectors before socket dispatch. No cross-channel reorder, no
   post-encode frame drop, H.264 frame order preserved. Full write coalescing remains upstream-sensitive.
+- [x] **Telemetry-only pre-encode event-queue backpressure** — when `STATS_ENDPOINT=1` and
+  `server_event_queue` reaches `MACRDP_EVENT_QUEUE_HIGH` (default 512), captures drop before
+  VideoToolbox submission. H.264 reference ordering remains valid; disabled path is unchanged.
 - [x] **VideoToolbox timestamp ownership** — `submitted_at` is reclaimed on pixel-buffer creation
   failure and rejected encode submission; accepted frames transfer ownership to callback.
 - [x] **Bounded display write coalescing** — display fragments now coalesce into max 64 KiB
