@@ -1,5 +1,15 @@
 # TODO / work queue
 
+## Distribution / one-line installer
+
+- [ ] Publish signed macrdp.app release archives (`macrdp-<tag>-macos-arm64.tar.gz`) and matching `.sha256` files on GitHub Releases.
+- [ ] Verify release archive contains stable `macrdp.app` identity and required embedded helpers.
+- [ ] Add release automation for `packaging/release-app.sh` and upload assets.
+- [ ] Test fresh-machine install with:
+      `curl -fsSL https://raw.githubusercontent.com/donatopepe/macrdp/main/packaging/install-remote.sh | bash`
+- [ ] Document TCC permissions, Keychain/password setup, VPN/security warning, uninstall, and upgrade/rollback.
+- [ ] Never make the one-line installer build or execute source fetched from the network; require a release asset and verify checksum/signature.
+
 A living checklist of what's open, deferred, or parked. Detail lives in the
 linked docs / vendored `CLAUDE.md`s / commit history — this is just the index of
 "what's currently to be made." Keep it pruned: move items to *Done* only briefly,

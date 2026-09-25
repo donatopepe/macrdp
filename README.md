@@ -56,6 +56,29 @@ Details and the path to closing the gaps: [docs/production-readiness-roadmap.md]
 
 ## Quick start
 
+### One-line installer
+
+Install the latest GitHub Release without cloning the repository:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/donatopepe/macrdp/main/packaging/install-remote.sh | bash
+```
+
+Install an exact release:
+
+```bash
+MACRDP_VERSION=v0.9.7 curl -fsSL https://raw.githubusercontent.com/donatopepe/macrdp/main/packaging/install-remote.sh | bash
+```
+
+The installer downloads a release `.tar.gz`, verifies its published SHA-256
+when available, installs `macrdp.app` atomically into `~/Applications`, and
+loads the LaunchAgent when run from a checkout. Grant Screen Recording and
+Accessibility after installation. Maintainers create release assets with:
+
+```bash
+packaging/release-app.sh v0.9.7
+```
+
 For a persistent macOS installation, use the automated app setup. It builds the
 release binary, creates/imports the local signing identity if needed, signs the
 app, installs the LaunchAgent, and keeps the private key in Keychain:
