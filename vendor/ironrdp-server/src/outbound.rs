@@ -80,6 +80,13 @@ pub struct OutboundScheduler {
     max_bytes: usize,
     data_cursor: usize,
     urgent_remaining: usize,
+    /// Rolling queue metrics for the future socket owner. Counters stay local
+    /// to scheduler state so live wiring can publish atomics without changing
+    /// packet selection semantics.
+    enqueued_packets: u64,
+    rejected_packets: u64,
+    sent_packets: u64,
+    sent_bytes: u64,
 }
 
 impl OutboundScheduler {
@@ -92,6 +99,10 @@ impl OutboundScheduler {
             max_bytes,
             data_cursor: 0,
             urgent_remaining: Self::MAX_URGENT_BURST,
+            enqueued_packets: 0,
+            rejected_packets: 0,
+            sent_packets: 0,
+            sent_bytes: 0,
         }
     }
 
@@ -115,13 +126,31 @@ impl OutboundScheduler {
         self.queues[class.index()].len()
     }
 
+    pub fn enqueued_packets(&self) -> u64 {
+        self.enqueued_packets
+    }
+
+    pub fn rejected_packets(&self) -> u64 {
+        self.rejected_packets
+    }
+
+    pub fn sent_packets(&self) -> u64 {
+        self.sent_packets
+    }
+
+    pub fn sent_bytes(&self) -> u64 {
+        self.sent_bytes
+    }
+
     /// Enqueue one complete wire buffer. Full queue returns packet to caller;
     /// this is intentional: audio may be dropped before framing, while EGFX
     /// must apply backpressure rather than silently lose a reference frame.
     pub fn try_push(&mut self, packet: OutboundPacket) -> Result<(), EnqueueError> {
         if packet.len() > self.max_bytes.saturating_sub(self.queued_bytes) {
+            self.rejected_packets = self.rejected_packets.saturating_add(1);
             return Err(EnqueueError::QueueFull(packet));
         }
+        self.enqueued_packets = self.enqueued_packets.saturating_add(1);
         self.queued_bytes += packet.len();
         self.queues[packet.class.index()].push_back(packet);
         Ok(())
@@ -130,6 +159,8 @@ impl OutboundScheduler {
     fn pop_class(&mut self, class: OutboundClass) -> Option<OutboundPacket> {
         let packet = self.queues[class.index()].pop_front()?;
         self.queued_bytes = self.queued_bytes.saturating_sub(packet.len());
+        self.sent_packets = self.sent_packets.saturating_add(1);
+        self.sent_bytes = self.sent_bytes.saturating_add(packet.len() as u64);
         Some(packet)
     }
 

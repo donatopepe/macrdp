@@ -248,9 +248,9 @@ then delete; promote a parked item to *In flight* when work actually starts.
   event ordering is untouched; oversized fragments bypass coalescing. Full EGFX write batching
   remains upstream-sensitive.
 - [x] **Outbound scheduler core** — added/tested owner-friendly typed queues, bounded bytes,
-  urgent audio/control priority, weighted data fairness, and FIFO EGFX behavior in
-  `vendor/ironrdp-server/src/outbound.rs`. Not wired to live socket yet; adapter migration
-  remains next step because `write_all` is cancellation-unsafe.
+  urgent audio/control priority, weighted data fairness, FIFO EGFX behavior, and local enqueue/
+  reject/sent packet+byte counters in `vendor/ironrdp-server/src/outbound.rs`. Not wired to live
+  socket yet; adapter migration remains next step because `write_all` is cancellation-unsafe.
 - [ ] **Perf (upstream candidates, vendored server — do NOT land as new divergences):** from
   the same audit: (a) `SharedWriter`/dispatch write coalescing — every fragment/event is its
   own `write_all` = 2 boxed futures + syscall + flush (`server.rs:2643` + git-pinned
