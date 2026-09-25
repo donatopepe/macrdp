@@ -3000,7 +3000,7 @@ impl RdpServer {
                 drop(this);
 
                 let audio_started = Instant::now();
-                audio_writer.write_all(&encoded).await?;
+                audio_writer.write_audio_all(&encoded).await?;
                 if let Some(diag) = diagnostics {
                     let elapsed = audio_started.elapsed();
                     if elapsed >= Duration::from_millis(10) {
@@ -4016,6 +4016,34 @@ async fn deactivate_all(
 struct SharedWriter<'w, W: FramedWrite> {
     writer: Rc<Mutex<&'w mut W>>,
     diagnostics: Option<DiagnosticsHandle>,
+    /// Reservation flag prevents a new bulk/video write from repeatedly
+    /// cutting ahead of a fresh audio wave. Existing in-progress write cannot
+    /// be preempted; next write yields to audio. H.264 ordering remains intact.
+    audio_waiting: Arc<AtomicBool>,
+}
+
+struct AudioWaitGuard {
+    flag: Arc<AtomicBool>,
+    active: bool,
+}
+
+impl AudioWaitGuard {
+    fn new(flag: Arc<AtomicBool>) -> Self {
+        flag.store(true, Ordering::Release);
+        Self { flag, active: true }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for AudioWaitGuard {
+    fn drop(&mut self) {
+        if self.active {
+            self.flag.store(false, Ordering::Release);
+        }
+    }
 }
 
 impl<W: FramedWrite> Clone for SharedWriter<'_, W> {
@@ -4023,6 +4051,7 @@ impl<W: FramedWrite> Clone for SharedWriter<'_, W> {
         Self {
             writer: Rc::clone(&self.writer),
             diagnostics: self.diagnostics.clone(),
+            audio_waiting: Arc::clone(&self.audio_waiting),
         }
     }
 }
@@ -4037,21 +4066,7 @@ where
         Self: 'write;
 
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
-        Box::pin(async {
-            let started = self.diagnostics.as_ref().map(|_| Instant::now());
-            let mut writer = self.writer.lock().await;
-            writer.write_all(buf).await?;
-            if let (Some(diag), Some(started)) = (&self.diagnostics, started) {
-                let elapsed = started.elapsed();
-                if elapsed >= Duration::from_millis(10) {
-                    diag.socket_write_stalls.fetch_add(1, Ordering::Relaxed);
-                }
-                let elapsed_ms = elapsed.as_millis().min(u128::from(u32::MAX)) as u32;
-                diag.socket_write_ms.store(elapsed_ms, Ordering::Relaxed);
-                diag.socket_write_window.record(elapsed_ms);
-            }
-            Ok(())
-        })
+        Box::pin(self.write_class(buf, false))
     }
 }
 
@@ -4060,6 +4075,53 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
         Self {
             writer: Rc::new(Mutex::new(writer)),
             diagnostics,
+            audio_waiting: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn write_audio_all<'b>(&'b mut self, buf: &'b [u8]) -> impl Future<Output = std::io::Result<()>> + 'b {
+        self.write_class(buf, true)
+    }
+
+    fn write_class<'b>(&'b mut self, buf: &'b [u8], audio: bool) -> impl Future<Output = std::io::Result<()>> + 'b {
+        let writer = Rc::clone(&self.writer);
+        let diagnostics = self.diagnostics.clone();
+        let audio_waiting = Arc::clone(&self.audio_waiting);
+        Box::pin(async move {
+            let mut audio_guard = audio.then(|| AudioWaitGuard::new(Arc::clone(&audio_waiting)));
+            loop {
+                if !audio {
+                    while audio_waiting.load(Ordering::Acquire) {
+                        tokio::task::yield_now().await;
+                    }
+                }
+                let mut locked = writer.lock().await;
+                // Close race between the flag check and mutex acquisition:
+                // yield/retry rather than letting bulk/video cut ahead of audio.
+                if !audio && audio_waiting.load(Ordering::Acquire) {
+                    drop(locked);
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                if audio {
+                    audio_waiting.store(false, Ordering::Release);
+                    if let Some(guard) = audio_guard.as_mut() {
+                        guard.disarm();
+                    }
+                }
+                let started = diagnostics.as_ref().map(|_| Instant::now());
+                locked.write_all(buf).await?;
+                if let (Some(diag), Some(started)) = (&diagnostics, started) {
+                    let elapsed = started.elapsed();
+                    if elapsed >= Duration::from_millis(10) {
+                        diag.socket_write_stalls.fetch_add(1, Ordering::Relaxed);
+                    }
+                    let elapsed_ms = elapsed.as_millis().min(u128::from(u32::MAX)) as u32;
+                    diag.socket_write_ms.store(elapsed_ms, Ordering::Relaxed);
+                    diag.socket_write_window.record(elapsed_ms);
+                }
+                return Ok(());
+            }
+        })
     }
 }
