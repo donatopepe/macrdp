@@ -2340,6 +2340,14 @@ impl RdpServer {
             return Ok((RunState::DeactivationReactivation { desktop_size }, encoder));
         }
 
+        // Fragmented fast-path output is already ordered complete wire data.
+        // Coalesce into bounded writes to reduce syscall/lock overhead under
+        // EGFX/legacy bursts, but flush at 64 KiB so a waiting audio wave can
+        // still acquire SharedWriter between chunks. Never reorder or drop a
+        // fragment; H.264 ordering is unaffected because this path is for
+        // display updates only and each chunk remains byte-for-byte ordered.
+        const MAX_COALESCED_DISPLAY_BYTES: usize = 64 * 1024;
+        let mut coalesced = Vec::with_capacity(MAX_COALESCED_DISPLAY_BYTES);
         let mut encoder_iter = encoder.update(update);
         loop {
             let Some(fragmenter) = encoder_iter.next().await else {
@@ -2352,11 +2360,35 @@ impl RdpServer {
             }
 
             while let Some(len) = fragmenter.next(buffer) {
-                writer
-                    .write_all(&buffer[..len])
-                    .await
-                    .context("failed to write display update")?;
+                if len > MAX_COALESCED_DISPLAY_BYTES {
+                    if !coalesced.is_empty() {
+                        writer
+                            .write_all(&coalesced)
+                            .await
+                            .context("failed to write coalesced display update")?;
+                        coalesced.clear();
+                    }
+                    writer
+                        .write_all(&buffer[..len])
+                        .await
+                        .context("failed to write display update")?;
+                } else {
+                    if !coalesced.is_empty() && coalesced.len().saturating_add(len) > MAX_COALESCED_DISPLAY_BYTES {
+                        writer
+                            .write_all(&coalesced)
+                            .await
+                            .context("failed to write coalesced display update")?;
+                        coalesced.clear();
+                    }
+                    coalesced.extend_from_slice(&buffer[..len]);
+                }
             }
+        }
+        if !coalesced.is_empty() {
+            writer
+                .write_all(&coalesced)
+                .await
+                .context("failed to write coalesced display update")?;
         }
 
         Ok((RunState::Continue, encoder))
