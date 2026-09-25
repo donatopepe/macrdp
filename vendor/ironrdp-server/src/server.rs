@@ -3090,33 +3090,45 @@ impl RdpServer {
         let this = Rc::clone(&s);
         let mut ev_receiver = ev_receiver.lock().await;
         let dispatch_events = async move {
-            // Keep each dispatch turn bounded. Draining an unbounded event
-            // queue in one turn lets a video burst hold the server mutex and
-            // SharedWriter for seconds, starving fresh audio and control. A
-            // later turn preserves FIFO order while giving audio/pdu tasks a
-            // chance to run between batches.
+            // Keep each dispatch turn bounded. A single event may block on the
+            // kernel socket, so one event per turn releases server mutex before
+            // the next event and lets audio/control tasks acquire it. FIFO and
+            // EGFX ordering remain unchanged.
             const MAX_EVENT_BATCH: usize = 100;
             let mut events = Vec::with_capacity(MAX_EVENT_BATCH);
             loop {
-                let nevents = ev_receiver.recv_many(&mut events, MAX_EVENT_BATCH).await;
-                if nevents == 0 {
-                    debug!("No sever events.. stopping");
-                    break Ok(RunState::Disconnect);
+                if events.is_empty() {
+                    let nevents = ev_receiver.recv_many(&mut events, MAX_EVENT_BATCH).await;
+                    if nevents == 0 {
+                        debug!("No sever events.. stopping");
+                        break Ok(RunState::Disconnect);
+                    }
+                    while events.len() < MAX_EVENT_BATCH {
+                        match ev_receiver.try_recv() {
+                            Ok(event) => events.push(event),
+                            Err(_) => break,
+                        }
+                    }
                 }
                 let mut this = this.lock().await;
                 if let Some(diag) = &this.diagnostics {
                     let queued = ev_receiver.len().saturating_add(events.len());
                     diag.event_queue.store(queued as u32, Ordering::Relaxed);
                 }
-                match this
-                    .dispatch_server_events(&mut events, &mut event_writer, io_channel_id, user_channel_id)
-                    .await?
-                {
+                let event = events.remove(0);
+                let result = this
+                    .dispatch_server_events(&mut vec![event], &mut event_writer, io_channel_id, user_channel_id)
+                    .await?;
+                if let Some(diag) = &this.diagnostics {
+                    diag.event_queue
+                        .store(ev_receiver.len().saturating_add(events.len()) as u32, Ordering::Relaxed);
+                }
+                drop(this);
+                match result {
                     RunState::Continue => {
-                        if let Some(diag) = &this.diagnostics {
-                            diag.event_queue.store(ev_receiver.len() as u32, Ordering::Relaxed);
+                        if !events.is_empty() {
+                            tokio::task::yield_now().await;
                         }
-                        continue;
                     }
                     state => break Ok(state),
                 }

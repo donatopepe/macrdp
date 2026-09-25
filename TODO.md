@@ -228,9 +228,9 @@ then delete; promote a parked item to *In flight* when work actually starts.
 - [x] **Telemetry-only pre-encode event-queue backpressure** — when `STATS_ENDPOINT=1` and
   `server_event_queue` reaches `MACRDP_EVENT_QUEUE_HIGH` (default 512), captures drop before
   VideoToolbox submission. H.264 reference ordering remains valid; disabled path is unchanged.
-- [x] **Bounded unified-event dispatch turns** — dispatch drains at most 100 events per turn,
-  preserving FIFO/H.264 order while preventing one unbounded video burst from monopolizing the
-  server mutex/writer for seconds. Fresh audio/control tasks get scheduling opportunities.
+- [x] **Bounded unified-event dispatch turns** — dispatch keeps a bounded FIFO batch but emits
+  one event per scheduler turn, preserving FIFO/H.264 order while returning to `select!` between
+  socket writes. Fresh audio/control tasks get scheduling opportunities even during backlog.
 - [x] **VideoToolbox timestamp ownership** — `submitted_at` is reclaimed on pixel-buffer creation
   failure and rejected encode submission; accepted frames transfer ownership to callback.
 - [x] **Bounded display write coalescing** — display fragments now coalesce into max 64 KiB
