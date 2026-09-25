@@ -29,7 +29,7 @@ AUTO_CREATE_LOCAL_CERT="${AUTO_CREATE_LOCAL_CERT:-1}"
 # back to ad-hoc only when there's nothing better.
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
     IDENTITY="$CODESIGN_IDENTITY"
-elif security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$LOCAL_CERT_NAME\""; then
+elif security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null | grep -Fq "\"$LOCAL_CERT_NAME\""; then
     IDENTITY="$LOCAL_CERT_NAME"
 else
     IDENTITY="-"
@@ -101,6 +101,15 @@ else
     TS="--timestamp"
 fi
 
+# A self-signed identity can be present in the explicitly selected login
+# keychain while absent from codesign's default search list. Always pass that
+# keychain for named identities; otherwise codesign may report "no identity
+# found" even though `security find-identity <keychain>` succeeds.
+CODESIGN_KEYCHAIN_ARGS=()
+if [ "$IDENTITY" != "-" ]; then
+    CODESIGN_KEYCHAIN_ARGS=(--keychain "$HOME/Library/Keychains/login.keychain-db")
+fi
+
 # Optional: provisioning profile + entitlements (USB-redirection builds only).
 # PROVISION_PROFILE=<path.provisionprofile> embeds the profile and signs the main
 # binary + app with packaging/macrdp.entitlements (override via ENTITLEMENTS=).
@@ -138,8 +147,12 @@ if [ -f "$IFD_DYLIB" ]; then
     # Sign the loadable dylib then the nested bundle with the app's identity +
     # flags, so it passes notarization and slotd loads it (slotd loads
     # third-party IFD drivers regardless of hardened-runtime/library-validation).
-    codesign --force --options runtime $TS -s "$IDENTITY" "$IFD_BUNDLE/Contents/MacOS/libifd_macrdp.dylib"
-    codesign --force --options runtime $TS -s "$IDENTITY" "$IFD_BUNDLE"
+    # The Rust cdylib carries a linker-generated ad-hoc signature. Remove it
+    # first: replacing that signature in-place can block codesign indefinitely
+    # on recent macOS versions.
+    codesign --remove-signature "$IFD_BUNDLE/Contents/MacOS/libifd_macrdp.dylib" 2>/dev/null || true
+    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$IFD_BUNDLE/Contents/MacOS/libifd_macrdp.dylib"
+    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$IFD_BUNDLE"
     # Ship the privileged installer alongside it so DMG users can run
     #   /Applications/macrdp.app/Contents/Resources/install-ifd-handler.sh
     # plus the USB-trigger picker the installer invokes (must sit next to it).
@@ -164,7 +177,7 @@ HUD_BIN="$REPO_ROOT/gui/.build/release/macrdphud"
 if [ -f "$HUD_BIN" ]; then
     cp "$HUD_BIN" "$STAGE/Contents/Resources/macrdphud"
     chmod +x "$STAGE/Contents/Resources/macrdphud"
-    codesign --force --options runtime $TS -s "$IDENTITY" "$STAGE/Contents/Resources/macrdphud"
+    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE/Contents/Resources/macrdphud"
     echo "==> embedded macrdphud (app-switcher HUD helper)"
 else
     echo "==> WARNING: macrdphud not found; app-switcher HUD NOT embedded (unset SKIP_BUILD?)" >&2
@@ -182,7 +195,7 @@ SHIELD_BIN="$REPO_ROOT/gui/.build/release/macrdpshield"
 if [ -f "$SHIELD_BIN" ]; then
     cp "$SHIELD_BIN" "$STAGE/Contents/Resources/macrdpshield"
     chmod +x "$STAGE/Contents/Resources/macrdpshield"
-    codesign --force --options runtime $TS -s "$IDENTITY" "$STAGE/Contents/Resources/macrdpshield"
+    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE/Contents/Resources/macrdpshield"
     echo "==> embedded macrdpshield (shield-window helper)"
 else
     echo "==> WARNING: macrdpshield not found; --shield-primary will REFUSE to start (unset SKIP_BUILD?)" >&2
@@ -199,8 +212,8 @@ echo "==> codesign (hardened runtime, ts: $TS${ENT_ARG:+, entitlements})"
 # Entitlements go on the main executable (which actually runs) and the bundle.
 # The other signed items (IFD dylib/bundle, macrdphud, macrdpshield) deliberately
 # get NO entitlements — only macrdp needs the USB host-controller capability.
-codesign --force --options runtime $TS $ENT_ARG -s "$IDENTITY" "$STAGE/Contents/MacOS/macrdp"
-codesign --force --options runtime $TS $ENT_ARG -s "$IDENTITY" "$STAGE"
+codesign --force --options runtime $TS $ENT_ARG "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE/Contents/MacOS/macrdp"
+codesign --force --options runtime $TS $ENT_ARG "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE"
 codesign --verify --deep --strict "$STAGE"
 
 # 3b. Optional notarization (NOTARIZE=1, real Developer ID + NOTARY_PROFILE).

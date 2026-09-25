@@ -883,17 +883,27 @@ fn spawn_hud_helper() -> Option<std::process::Child> {
 /// which prints the password on stdout. The Keychain entry has to be
 /// created out-of-band; this never prompts the user interactively.
 fn read_password_from_keychain(username: &str) -> Result<Zeroizing<String>> {
-    let out = std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            "macrdp",
-            "-a",
-            username,
-            "-w",
-        ])
-        .output()
-        .context("invoke security(1)")?;
+    // LaunchAgents can have a different Keychain search-list context from an
+    // interactive shell. On this Mac, the login keychain is present but an
+    // unqualified `security find-generic-password` still returns errSecItemNotFound.
+    // Pass the login keychain explicitly so headless startup is deterministic.
+    let login_keychain = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library/Keychains/login.keychain-db"))
+        .filter(|path| path.exists());
+
+    let mut command = std::process::Command::new("security");
+    command.args([
+        "find-generic-password",
+        "-s",
+        "macrdp",
+        "-a",
+        username,
+        "-w",
+    ]);
+    if let Some(keychain) = login_keychain {
+        command.arg(keychain);
+    }
+    let out = command.output().context("invoke security(1)")?;
     if !out.status.success() {
         return Err(anyhow!(
             "keychain entry not found (run: security add-generic-password -s macrdp -a {username} -w)"

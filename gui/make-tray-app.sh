@@ -15,7 +15,7 @@ LOCAL_CERT_NAME="${LOCAL_CERT_NAME:-macrdp Local Code Signing}"
 AUTO_CREATE_LOCAL_CERT="${AUTO_CREATE_LOCAL_CERT:-1}"
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
     IDENTITY="$CODESIGN_IDENTITY"
-elif security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$LOCAL_CERT_NAME\""; then
+elif security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null | grep -Fq "\"$LOCAL_CERT_NAME\""; then
     IDENTITY="$LOCAL_CERT_NAME"
 elif [ "$AUTO_CREATE_LOCAL_CERT" = "1" ]; then
     "$REPO_ROOT/packaging/create-local-signing-cert.sh" "$LOCAL_CERT_NAME"
@@ -23,6 +23,12 @@ elif [ "$AUTO_CREATE_LOCAL_CERT" = "1" ]; then
 else
     IDENTITY="-"
 fi
+
+CODESIGN_KEYCHAIN_ARGS=()
+if [ "$IDENTITY" != "-" ]; then
+    CODESIGN_KEYCHAIN_ARGS=(--keychain "$HOME/Library/Keychains/login.keychain-db")
+fi
+
 APP_NAME="macrdpController.app"
 # MUST match the BUNDLE_PREFIX used by packaging/{make-app,install-launchagent}.sh.
 # The controller derives the server's LaunchAgent label by stripping ".controller"
@@ -122,11 +128,11 @@ if [ "${CAMERA_EXTENSION:-0}" = "1" ]; then
 fi
 
 echo "==> codesign (hardened runtime, ts: $TS${CTRL_ENT_ARG:+, entitlements})"
-codesign --force --options runtime $TS $CTRL_ENT_ARG -s "$IDENTITY" "$STAGE/Contents/MacOS/macrdptray"
+codesign --force --options runtime $TS $CTRL_ENT_ARG "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE/Contents/MacOS/macrdptray"
 # NOTE: no --deep on the sign — the embedded .systemextension is already signed
 # with its OWN entitlements; a --deep re-sign would strip them. Signing the outer
 # bundle seals the pre-signed extension by reference.
-codesign --force --options runtime $TS $CTRL_ENT_ARG -s "$IDENTITY" "$STAGE"
+codesign --force --options runtime $TS $CTRL_ENT_ARG "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE"
 codesign --verify --strict "$STAGE"
 
 # Optional notarization (NOTARIZE=1, real Developer ID + NOTARY_PROFILE).
