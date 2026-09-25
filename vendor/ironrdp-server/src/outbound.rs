@@ -164,6 +164,12 @@ impl OutboundScheduler {
         Some(packet)
     }
 
+    fn has_data(&self) -> bool {
+        OutboundClass::DATA_SLOTS
+            .iter()
+            .any(|class| !self.queues[class.index()].is_empty())
+    }
+
     fn pop_data(&mut self) -> Option<OutboundPacket> {
         for _ in 0..OutboundClass::DATA_SLOTS.len() {
             let class = OutboundClass::DATA_SLOTS[self.data_cursor];
@@ -180,7 +186,7 @@ impl OutboundScheduler {
     pub fn pop_next(&mut self) -> Option<OutboundPacket> {
         let urgent_available = !self.queues[OutboundClass::Control.index()].is_empty()
             || !self.queues[OutboundClass::Audio.index()].is_empty();
-        if urgent_available && (self.urgent_remaining > 0 || self.pop_data().is_none()) {
+        if urgent_available && (self.urgent_remaining > 0 || !self.has_data()) {
             if let Some(packet) = self.pop_class(OutboundClass::Control) {
                 self.urgent_remaining -= 1;
                 return Some(packet);
@@ -258,5 +264,19 @@ mod tests {
         let err = q.try_push(packet(OutboundClass::Egfx, 2)).unwrap_err();
         assert_eq!(err, EnqueueError::QueueFull(packet(OutboundClass::Egfx, 2)));
         assert_eq!(q.pop_next().unwrap().bytes, vec![1]);
+    }
+
+    #[test]
+    fn urgent_budget_does_not_drop_data_packet() {
+        let mut q = OutboundScheduler::new(1000);
+        for id in 0..OutboundScheduler::MAX_URGENT_BURST as u8 {
+            q.try_push(packet(OutboundClass::Audio, id)).unwrap();
+        }
+        q.try_push(packet(OutboundClass::Egfx, 99)).unwrap();
+        for _ in 0..OutboundScheduler::MAX_URGENT_BURST {
+            assert_eq!(q.pop_next().unwrap().class, OutboundClass::Audio);
+        }
+        assert_eq!(q.pop_next().unwrap().bytes, vec![99]);
+        assert!(q.is_empty());
     }
 }
