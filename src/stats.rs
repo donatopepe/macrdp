@@ -152,6 +152,74 @@ pub fn global() -> Option<&'static Arc<SessionStats>> {
     GLOBAL.get()
 }
 
+/// Sample macOS process CPU without adding work to capture, encode, or socket
+/// paths. Value is aggregate CPU percentage (100 = one fully busy core).
+#[cfg(target_os = "macos")]
+pub fn spawn_cpu_sampler() {
+    let Some(stats) = global().cloned() else { return };
+    tokio::spawn(async move {
+        let mut previous = process_cpu_snapshot();
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let current = process_cpu_snapshot();
+            let wall_ns = current.wall_ns.saturating_sub(previous.wall_ns);
+            let cpu_ns = current.cpu_ns.saturating_sub(previous.cpu_ns);
+            if wall_ns > 0 {
+                let percent = cpu_ns
+                    .saturating_mul(100)
+                    .checked_div(wall_ns)
+                    .unwrap_or(0)
+                    .min(u64::from(u32::MAX));
+                stats.cpu_percent.store(percent as u32, Ordering::Relaxed);
+            }
+            previous = current;
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct CpuSnapshot {
+    cpu_ns: u64,
+    wall_ns: u64,
+}
+
+#[cfg(target_os = "macos")]
+fn process_cpu_snapshot() -> CpuSnapshot {
+    use std::mem::MaybeUninit;
+    use std::time::Instant;
+    #[repr(C)]
+    struct Rusage {
+        _ru_utime: [u8; 16],
+        _ru_stime: [u8; 16],
+        _rest: [u8; 128],
+    }
+    unsafe extern "C" {
+        fn getrusage(who: i32, usage: *mut Rusage) -> i32;
+    }
+    // macOS rusage timeval fields are two i64 values at each offset.
+    let mut usage = MaybeUninit::<Rusage>::zeroed();
+    let rc = unsafe { getrusage(0, usage.as_mut_ptr()) };
+    let cpu_ns = if rc == 0 {
+        let bytes = unsafe {
+            std::slice::from_raw_parts(usage.as_ptr().cast::<u8>(), std::mem::size_of::<Rusage>())
+        };
+        let read_timeval = |offset: usize| -> u64 {
+            let sec = i64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            let usec = i64::from_ne_bytes(bytes[offset + 8..offset + 16].try_into().unwrap());
+            sec.max(0) as u64 * 1_000_000_000 + usec.max(0) as u64 * 1_000
+        };
+        read_timeval(0).saturating_add(read_timeval(16))
+    } else {
+        0
+    };
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    CpuSnapshot { cpu_ns, wall_ns: start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64 }
+}
+
 /// Endpoint port (`MACRDP_STATS_PORT`, default 40245 — next after the shield
 /// helper's 40244).
 pub fn default_port() -> u16 {

@@ -1891,6 +1891,13 @@ async fn async_main() -> Result<()> {
         file_promise_lazy::reap_stale();
     });
 
+    // Opt-in process CPU sampler. Runs on separate Tokio worker and publishes
+    // aggregate process CPU percentage; never touches capture/encode hot paths.
+    if args.stats_endpoint {
+        #[cfg(target_os = "macos")]
+        crate::stats::spawn_cpu_sampler();
+    }
+
     // Arm the health-check watchdog on the long-lived, launchd-watched process
     // so a hung-but-alive runtime — which KeepAlive can't tell from a healthy
     // one — gets bounced into a restart. Skipped by default when interactive
