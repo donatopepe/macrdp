@@ -385,7 +385,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
   `AudioWaveReceiver::drop_oldest_until_below` is now invoked only after projected audio backlog
   crosses 260 ms, trimming toward 200 ms; AAC duration metadata is honored. This is hysteretic
   stale-audio resync, not playback-clock correction; PTS drift EWMA remains telemetry-only and
-  AAC priming/packet-loss validation remains open. Opt-in stats now expose resync action/drop
+  AAC priming/packet-loss validation remains open. Opt-in stats now expose current/maximum source
+  A/V offset alongside resync action/drop
   counters plus maximum projected backlog, with JSON serialization tests; debug logs include queue
   duration before/after trim.
   Detail:

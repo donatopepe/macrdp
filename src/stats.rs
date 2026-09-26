@@ -143,6 +143,10 @@ pub struct SessionStats {
     pub av_drift_ppm: AtomicI64,
     /// Number of source-clock samples folded into the ppm estimator.
     pub av_drift_samples: AtomicU64,
+    /// Max absolute audio-minus-video source offset seen in this session, ms.
+    pub av_offset_abs_max_ms: AtomicU64,
+    /// Current SCK source audio lead/lag based on most recent valid PTS pair.
+    pub av_offset_last_sample_ms: AtomicI64,
     /// Hysteretic telemetry-only drift zone: -1 behind, 0 stable, 1 ahead.
     pub av_drift_zone: AtomicI8,
     /// Offset/zone samples accepted by drift hysteresis; increments each PTS interval.
@@ -308,7 +312,7 @@ impl SessionStats {
                 "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
                 "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
                 "\"av_offset_ewma_ms\":{},\"av_offset_ewma_samples\":{},",
-                "\"av_drift_ppm\":{},\"av_drift_samples\":{},\"av_drift_zone\":{},\"av_hysteresis_samples\":{},",
+                "\"av_drift_ppm\":{},\"av_drift_samples\":{},\"av_drift_zone\":{},\"av_hysteresis_samples\":{},\"av_offset_abs_max_ms\":{},\"av_offset_last_sample_ms\":{},",
                 "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
             ),
             self.connected.load(Ordering::Relaxed),
@@ -375,6 +379,8 @@ impl SessionStats {
             self.av_drift_samples.load(Ordering::Relaxed),
             self.av_drift_zone.load(Ordering::Relaxed),
             self.av_hysteresis_samples.load(Ordering::Relaxed),
+            self.av_offset_abs_max_ms.load(Ordering::Relaxed),
+            self.av_offset_last_sample_ms.load(Ordering::Relaxed),
             self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
@@ -429,6 +435,10 @@ pub fn record_av_offset(offset_ms: i64) {
 pub fn record_av_clock_pair(audio_pts_ms: i64, video_pts_ms: i64) {
     let Some(stats) = global() else { return };
     let offset_ms = audio_pts_ms.saturating_sub(video_pts_ms);
+    stats.av_offset_last_sample_ms.store(offset_ms, Ordering::Relaxed);
+    stats
+        .av_offset_abs_max_ms
+        .fetch_max(offset_ms.unsigned_abs(), Ordering::Relaxed);
     let Ok(mut clock) = stats.av_clock.state.lock() else {
         return;
     };
@@ -644,6 +654,8 @@ mod tests {
         assert!(j.contains("\"av_drift_samples\":0"));
         assert!(j.contains("\"av_drift_zone\":0"));
         assert!(j.contains("\"av_hysteresis_samples\":0"));
+        assert!(j.contains("\"av_offset_abs_max_ms\":0"));
+        assert!(j.contains("\"av_offset_last_sample_ms\":0"));
     }
 
     #[test]
@@ -652,10 +664,14 @@ mod tests {
         s.audio_resyncs.store(3, Ordering::Relaxed);
         s.audio_resync_dropped.store(7, Ordering::Relaxed);
         s.audio_backlog_max_ms.store(281, Ordering::Relaxed);
+        s.av_offset_abs_max_ms.store(412, Ordering::Relaxed);
+        s.av_offset_last_sample_ms.store(-37, Ordering::Relaxed);
         let j = s.to_json();
         assert!(j.contains("\"audio_resyncs\":3"));
         assert!(j.contains("\"audio_resync_dropped\":7"));
         assert!(j.contains("\"audio_backlog_max_ms\":281"));
+        assert!(j.contains("\"av_offset_abs_max_ms\":412"));
+        assert!(j.contains("\"av_offset_last_sample_ms\":-37"));
     }
 
     #[test]
