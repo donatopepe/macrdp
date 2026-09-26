@@ -266,7 +266,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
   written buffer. Scheduler remains
   isolated from live `client_loop`;
   wiring still requires a controlled producer handoff and shutdown test before changing the active
-  path. Owner now also exposes a typed status snapshot, zero-value status constructor, explicit owner-state enum, and pure lifecycle transition helper; integration harness now covers all six typed producer classes and still needs live client_loop adapters. Current release deploy has passed live restart; runtime remains `SharedWriter` until adapter migration.
+  path. Owner now also exposes a typed status snapshot, zero-value status constructor, explicit owner-state enum, and pure lifecycle transition helper; integration harness now covers concurrent all-six typed producer handoff, drain, and class FIFO, and still needs live client_loop adapters. Current release deploy has passed live restart; runtime remains `SharedWriter` until adapter migration.
   SharedWriter labels audio socket-write timing separately without changing ownership; owner now
   exposes writer construction, typed ingress-writer handoff, `with_ingress` setup, and explicit
   shutdown/drain signaling tests for a future controlled handoff, but live wiring remains blocked.

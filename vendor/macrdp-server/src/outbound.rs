@@ -1061,6 +1061,23 @@ mod tests {
         writes: Vec<Vec<u8>>,
     }
 
+    #[derive(Debug, Clone)]
+    struct RecordingWriter {
+        writes: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl FramedWrite for RecordingWriter {
+        type WriteAllFut<'write>
+            = std::future::Ready<io::Result<()>>
+        where
+            Self: 'write;
+
+        fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+            self.writes.lock().unwrap().push(buf.to_vec());
+            std::future::ready(Ok(()))
+        }
+    }
+
     impl FramedWrite for FakeWriter {
         type WriteAllFut<'write>
             = std::future::Ready<io::Result<()>>
@@ -1273,6 +1290,83 @@ mod tests {
 
         for expected in 1..=6 {
             assert_eq!(receiver.recv().await.unwrap().bytes, vec![expected]);
+        }
+    }
+
+    #[tokio::test]
+    async fn live_handoff_harness_runs_all_typed_producers_and_drains() {
+        let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (owner, ingress, receiver) = OutboundOwner::channel(
+            RecordingWriter {
+                writes: std::sync::Arc::clone(&writes),
+            },
+            4096,
+            64,
+        );
+        let OutboundIngressSet {
+            mut control,
+            mut audio,
+            mut clipboard,
+            mut egfx,
+            mut display,
+            mut bulk,
+        } = ingress.typed_writers();
+        drop(ingress);
+
+        let owner_fut = owner.run(receiver);
+        let (owner_result, control_result, audio_result, clipboard_result, egfx_result, display_result, bulk_result) = tokio::join!(
+            owner_fut,
+            async move {
+                for sequence in 0..8u8 {
+                    control.write_all(&[1, sequence]).await.unwrap();
+                }
+            },
+            async move {
+                for sequence in 0..8u8 {
+                    audio.write_all(&[2, sequence]).await.unwrap();
+                }
+            },
+            async move {
+                for sequence in 0..8u8 {
+                    clipboard.write_all(&[3, sequence]).await.unwrap();
+                }
+            },
+            async move {
+                for sequence in 0..8u8 {
+                    egfx.write_all(&[4, sequence]).await.unwrap();
+                }
+            },
+            async move {
+                for sequence in 0..8u8 {
+                    display.write_all(&[5, sequence]).await.unwrap();
+                }
+            },
+            async move {
+                for sequence in 0..8u8 {
+                    bulk.write_all(&[6, sequence]).await.unwrap();
+                }
+            },
+        );
+
+        owner_result.unwrap();
+        let _ = (
+            control_result,
+            audio_result,
+            clipboard_result,
+            egfx_result,
+            display_result,
+            bulk_result,
+        );
+
+        let mut seen: [Vec<u8>; 7] = std::array::from_fn(|_| Vec::new());
+        for buffer in writes.lock().unwrap().iter() {
+            assert_eq!(buffer.len() % 2, 0);
+            for pair in buffer.chunks_exact(2) {
+                seen[usize::from(pair[0])].push(pair[1]);
+            }
+        }
+        for class in 1..=6 {
+            assert_eq!(seen[class], (0..8u8).collect::<Vec<_>>());
         }
     }
 
