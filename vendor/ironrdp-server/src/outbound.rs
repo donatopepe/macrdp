@@ -603,6 +603,10 @@ impl<W: FramedWrite> OutboundOwner<W> {
     /// finite batch.
     pub const MAX_INGRESS_BATCH: usize = 64;
 
+    pub const fn max_ingress_batch() -> usize {
+        Self::MAX_INGRESS_BATCH
+    }
+
     /// Run the single socket owner until all producers close the handoff.
     ///
     /// The receive side may use `try_recv` while no write is in progress to
@@ -772,6 +776,12 @@ mod tests {
             self.writes.push(buf.to_vec());
             std::future::ready(Ok(()))
         }
+    }
+
+    #[test]
+    fn ingress_batch_budget_is_explicit_and_bounded() {
+        assert_eq!(OutboundOwner::<FakeWriter>::max_ingress_batch(), 64);
+        assert!(OutboundOwner::<FakeWriter>::max_ingress_batch() > 0);
     }
 
     #[test]
