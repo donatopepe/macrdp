@@ -771,6 +771,27 @@ mod tests {
     }
 
     #[test]
+    fn owner_snapshot_combines_scheduler_and_ingress_counters() {
+        let (mut owner, ingress, _receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 1);
+        owner.try_push(packet(OutboundClass::Control, 1)).unwrap();
+        ingress.try_send(packet(OutboundClass::Egfx, 2)).unwrap();
+        assert!(matches!(
+            ingress.try_send(packet(OutboundClass::Display, 3)),
+            Err(mpsc::error::TrySendError::Full(_))
+        ));
+
+        let (snapshot, enqueued, rejected) = owner.scheduler_snapshot_with_ingress(&ingress);
+        assert_eq!(snapshot.queued_packets, 1);
+        assert_eq!(snapshot.queued_bytes, 1);
+        assert_eq!(
+            snapshot.classes[OutboundClass::Control.index()],
+            OutboundClassStats { packets: 1, bytes: 1 }
+        );
+        assert_eq!(enqueued, 1);
+        assert_eq!(rejected, 1);
+    }
+
+    #[test]
     fn snapshot_reports_typed_queue_occupancy_and_counters() {
         let mut q = OutboundScheduler::new(32);
         q.try_push(packet(OutboundClass::Control, 1)).unwrap();
