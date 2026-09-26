@@ -492,6 +492,19 @@ impl<W> OutboundOwner<W> {
         self.scheduler.try_push_audio(upper_bound_bytes, build)
     }
 
+    /// Reserve owner byte budget before framing an audio packet. This is the
+    /// producer-side pre-framing admission boundary for a future live adapter.
+    pub fn try_push_audio_upper_bound<F>(
+        &mut self,
+        upper_bound_bytes: usize,
+        build: F,
+    ) -> Result<AudioEnqueue, EnqueueError>
+    where
+        F: FnOnce() -> Vec<u8>,
+    {
+        self.try_push_audio(upper_bound_bytes, build)
+    }
+
     pub fn into_inner(self) -> W {
         self.writer
     }
