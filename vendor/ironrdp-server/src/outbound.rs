@@ -497,6 +497,14 @@ impl<W> OutboundOwner<W> {
         (ingress.enqueued_packets(), ingress.rejected_packets())
     }
 
+    pub fn ingress_enqueued_packets(&self, ingress: &OutboundOwnerIngress) -> u64 {
+        ingress.enqueued_packets()
+    }
+
+    pub fn ingress_rejected_packets(&self, ingress: &OutboundOwnerIngress) -> u64 {
+        ingress.rejected_packets()
+    }
+
     pub fn new(writer: W, max_bytes: usize) -> Self {
         Self {
             scheduler: OutboundScheduler::new(max_bytes),
