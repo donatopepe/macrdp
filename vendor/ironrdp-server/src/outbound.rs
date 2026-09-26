@@ -239,6 +239,10 @@ impl OutboundScheduler {
         self.class_stats(class)
     }
 
+    pub fn has_capacity_for_class(&self, bytes: usize) -> bool {
+        self.has_capacity_for(bytes)
+    }
+
     fn has_capacity_for(&self, bytes: usize) -> bool {
         bytes <= self.max_bytes.saturating_sub(self.queued_bytes)
     }
