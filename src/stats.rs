@@ -480,6 +480,21 @@ mod tests {
         assert!(j.contains("\"width\":1920"));
         assert!(j.contains("\"bitrate_bps\":4000000"));
         assert!(j.contains("\"fps\":60"));
+        assert!(j.contains("\"audio_resyncs\":0"));
+        assert!(j.contains("\"audio_resync_dropped\":0"));
+        assert!(j.contains("\"audio_backlog_max_ms\":0"));
+    }
+
+    #[test]
+    fn audio_resync_stats_are_serialized() {
+        let s = SessionStats::default();
+        s.audio_resyncs.store(3, Ordering::Relaxed);
+        s.audio_resync_dropped.store(7, Ordering::Relaxed);
+        s.audio_backlog_max_ms.store(281, Ordering::Relaxed);
+        let j = s.to_json();
+        assert!(j.contains("\"audio_resyncs\":3"));
+        assert!(j.contains("\"audio_resync_dropped\":7"));
+        assert!(j.contains("\"audio_backlog_max_ms\":281"));
     }
 
     #[test]
