@@ -969,6 +969,39 @@ impl<W: FramedWrite> OutboundOwner<W> {
         Ok(writer)
     }
 
+    /// Admit packets already copied into bounded ingress, then synchronously
+    /// flush owner queue. Intended for client-loop integration: no socket write
+    /// is ever placed in `select!`, timed out, aborted, or retried.
+    pub async fn pump_ingress(&mut self, receiver: &mut mpsc::Receiver<OutboundPacket>) -> io::Result<bool> {
+        let mut progressed = false;
+        for _ in 0..Self::MAX_INGRESS_BATCH {
+            let mut packet = match receiver.try_recv() {
+                Ok(packet) => packet,
+                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => break,
+            };
+            loop {
+                match self.try_push(packet) {
+                    Ok(()) => break,
+                    Err(EnqueueError::QueueFull(returned)) => {
+                        packet = returned;
+                        if !self.write_next().await? {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "outbound ingress packet cannot fit owner budget",
+                            ));
+                        }
+                        progressed = true;
+                    }
+                }
+            }
+            progressed = true;
+        }
+        while self.write_next().await? {
+            progressed = true;
+        }
+        Ok(progressed)
+    }
+
     fn admit_packet(
         scheduler: &mut OutboundScheduler,
         packet: OutboundPacket,
