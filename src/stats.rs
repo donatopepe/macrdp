@@ -21,7 +21,7 @@
 //! model as the other helper channels (see docs/macos-gotchas.md).
 
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI8, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// The live snapshot. Every field is an atomic so the encode path can update it
@@ -136,6 +136,8 @@ pub struct SessionStats {
     pub av_drift_ppm: AtomicI64,
     /// Number of source-clock samples folded into the ppm estimator.
     pub av_drift_samples: AtomicU64,
+    /// Hysteretic telemetry-only drift zone: -1 behind, 0 stable, 1 ahead.
+    pub av_drift_zone: AtomicI8,
     pub aac: AtomicBool,
     av_clock: AvClockTracker,
 }
@@ -145,11 +147,130 @@ struct AvClockTracker {
     state: Mutex<AvClockState>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvDriftZone {
+    AudioBehind = -1,
+    Stable = 0,
+    AudioAhead = 1,
+}
+
+impl AvDriftZone {
+    const fn as_i8(self) -> i8 {
+        self as i8
+    }
+}
+
+/// Pure hysteresis classifier for source-clock drift telemetry.
+///
+/// The policy intentionally returns a zone only; it does not alter audio,
+/// video, pacing, or playback. A future scheduler-owned correction policy can
+/// consume the stable zone transitions without reimplementing deadbands.
+#[derive(Debug, Clone, Copy)]
+pub struct AvDriftHysteresis {
+    zone: AvDriftZone,
+    pending_zone: Option<AvDriftZone>,
+    pending_samples: u8,
+    hold_samples: u8,
+}
+
+impl Default for AvDriftHysteresis {
+    fn default() -> Self {
+        Self::new(3)
+    }
+}
+
+impl AvDriftHysteresis {
+    pub const ENTER_OFFSET_MS: i64 = 80;
+    pub const EXIT_OFFSET_MS: i64 = 40;
+    pub const ENTER_DRIFT_PPM: i64 = 500;
+    pub const EXIT_DRIFT_PPM: i64 = 250;
+    pub const DEFAULT_HOLD_SAMPLES: u8 = 3;
+
+    pub const fn new(hold_samples: u8) -> Self {
+        Self {
+            zone: AvDriftZone::Stable,
+            pending_zone: None,
+            pending_samples: 0,
+            hold_samples: if hold_samples == 0 { 1 } else { hold_samples },
+        }
+    }
+
+    pub const fn zone(&self) -> AvDriftZone {
+        self.zone
+    }
+
+    fn within(value: i64, limit: i64) -> bool {
+        value >= -limit && value <= limit
+    }
+
+    fn entering_zone(offset_ms: i64, drift_ppm: i64) -> AvDriftZone {
+        if offset_ms >= Self::ENTER_OFFSET_MS || drift_ppm >= Self::ENTER_DRIFT_PPM {
+            AvDriftZone::AudioAhead
+        } else if offset_ms <= -Self::ENTER_OFFSET_MS || drift_ppm <= -Self::ENTER_DRIFT_PPM {
+            AvDriftZone::AudioBehind
+        } else {
+            AvDriftZone::Stable
+        }
+    }
+
+    fn desired_zone(&self, offset_ms: i64, drift_ppm: i64) -> AvDriftZone {
+        match self.zone {
+            AvDriftZone::Stable => Self::entering_zone(offset_ms, drift_ppm),
+            AvDriftZone::AudioAhead => {
+                if offset_ms <= -Self::ENTER_OFFSET_MS || drift_ppm <= -Self::ENTER_DRIFT_PPM {
+                    AvDriftZone::AudioBehind
+                } else if Self::within(offset_ms, Self::EXIT_OFFSET_MS)
+                    && Self::within(drift_ppm, Self::EXIT_DRIFT_PPM)
+                {
+                    AvDriftZone::Stable
+                } else {
+                    AvDriftZone::AudioAhead
+                }
+            }
+            AvDriftZone::AudioBehind => {
+                if offset_ms >= Self::ENTER_OFFSET_MS || drift_ppm >= Self::ENTER_DRIFT_PPM {
+                    AvDriftZone::AudioAhead
+                } else if Self::within(offset_ms, Self::EXIT_OFFSET_MS)
+                    && Self::within(drift_ppm, Self::EXIT_DRIFT_PPM)
+                {
+                    AvDriftZone::Stable
+                } else {
+                    AvDriftZone::AudioBehind
+                }
+            }
+        }
+    }
+
+    pub fn update(&mut self, offset_ms: i64, drift_ppm: i64) -> AvDriftZone {
+        let desired = self.desired_zone(offset_ms, drift_ppm);
+        if desired == self.zone {
+            self.pending_zone = None;
+            self.pending_samples = 0;
+            return self.zone;
+        }
+
+        if self.pending_zone == Some(desired) {
+            self.pending_samples = self.pending_samples.saturating_add(1);
+        } else {
+            self.pending_zone = Some(desired);
+            self.pending_samples = 1;
+        }
+
+        if self.pending_samples >= self.hold_samples {
+            self.zone = desired;
+            self.pending_zone = None;
+            self.pending_samples = 0;
+        }
+        self.zone
+    }
+}
+
 #[derive(Default)]
 struct AvClockState {
     anchor_pts_ms: Option<i64>,
     anchor_offset_ms: i64,
     drift_ppm: i64,
+    hysteresis: AvDriftHysteresis,
 }
 
 impl SessionStats {
@@ -172,7 +293,7 @@ impl SessionStats {
                 "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
                 "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
                 "\"av_offset_ewma_ms\":{},\"av_offset_ewma_samples\":{},",
-                "\"av_drift_ppm\":{},\"av_drift_samples\":{},",
+                "\"av_drift_ppm\":{},\"av_drift_samples\":{},\"av_drift_zone\":{},",
                 "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
             ),
             self.connected.load(Ordering::Relaxed),
@@ -231,6 +352,7 @@ impl SessionStats {
             self.av_offset_ewma_samples.load(Ordering::Relaxed),
             self.av_drift_ppm.load(Ordering::Relaxed),
             self.av_drift_samples.load(Ordering::Relaxed),
+            self.av_drift_zone.load(Ordering::Relaxed),
             self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
@@ -298,6 +420,9 @@ pub fn record_av_clock_pair(audio_pts_ms: i64, video_pts_ms: i64) {
                 .drift_ppm
                 .saturating_add((instant_ppm.saturating_sub(clock.drift_ppm)) / 8);
             stats.av_drift_ppm.store(clock.drift_ppm, Ordering::Relaxed);
+            let drift_ppm = clock.drift_ppm;
+            let zone = clock.hysteresis.update(offset_ms, drift_ppm);
+            stats.av_drift_zone.store(zone.as_i8(), Ordering::Relaxed);
             stats.av_drift_samples.fetch_add(1, Ordering::Relaxed);
             clock.anchor_pts_ms = Some(video_pts_ms);
             clock.anchor_offset_ms = offset_ms;
@@ -488,6 +613,7 @@ mod tests {
         assert!(j.contains("\"audio_resync_dropped\":0"));
         assert!(j.contains("\"audio_backlog_max_ms\":0"));
         assert!(j.contains("\"av_drift_samples\":0"));
+        assert!(j.contains("\"av_drift_zone\":0"));
     }
 
     #[test]
@@ -500,6 +626,24 @@ mod tests {
         assert!(j.contains("\"audio_resyncs\":3"));
         assert!(j.contains("\"audio_resync_dropped\":7"));
         assert!(j.contains("\"audio_backlog_max_ms\":281"));
+    }
+
+    #[test]
+    fn drift_hysteresis_requires_hold_samples_and_deadband_exit() {
+        let mut h = AvDriftHysteresis::new(2);
+        assert_eq!(h.update(90, 0), AvDriftZone::Stable);
+        assert_eq!(h.update(90, 0), AvDriftZone::AudioAhead);
+        assert_eq!(h.update(45, 0), AvDriftZone::AudioAhead);
+        assert_eq!(h.update(39, 0), AvDriftZone::AudioAhead);
+        assert_eq!(h.update(39, 0), AvDriftZone::Stable);
+    }
+
+    #[test]
+    fn drift_hysteresis_requires_ppm_hold() {
+        let mut h = AvDriftHysteresis::default();
+        assert_eq!(h.update(0, 600), AvDriftZone::Stable);
+        assert_eq!(h.update(0, 600), AvDriftZone::Stable);
+        assert_eq!(h.update(0, 600), AvDriftZone::AudioAhead);
     }
 
     #[test]
