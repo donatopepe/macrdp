@@ -743,6 +743,10 @@ impl<W: FramedWrite> OutboundOwner<W> {
         }
         Ok(())
     }
+
+    pub fn is_drained(&self) -> bool {
+        self.scheduler.is_empty()
+    }
 }
 
 #[cfg(test)]

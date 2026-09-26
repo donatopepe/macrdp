@@ -257,7 +257,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
   `FramedWrite::write_all` is not cancellation-safe and can duplicate partial frames on retry.
   Added isolated `OutboundOwner` complete-buffer handoff, bounded same-class coalescing,
   shutdown-drain, bounded ingress backpressure, finite ingress-batch fairness, pending-buffer
-  drain, writer-error, partial-write, all-class typed ingress, ingress counters/snapshot accessors,
+  drain-state, writer-error, partial-write, all-class typed ingress, ingress counters/snapshot accessors,
   owner scheduler snapshots with ingress counters and tests,
   per-class packet/byte occupancy and class snapshots, packet budget probes, typed audio result helpers,
   opt-in outbound queue JSON gauges (reserved fields) and cumulative counter fields, pre-framing upper-bound admission,
