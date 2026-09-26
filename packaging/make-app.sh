@@ -74,6 +74,15 @@ sed -e "s/__VERSION__/$VERSION/g" -e "s#__BUNDLE_ID__#$BUNDLE_ID#g" \
     "$PKG_DIR/Info.plist" > "$STAGE/Contents/Info.plist"
 cp "$BIN" "$STAGE/Contents/MacOS/macrdp"
 chmod +x "$STAGE/Contents/MacOS/macrdp"
+# Verify payload before signing. codesign changes Mach-O signature metadata, so
+# post-sign byte comparison against target/release is invalid; this check proves
+# staged payload came directly from current release build.
+if ! cmp -s "$BIN" "$STAGE/Contents/MacOS/macrdp"; then
+    echo "staged executable differs from target/release/macrdp" >&2
+    exit 1
+fi
+SOURCE_PAYLOAD_SHA="$(shasum -a 256 "$BIN" | awk '{print $1}')"
+echo "==> release payload: $SOURCE_PAYLOAD_SHA"
 # No wrapper script: the LaunchAgent runs this signed binary directly with
 # `--config` (the binary reads config.env itself). That gives macOS Background
 # Task Management a stable Developer-ID identity to approve once, instead of an
@@ -233,21 +242,15 @@ rm -rf "$APP_DIR/macrdp.app"
 cp -R "$STAGE" "$APP_DIR/macrdp.app"
 codesign --verify --strict "$APP_DIR/macrdp.app"
 
-# Verify installed executable payload matches this checkout's release build
-# before any LaunchAgent restart. Signing adds different code signatures to the
-# source and bundle copies, so compare temporary unsigned payloads instead of
-# comparing signed files byte-for-byte.
+# Verify install copy equals signed staging copy. This catches stale or partial
+# app installs while avoiding invalid comparison between differently signed files.
 INSTALLED_BIN="$APP_DIR/macrdp.app/Contents/MacOS/macrdp"
-VERIFY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/macrdp-install-verify.XXXXXX")"
-trap 'rm -rf "$VERIFY_TMP"' EXIT
-cp "$BIN" "$VERIFY_TMP/source"
-cp "$INSTALLED_BIN" "$VERIFY_TMP/installed"
-codesign --remove-signature "$VERIFY_TMP/source" 2>/dev/null || true
-codesign --remove-signature "$VERIFY_TMP/installed" 2>/dev/null || true
-if ! cmp -s "$VERIFY_TMP/source" "$VERIFY_TMP/installed"; then
-    echo "installed executable payload differs from target/release/macrdp" >&2
+if ! cmp -s "$STAGE/Contents/MacOS/macrdp" "$INSTALLED_BIN"; then
+    echo "installed executable differs from staged macrdp.app" >&2
     exit 1
 fi
+INSTALLED_PAYLOAD_SHA="$(shasum -a 256 "$INSTALLED_BIN" | awk '{print $1}')"
+echo "==> installed executable: $INSTALLED_PAYLOAD_SHA"
 
 echo
 echo "Done. Installed: $APP_DIR/macrdp.app"
