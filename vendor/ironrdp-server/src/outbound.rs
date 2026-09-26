@@ -15,6 +15,7 @@ use std::collections::VecDeque;
 use std::io;
 
 use ironrdp_async::FramedWrite;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 
 /// Outbound traffic class. Ordering is FIFO within each class; scheduler policy
@@ -389,15 +390,43 @@ enum AdmissionError {
 #[derive(Clone)]
 pub struct OutboundOwnerIngress {
     sender: mpsc::Sender<OutboundPacket>,
+    enqueued_packets: std::sync::Arc<AtomicU64>,
+    rejected_packets: std::sync::Arc<AtomicU64>,
 }
 
 impl OutboundOwnerIngress {
     pub async fn send(&self, packet: OutboundPacket) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
-        self.sender.send(packet).await
+        match self.sender.send(packet).await {
+            Ok(()) => {
+                self.enqueued_packets.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(error) => {
+                self.rejected_packets.fetch_add(1, Ordering::Relaxed);
+                Err(error)
+            }
+        }
     }
 
     pub fn try_send(&self, packet: OutboundPacket) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
-        self.sender.try_send(packet)
+        match self.sender.try_send(packet) {
+            Ok(()) => {
+                self.enqueued_packets.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(error) => {
+                self.rejected_packets.fetch_add(1, Ordering::Relaxed);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn enqueued_packets(&self) -> u64 {
+        self.enqueued_packets.load(Ordering::Relaxed)
+    }
+
+    pub fn rejected_packets(&self) -> u64 {
+        self.rejected_packets.load(Ordering::Relaxed)
     }
 
     /// Audio admission performed before wire framing. This sends only an
@@ -476,7 +505,12 @@ impl<W> OutboundOwner<W> {
         channel_capacity: usize,
     ) -> (Self, OutboundOwnerIngress, mpsc::Receiver<OutboundPacket>) {
         let (sender, receiver) = mpsc::channel(channel_capacity);
-        (Self::new(writer, max_bytes), OutboundOwnerIngress { sender }, receiver)
+        let ingress = OutboundOwnerIngress {
+            sender,
+            enqueued_packets: std::sync::Arc::new(AtomicU64::new(0)),
+            rejected_packets: std::sync::Arc::new(AtomicU64::new(0)),
+        };
+        (Self::new(writer, max_bytes), ingress, receiver)
     }
 
     pub fn scheduler(&self) -> &OutboundScheduler {
@@ -806,6 +840,8 @@ mod tests {
             }
             mpsc::error::TrySendError::Closed(_) => panic!("owner ingress unexpectedly closed"),
         }
+        assert_eq!(ingress.enqueued_packets(), 1);
+        assert_eq!(ingress.rejected_packets(), 1);
     }
 
     #[tokio::test]
