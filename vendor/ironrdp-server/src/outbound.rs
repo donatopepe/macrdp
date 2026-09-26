@@ -12,7 +12,9 @@
 //! - queue capacity rejects packets instead of silently dropping wire data.
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
 
 use ironrdp_async::FramedWrite;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -447,6 +449,19 @@ pub struct OutboundOwnerIngress {
     rejected_packets: std::sync::Arc<AtomicU64>,
 }
 
+/// Producer-side writer for the future live handoff.
+///
+/// `write_all` here only copies one complete buffer into the bounded owner
+/// channel; it never touches the socket. The socket owner's `write_next` is
+/// still awaited directly and remains the only cancellation-sensitive write.
+#[derive(Clone)]
+pub struct OutboundIngressWriter {
+    sender: mpsc::Sender<OutboundPacket>,
+    class: OutboundClass,
+    enqueued_packets: std::sync::Arc<AtomicU64>,
+    rejected_packets: std::sync::Arc<AtomicU64>,
+}
+
 impl OutboundOwnerIngress {
     pub async fn send(&self, packet: OutboundPacket) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
         match self.sender.send(packet).await {
@@ -480,6 +495,15 @@ impl OutboundOwnerIngress {
 
     pub fn rejected_packets(&self) -> u64 {
         self.rejected_packets.load(Ordering::Relaxed)
+    }
+
+    pub fn writer(&self, class: OutboundClass) -> OutboundIngressWriter {
+        OutboundIngressWriter {
+            sender: self.sender.clone(),
+            class,
+            enqueued_packets: std::sync::Arc::clone(&self.enqueued_packets),
+            rejected_packets: std::sync::Arc::clone(&self.rejected_packets),
+        }
     }
 
     /// Audio admission performed before wire framing. This sends only an
@@ -538,6 +562,36 @@ impl OutboundOwnerIngress {
     pub fn try_send_bulk(&self, packet: OutboundPacket) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
         debug_assert_eq!(packet.class, OutboundClass::Bulk);
         self.try_send(packet)
+    }
+}
+
+impl FramedWrite for OutboundIngressWriter {
+    type WriteAllFut<'write>
+        = Pin<Box<dyn Future<Output = io::Result<()>> + 'write>>
+    where
+        Self: 'write;
+
+    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+        let sender = self.sender.clone();
+        let class = self.class;
+        let packet = OutboundPacket::new(class, buf.to_vec());
+        let enqueued_packets = std::sync::Arc::clone(&self.enqueued_packets);
+        let rejected_packets = std::sync::Arc::clone(&self.rejected_packets);
+        Box::pin(async move {
+            match sender.send(packet).await {
+                Ok(()) => {
+                    enqueued_packets.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                }
+                Err(_) => {
+                    rejected_packets.fetch_add(1, Ordering::Relaxed);
+                    Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "outbound owner ingress closed",
+                    ))
+                }
+            }
+        })
     }
 }
 
@@ -821,6 +875,17 @@ mod tests {
             self.writes.push(buf.to_vec());
             std::future::ready(Ok(()))
         }
+    }
+
+    #[tokio::test]
+    async fn ingress_writer_hands_complete_buffer_to_owner_channel() {
+        let (owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 1);
+        let mut writer = ingress.writer(OutboundClass::Audio);
+        writer.write_all(&[4, 5]).await.unwrap();
+        let packet = receiver.recv().await.unwrap();
+        assert_eq!(packet.class, OutboundClass::Audio);
+        assert_eq!(packet.bytes, vec![4, 5]);
+        drop(owner);
     }
 
     #[test]
