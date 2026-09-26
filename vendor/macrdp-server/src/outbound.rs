@@ -430,6 +430,19 @@ pub struct OutboundOwner<W> {
     writer: W,
 }
 
+/// Owner snapshot that can be shared with diagnostics without exposing writer
+/// state or allowing producers to bypass the single socket owner.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OutboundOwnerStatus {
+    pub queued_packets: usize,
+    pub queued_bytes: usize,
+    pub sent_packets: u64,
+    pub sent_bytes: u64,
+    pub rejected_packets: u64,
+    pub audio_dropped_packets: u64,
+    pub audio_dropped_bytes: u64,
+}
+
 /// Producer-side handoff for the single socket owner.
 ///
 /// The channel is bounded by packet count. The owner applies the stricter
@@ -865,6 +878,19 @@ impl<W: FramedWrite> OutboundOwner<W> {
 
     pub fn scheduler_snapshot(&self) -> OutboundSchedulerSnapshot {
         self.scheduler.snapshot()
+    }
+
+    pub fn status(&self, ingress: &OutboundOwnerIngress) -> OutboundOwnerStatus {
+        let snapshot = self.scheduler.snapshot();
+        OutboundOwnerStatus {
+            queued_packets: snapshot.queued_packets,
+            queued_bytes: snapshot.queued_bytes,
+            sent_packets: snapshot.sent_packets,
+            sent_bytes: snapshot.sent_bytes,
+            rejected_packets: ingress.rejected_packets(),
+            audio_dropped_packets: snapshot.audio_dropped_packets,
+            audio_dropped_bytes: snapshot.audio_dropped_bytes,
+        }
     }
 
     pub fn scheduler_snapshot_with_ingress(
