@@ -704,6 +704,10 @@ impl<W: FramedWrite> OutboundOwner<W> {
         })
     }
 
+    pub fn scheduler_snapshot(&self) -> OutboundSchedulerSnapshot {
+        self.scheduler.snapshot()
+    }
+
     /// Write one queued complete buffer.
     ///
     /// `FramedWrite::write_all` is not cancellation-safe. The caller must
