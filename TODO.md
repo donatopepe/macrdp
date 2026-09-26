@@ -269,7 +269,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
   path. Owner now also exposes a typed status snapshot, zero-value status constructor, explicit owner-state enum, pure lifecycle transition helper, bounded `pump_ingress` adapter, and `OutboundOwnerSession` receiver/owner bundle for controlled client-loop migration; integration harness covers concurrent all-six typed producer handoff, drain, and class FIFO. Runtime remains `SharedWriter` until adapter migration. Next live cutover must own `WriteHalf` outside client-loop `select!`, with explicit ingress-close/error propagation and reconnect rollback.
   SharedWriter labels audio socket-write timing separately without changing ownership; owner now
   exposes writer construction, typed ingress-writer handoff, `with_ingress` setup, and explicit
-  shutdown/drain signaling tests for a future controlled handoff, but live wiring remains blocked.
+  shutdown/drain signaling tests for a future controlled handoff, but live wiring remains blocked. The cutover boundary is now a single `client_loop` owner task; no producer may retain a `FramedWrite` or `WriteHalf` after activation.
 - [ ] **Perf (upstream candidates, vendored server — do NOT land as new divergences):** from
   the same audit: (a) `SharedWriter`/dispatch write coalescing — every fragment/event is its
   own `write_all` = 2 boxed futures + syscall + flush (`server.rs:2643` + git-pinned
