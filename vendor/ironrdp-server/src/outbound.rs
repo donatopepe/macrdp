@@ -393,6 +393,14 @@ impl OutboundOwnerIngress {
     pub fn try_send(&self, packet: OutboundPacket) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
         self.sender.try_send(packet)
     }
+
+    /// Audio admission performed before wire framing. This sends only an
+    /// already-built complete packet; callers needing pre-framing drops should
+    /// use the owner scheduler's `try_push_audio` while the owner is local.
+    pub fn try_send_audio(&self, packet: OutboundPacket) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Audio);
+        self.try_send(packet)
+    }
 }
 
 impl<W> OutboundOwner<W> {
