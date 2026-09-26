@@ -52,8 +52,14 @@ BUNDLE_ID="$BUNDLE_PREFIX.macrdp"
 
 VERSION="$(grep -m1 '^version' "$REPO_ROOT/Cargo.toml" | cut -d'"' -f2)"
 [ -n "$VERSION" ] || { echo "could not read version from Cargo.toml" >&2; exit 1; }
+GIT_REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+if git -C "$REPO_ROOT" diff --quiet HEAD -- 2>/dev/null; then
+    BUILD_REVISION="$GIT_REVISION"
+else
+    BUILD_REVISION="$GIT_REVISION-dirty"
+fi
 
-echo "==> macrdp.app v$VERSION  (id: $BUNDLE_ID, identity: $IDENTITY, install: $APP_DIR)"
+echo "==> macrdp.app v$VERSION  (id: $BUNDLE_ID, revision: $BUILD_REVISION, identity: $IDENTITY, install: $APP_DIR)"
 
 # 1. Build the release binary (native target).
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
@@ -72,6 +78,7 @@ mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 
 sed -e "s/__VERSION__/$VERSION/g" -e "s#__BUNDLE_ID__#$BUNDLE_ID#g" \
     "$PKG_DIR/Info.plist" > "$STAGE/Contents/Info.plist"
+printf '%s\n' "$BUILD_REVISION" > "$STAGE/Contents/Resources/build-revision"
 cp "$BIN" "$STAGE/Contents/MacOS/macrdp"
 chmod +x "$STAGE/Contents/MacOS/macrdp"
 # Verify payload before signing. codesign changes Mach-O signature metadata, so
@@ -241,6 +248,11 @@ fi
 rm -rf "$APP_DIR/macrdp.app"
 cp -R "$STAGE" "$APP_DIR/macrdp.app"
 codesign --verify --strict "$APP_DIR/macrdp.app"
+
+if [ "$(cat "$APP_DIR/macrdp.app/Contents/Resources/build-revision")" != "$BUILD_REVISION" ]; then
+    echo "installed app revision does not match checkout: expected $BUILD_REVISION" >&2
+    exit 1
+fi
 
 # Verify install copy equals signed staging copy. This catches stale or partial
 # app installs while avoiding invalid comparison between differently signed files.
