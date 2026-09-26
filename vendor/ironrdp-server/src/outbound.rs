@@ -744,6 +744,53 @@ mod tests {
         assert_eq!(writer.writes, vec![vec![1]]);
     }
 
+    #[tokio::test]
+    async fn owner_does_not_retry_after_simulated_partial_write() {
+        struct PartialWriter {
+            writes: Vec<Vec<u8>>,
+            partial_bytes: usize,
+        }
+
+        impl FramedWrite for PartialWriter {
+            type WriteAllFut<'write>
+                = std::future::Ready<io::Result<()>>
+            where
+                Self: 'write;
+
+            fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+                let written = self.partial_bytes.min(buf.len());
+                self.writes.push(buf[..written].to_vec());
+                std::future::ready(Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "simulated partial write",
+                )))
+            }
+        }
+
+        let mut owner = OutboundOwner::new(
+            PartialWriter {
+                writes: Vec::new(),
+                partial_bytes: 2,
+            },
+            32,
+        );
+        owner
+            .try_push(OutboundPacket::new(OutboundClass::Egfx, vec![1, 2, 3, 4]))
+            .unwrap();
+        owner.try_push(packet(OutboundClass::Display, 5)).unwrap();
+
+        assert_eq!(
+            owner.write_next().await.unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        // First buffer was partially observed exactly once. It is not in the
+        // scheduler anymore, and the following display buffer remains queued;
+        // reconnect/retry policy belongs to the connection owner.
+        assert_eq!(owner.scheduler().len(), 1);
+        let writer = owner.into_inner();
+        assert_eq!(writer.writes, vec![vec![1, 2]]);
+    }
+
     #[test]
     fn preserves_fifo_within_egfx() {
         let mut q = OutboundScheduler::new(100);
