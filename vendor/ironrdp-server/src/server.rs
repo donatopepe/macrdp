@@ -3016,11 +3016,14 @@ impl RdpServer {
                 }
                 let projected_buffer_ms = audio_shipped_ms + wave_ms - real_elapsed_ms;
                 if projected_buffer_ms > RESYNC_QUEUE_MS {
+                    let queued_before = audio_receiver.queued_duration_ms();
                     let dropped = audio_receiver.drop_oldest_until_below(MAX_LAG_MS);
                     if dropped > 0 {
                         debug!(
                             target: "audio_backlog",
                             dropped,
+                            queued_before,
+                            queued_after = audio_receiver.queued_duration_ms(),
                             projected_buffer_ms,
                             "resynced stale audio queue before playback"
                         );

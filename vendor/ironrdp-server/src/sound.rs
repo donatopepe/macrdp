@@ -129,6 +129,16 @@ impl AudioWaveReceiver {
         self.inner.queue.lock().expect("audio queue mutex poisoned").clear();
     }
 
+    pub fn queued_snapshot(&self) -> Vec<AudioWave> {
+        self.inner
+            .queue
+            .lock()
+            .expect("audio queue mutex poisoned")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         self.inner.queue.lock().expect("audio queue mutex poisoned").len()
     }

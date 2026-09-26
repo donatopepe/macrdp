@@ -376,7 +376,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
   `AudioWaveReceiver::drop_oldest_until_below` is now invoked only after projected audio backlog
   crosses 260 ms, trimming toward 200 ms; AAC duration metadata is honored. This is hysteretic
   stale-audio resync, not playback-clock correction; PTS drift EWMA remains telemetry-only and
-  AAC priming/packet-loss validation remains open. Detail: `project_av_sync_under_drops` memory.
+  AAC priming/packet-loss validation remains open. Resync logs queue duration before/after trim for
+  opt-in diagnosis. Detail: `project_av_sync_under_drops` memory.
 - [ ] **EGFX-over-UDP watchdog — ack-lag-pegged secondary trigger** (refinement of the
   shipped watchdog above). The watchdog fires on ~3s of *fully silent* acks; a real wedge
   dribbles a few stray acks before going silent, so it latched at `since_ack_ms≈7.7s` in
