@@ -55,6 +55,19 @@ done
 launchctl enable "gui/$UID_NUM/$LABEL"
 launchctl kickstart -k "gui/$UID_NUM/$LABEL"
 
+# Verify launchd is executing the just-installed app path, not a stale binary
+# or a different LaunchAgent label. This is intentionally a hard failure.
+for _ in 1 2 3 4 5; do
+    if launchctl print "gui/$UID_NUM/$LABEL" 2>/dev/null | grep -Fq "state = running"; then
+        break
+    fi
+    sleep 1
+done
+launchctl print "gui/$UID_NUM/$LABEL" 2>/dev/null | grep -Fq "$APP/Contents/MacOS/macrdp" || {
+    echo "LaunchAgent is not running the installed macrdp.app executable: $APP/Contents/MacOS/macrdp" >&2
+    exit 1
+}
+
 echo
 echo "Loaded $LABEL."
 echo "  status:  launchctl print gui/$UID_NUM/$LABEL | grep -E 'state|pid'"

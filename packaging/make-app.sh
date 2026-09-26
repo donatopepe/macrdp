@@ -233,6 +233,14 @@ rm -rf "$APP_DIR/macrdp.app"
 cp -R "$STAGE" "$APP_DIR/macrdp.app"
 codesign --verify --strict "$APP_DIR/macrdp.app"
 
+# Keep the installed executable byte-identical to this checkout's release
+# build. This makes an update verifiable before any LaunchAgent restart.
+INSTALLED_BIN="$APP_DIR/macrdp.app/Contents/MacOS/macrdp"
+if ! cmp -s "$BIN" "$INSTALLED_BIN"; then
+    echo "installed executable differs from target/release/macrdp" >&2
+    exit 1
+fi
+
 echo
 echo "Done. Installed: $APP_DIR/macrdp.app"
 codesign -dv "$APP_DIR/macrdp.app" 2>&1 | sed 's/^/    /'

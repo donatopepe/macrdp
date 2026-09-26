@@ -7,7 +7,7 @@
 - [ ] Add release automation for `packaging/release-app.sh` and upload assets.
 - [ ] Test fresh-machine install with:
       `curl -fsSL https://raw.githubusercontent.com/donatopepe/macrdp/main/packaging/install-remote.sh | bash`
-- [ ] Document TCC permissions, Keychain/password setup, VPN/security warning, uninstall, and upgrade/rollback.
+- [ ] Document TCC permissions, Keychain/password setup, VPN/security warning, uninstall, and upgrade/rollback. Local update scripts now verify installed/LaunchAgent executable path.
 - [ ] Never make the one-line installer build or execute source fetched from the network; require a release asset and verify checksum/signature.
 
 A living checklist of what's open, deferred, or parked. Detail lives in the
