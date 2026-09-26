@@ -184,6 +184,7 @@ impl AvDriftHysteresis {
     pub const EXIT_OFFSET_MS: i64 = 40;
     pub const ENTER_DRIFT_PPM: i64 = 500;
     pub const EXIT_DRIFT_PPM: i64 = 250;
+    #[allow(dead_code)]
     pub const DEFAULT_HOLD_SAMPLES: u8 = 3;
 
     pub const fn new(hold_samples: u8) -> Self {
@@ -195,6 +196,7 @@ impl AvDriftHysteresis {
         }
     }
 
+    #[allow(dead_code)]
     pub const fn zone(&self) -> AvDriftZone {
         self.zone
     }
