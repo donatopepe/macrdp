@@ -91,6 +91,8 @@ pub struct SessionStats {
     pub audio_resyncs: Arc<AtomicU64>,
     /// Waves removed by hysteretic stale-audio resync.
     pub audio_resync_dropped: Arc<AtomicU64>,
+    /// Maximum projected audio backlog observed since session start, in ms.
+    pub audio_backlog_max_ms: Arc<AtomicU32>,
     /// Rolling p50/p95/max capture age in ms.
     pub capture_age_p50_ms: AtomicU32,
     pub capture_age_p95_ms: AtomicU32,
@@ -159,7 +161,7 @@ impl SessionStats {
                 "\"encode_latency_ms\":{},\"ship_latency_ms\":{},\"encoded_pending\":{},",
                 "\"server_event_queue\":{},\"socket_write_stalls\":{},\"socket_write_ms\":{},",
                 "\"audio_queue\":{},\"audio_queue_ms\":{},\"audio_drops\":{},",
-                "\"audio_write_stalls\":{},\"audio_write_ms\":{},\"audio_resyncs\":{},\"audio_resync_dropped\":{},",
+                "\"audio_write_stalls\":{},\"audio_write_ms\":{},\"audio_resyncs\":{},\"audio_resync_dropped\":{},\"audio_backlog_max_ms\":{},",
                 "\"capture_age_p50_ms\":{},\"capture_age_p95_ms\":{},\"capture_age_max_ms\":{},",
                 "\"encode_latency_p50_ms\":{},\"encode_latency_p95_ms\":{},\"encode_latency_max_ms\":{},",
                 "\"ship_latency_p50_ms\":{},\"ship_latency_p95_ms\":{},\"ship_latency_max_ms\":{},",
@@ -200,6 +202,7 @@ impl SessionStats {
             self.audio_write_ms.load(Ordering::Relaxed),
             self.audio_resyncs.load(Ordering::Relaxed),
             self.audio_resync_dropped.load(Ordering::Relaxed),
+            self.audio_backlog_max_ms.load(Ordering::Relaxed),
             self.capture_age_p50_ms.load(Ordering::Relaxed),
             self.capture_age_p95_ms.load(Ordering::Relaxed),
             self.capture_age_max_ms.load(Ordering::Relaxed),

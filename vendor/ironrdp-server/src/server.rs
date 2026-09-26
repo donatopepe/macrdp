@@ -515,6 +515,7 @@ pub struct DiagnosticsHandle {
     pub audio_write_ms: Arc<AtomicU32>,
     pub audio_resyncs: Arc<AtomicU64>,
     pub audio_resync_dropped: Arc<AtomicU64>,
+    pub audio_backlog_max_ms: Arc<AtomicU32>,
     pub capture_age_window: LatencyWindow,
     pub encode_latency_window: LatencyWindow,
     pub ship_latency_window: LatencyWindow,
@@ -3017,6 +3018,10 @@ impl RdpServer {
                     audio_shipped_ms = real_elapsed_ms;
                 }
                 let projected_buffer_ms = audio_shipped_ms + wave_ms - real_elapsed_ms;
+                if let Some(diag) = &diagnostics {
+                    let backlog_ms = projected_buffer_ms.max(0.0).min(f64::from(u32::MAX)) as u32;
+                    diag.audio_backlog_max_ms.fetch_max(backlog_ms, Ordering::Relaxed);
+                }
                 if projected_buffer_ms > RESYNC_QUEUE_MS {
                     let queued_before = audio_receiver.queued_duration_ms();
                     let dropped = audio_receiver.drop_oldest_until_below(MAX_LAG_MS);
