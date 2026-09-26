@@ -707,6 +707,11 @@ impl<W: FramedWrite> OutboundOwner<W> {
         }
     }
 
+    pub async fn run_until_drained(mut self, receiver: mpsc::Receiver<OutboundPacket>) -> io::Result<W> {
+        let writer = self.run(receiver).await?;
+        Ok(writer)
+    }
+
     fn admit_packet(
         scheduler: &mut OutboundScheduler,
         packet: OutboundPacket,
@@ -967,6 +972,16 @@ mod tests {
         }
         assert_eq!(ingress.enqueued_packets(), 1);
         assert_eq!(ingress.rejected_packets(), 1);
+    }
+
+    #[tokio::test]
+    async fn owner_run_until_drained_closes_ingress_and_returns_writer() {
+        let (owner, ingress, receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 2);
+        ingress.send(packet(OutboundClass::Display, 7)).await.unwrap();
+        drop(ingress);
+
+        let writer = owner.run_until_drained(receiver).await.unwrap();
+        assert_eq!(writer.writes, vec![vec![7]]);
     }
 
     #[tokio::test]
