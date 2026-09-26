@@ -12,6 +12,9 @@
 //! - queue capacity rejects packets instead of silently dropping wire data.
 
 use std::collections::VecDeque;
+use std::io;
+
+use ironrdp_async::FramedWrite;
 
 /// Outbound traffic class. Ordering is FIFO within each class; scheduler policy
 /// only decides which class gets next service.
@@ -210,12 +213,141 @@ impl OutboundScheduler {
     }
 }
 
+/// Single-owner adapter for complete outbound wire buffers.
+///
+/// This type is intentionally not wired into `client_loop` yet. It provides
+/// the handoff boundary needed for that migration: one owner selects a packet,
+/// keeps its complete buffer alive, and awaits exactly one `write_all` call.
+/// On write failure the connection owner must stop; this adapter never retries
+/// or requeues a partially written buffer.
+pub struct OutboundOwner<W> {
+    scheduler: OutboundScheduler,
+    writer: W,
+}
+
+impl<W> OutboundOwner<W> {
+    pub fn new(writer: W, max_bytes: usize) -> Self {
+        Self {
+            scheduler: OutboundScheduler::new(max_bytes),
+            writer,
+        }
+    }
+
+    pub fn scheduler(&self) -> &OutboundScheduler {
+        &self.scheduler
+    }
+
+    pub fn scheduler_mut(&mut self) -> &mut OutboundScheduler {
+        &mut self.scheduler
+    }
+
+    pub fn try_push(&mut self, packet: OutboundPacket) -> Result<(), EnqueueError> {
+        self.scheduler.try_push(packet)
+    }
+
+    pub fn into_inner(self) -> W {
+        self.writer
+    }
+}
+
+impl<W: FramedWrite> OutboundOwner<W> {
+    /// Write one queued complete buffer.
+    ///
+    /// `FramedWrite::write_all` is not cancellation-safe. The caller must
+    /// await this future to completion and must not place it in `select!`, a
+    /// timeout, or an abortable task. An error ends ownership of this socket;
+    /// the selected packet is never retried because it may have been partially
+    /// written already.
+    pub async fn write_next(&mut self) -> io::Result<bool> {
+        let Some(packet) = self.scheduler.pop_next() else {
+            return Ok(false);
+        };
+        self.writer.write_all(&packet.bytes).await?;
+        Ok(true)
+    }
+
+    /// Drain packets after producers have stopped and before socket shutdown.
+    ///
+    /// Like `write_next`, this must run to completion without cancellation.
+    pub async fn drain(&mut self) -> io::Result<()> {
+        while !self.scheduler.is_empty() {
+            self.write_next().await?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn packet(class: OutboundClass, id: u8) -> OutboundPacket {
         OutboundPacket::new(class, vec![id])
+    }
+
+    #[derive(Default)]
+    struct FakeWriter {
+        writes: Vec<Vec<u8>>,
+    }
+
+    impl FramedWrite for FakeWriter {
+        type WriteAllFut<'write>
+            = std::future::Ready<io::Result<()>>
+        where
+            Self: 'write;
+
+        fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+            self.writes.push(buf.to_vec());
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_writes_complete_buffers_in_scheduler_order_and_drains() {
+        let mut owner = OutboundOwner::new(FakeWriter::default(), 32);
+        owner.try_push(packet(OutboundClass::Egfx, 1)).unwrap();
+        owner.try_push(packet(OutboundClass::Egfx, 2)).unwrap();
+        owner.try_push(packet(OutboundClass::Audio, 3)).unwrap();
+
+        assert!(owner.write_next().await.unwrap());
+        assert!(owner.write_next().await.unwrap());
+        owner.drain().await.unwrap();
+        assert!(!owner.write_next().await.unwrap());
+
+        let writer = owner.into_inner();
+        assert_eq!(writer.writes, vec![vec![3], vec![1], vec![2]]);
+    }
+
+    #[tokio::test]
+    async fn owner_retains_unsent_packets_after_writer_error_without_retrying_failed_one() {
+        struct FailingWriter {
+            writes: Vec<Vec<u8>>,
+        }
+
+        impl FramedWrite for FailingWriter {
+            type WriteAllFut<'write>
+                = std::future::Ready<io::Result<()>>
+            where
+                Self: 'write;
+
+            fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+                self.writes.push(buf.to_vec());
+                std::future::ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "fake")))
+            }
+        }
+
+        let mut owner = OutboundOwner::new(FailingWriter { writes: Vec::new() }, 32);
+        owner.try_push(packet(OutboundClass::Egfx, 1)).unwrap();
+        owner.try_push(packet(OutboundClass::Egfx, 2)).unwrap();
+
+        assert_eq!(
+            owner.write_next().await.unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(owner.scheduler().len(), 1);
+
+        let writer = owner.into_inner();
+        assert_eq!(writer.writes, vec![vec![1]]);
     }
 
     #[test]
