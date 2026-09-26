@@ -624,6 +624,10 @@ impl<W> OutboundOwner<W> {
 }
 
 impl<W: FramedWrite> OutboundOwner<W> {
+    pub fn from_writer(writer: W, max_bytes: usize) -> Self {
+        Self::new(writer, max_bytes)
+    }
+
     /// Maximum number of producer packets admitted between socket writes.
     ///
     /// A continuously-ready ingress must not keep the owner in `try_recv`
