@@ -538,6 +538,14 @@ pub struct OutboundShutdown {
     notify: std::sync::Arc<Notify>,
 }
 
+/// Lifecycle wrapper for controlled client-loop migration. It owns receiver
+/// and socket owner together; producers only retain typed ingress writers.
+pub struct OutboundOwnerSession<W> {
+    owner: OutboundOwner<W>,
+    receiver: mpsc::Receiver<OutboundPacket>,
+    shutdown: OutboundShutdown,
+}
+
 impl OutboundShutdown {
     pub fn new() -> Self {
         Self {
@@ -567,6 +575,34 @@ impl OutboundShutdown {
 impl Default for OutboundShutdown {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<W: FramedWrite> OutboundOwnerSession<W> {
+    pub fn channel(
+        writer: W,
+        max_bytes: usize,
+        channel_capacity: usize,
+    ) -> (Self, OutboundOwnerIngress, OutboundIngressSet) {
+        let (owner, ingress, receiver) = OutboundOwner::channel(writer, max_bytes, channel_capacity);
+        let typed = ingress.typed_writers();
+        (
+            Self {
+                owner,
+                receiver,
+                shutdown: OutboundShutdown::new(),
+            },
+            ingress,
+            typed,
+        )
+    }
+
+    pub fn shutdown_handle(&self) -> OutboundShutdown {
+        self.shutdown.clone()
+    }
+
+    pub async fn run(self) -> io::Result<W> {
+        self.owner.run_with_shutdown(self.receiver, self.shutdown).await
     }
 }
 
@@ -1324,6 +1360,17 @@ mod tests {
         for expected in 1..=6 {
             assert_eq!(receiver.recv().await.unwrap().bytes, vec![expected]);
         }
+    }
+
+    #[tokio::test]
+    async fn owner_session_wraps_typed_handoff_and_shutdown() {
+        let (session, ingress, mut writers) = OutboundOwnerSession::channel(FakeWriter::default(), 64, 8);
+        let shutdown = session.shutdown_handle();
+        writers.control.write_all(&[1]).await.unwrap();
+        drop(ingress);
+        let writer = session.run().await.unwrap();
+        assert_eq!(writer.writes, vec![vec![1]]);
+        shutdown.request();
     }
 
     #[tokio::test]
