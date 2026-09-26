@@ -366,7 +366,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
 - [x] **A/V offset EWMA + drift telemetry** — source audio/video PTS feed `av_offset_ewma_ms`,
   `av_offset_ewma_samples`, `av_drift_ppm`, and `av_drift_samples`; playback is untouched. A
   telemetry-only drift hysteresis classifier now uses 80/40 ms and 500/250 ppm enter/exit
-  deadbands with a 3-sample hold; it exposes stable/ahead/behind zone state without correction.
+  deadbands with a 3-sample hold; it exposes stable/ahead/behind zone state and accepted-sample
+  count without correction.
   Unit tests cover offset and ppm holds, deadband exit, and pathological-value clamping.
   Correction policy still waits for scheduler integration and more live drift data. Live session currently shows offset
   around -27 ms; no correction is applied automatically.

@@ -145,6 +145,8 @@ pub struct SessionStats {
     pub av_drift_samples: AtomicU64,
     /// Hysteretic telemetry-only drift zone: -1 behind, 0 stable, 1 ahead.
     pub av_drift_zone: AtomicI8,
+    /// Offset/zone samples accepted by drift hysteresis; increments each PTS interval.
+    pub av_hysteresis_samples: AtomicU64,
     pub aac: AtomicBool,
     av_clock: AvClockTracker,
 }
@@ -306,7 +308,7 @@ impl SessionStats {
                 "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
                 "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
                 "\"av_offset_ewma_ms\":{},\"av_offset_ewma_samples\":{},",
-                "\"av_drift_ppm\":{},\"av_drift_samples\":{},\"av_drift_zone\":{},",
+                "\"av_drift_ppm\":{},\"av_drift_samples\":{},\"av_drift_zone\":{},\"av_hysteresis_samples\":{},",
                 "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
             ),
             self.connected.load(Ordering::Relaxed),
@@ -372,6 +374,7 @@ impl SessionStats {
             self.av_drift_ppm.load(Ordering::Relaxed),
             self.av_drift_samples.load(Ordering::Relaxed),
             self.av_drift_zone.load(Ordering::Relaxed),
+            self.av_hysteresis_samples.load(Ordering::Relaxed),
             self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
@@ -442,6 +445,7 @@ pub fn record_av_clock_pair(audio_pts_ms: i64, video_pts_ms: i64) {
             let drift_ppm = clock.drift_ppm;
             let zone = clock.hysteresis.update(offset_ms, drift_ppm);
             stats.av_drift_zone.store(zone.as_i8(), Ordering::Relaxed);
+            stats.av_hysteresis_samples.fetch_add(1, Ordering::Relaxed);
             stats.av_drift_samples.fetch_add(1, Ordering::Relaxed);
             clock.anchor_pts_ms = Some(video_pts_ms);
             clock.anchor_offset_ms = offset_ms;
@@ -639,6 +643,7 @@ mod tests {
         assert!(j.contains("\"audio_backlog_max_ms\":0"));
         assert!(j.contains("\"av_drift_samples\":0"));
         assert!(j.contains("\"av_drift_zone\":0"));
+        assert!(j.contains("\"av_hysteresis_samples\":0"));
     }
 
     #[test]
