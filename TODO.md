@@ -258,7 +258,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
   Added isolated `OutboundOwner` complete-buffer handoff, bounded same-class coalescing,
   shutdown-drain, bounded ingress backpressure, finite ingress-batch fairness, pending-buffer
   drain, writer-error, partial-write, all-class typed ingress, pre-framing upper-bound admission,
-  and fake-writer tests; it awaits each write exactly once and never retries a failed/partially
+  audio-admission debug guard, and fake-writer tests; it awaits each write exactly once and never retries a failed/partially
   written buffer. Scheduler remains
   isolated from live `client_loop`;
   wiring still requires a controlled producer handoff and shutdown test before changing the active

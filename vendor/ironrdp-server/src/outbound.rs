@@ -239,6 +239,12 @@ impl OutboundScheduler {
     /// this is intentional: audio may be dropped before framing, while EGFX
     /// must apply backpressure rather than silently lose a reference frame.
     pub fn try_push(&mut self, packet: OutboundPacket) -> Result<(), EnqueueError> {
+        if packet.class == OutboundClass::Audio {
+            debug_assert!(
+                packet.len() <= self.max_bytes,
+                "audio should be admitted with try_push_audio before framing"
+            );
+        }
         if !self.has_capacity_for(packet.len()) {
             self.rejected_packets = self.rejected_packets.saturating_add(1);
             return Err(EnqueueError::QueueFull(packet));
