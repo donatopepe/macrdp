@@ -609,6 +609,14 @@ impl<W> OutboundOwner<W> {
     pub fn into_inner(self) -> W {
         self.writer
     }
+
+    pub fn audio_admission_result(
+        &mut self,
+        upper_bound_bytes: usize,
+        build: impl FnOnce() -> Vec<u8>,
+    ) -> Result<AudioEnqueue, EnqueueError> {
+        self.try_push_audio_upper_bound(upper_bound_bytes, build)
+    }
 }
 
 impl<W: FramedWrite> OutboundOwner<W> {
