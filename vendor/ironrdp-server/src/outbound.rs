@@ -179,6 +179,10 @@ impl OutboundScheduler {
         self.max_bytes
     }
 
+    pub fn capacity_remaining(&self) -> usize {
+        self.max_bytes.saturating_sub(self.queued_bytes)
+    }
+
     pub fn queued_bytes(&self) -> usize {
         self.queued_bytes
     }
@@ -807,6 +811,16 @@ mod tests {
     fn ingress_batch_budget_is_explicit_and_bounded() {
         assert_eq!(OutboundOwner::<FakeWriter>::max_ingress_batch(), 64);
         assert!(OutboundOwner::<FakeWriter>::max_ingress_batch() > 0);
+    }
+
+    #[test]
+    fn capacity_remaining_tracks_complete_buffer_budget() {
+        let mut q = OutboundScheduler::new(4);
+        assert_eq!(q.capacity_remaining(), 4);
+        q.try_push(packet(OutboundClass::Egfx, 1)).unwrap();
+        assert_eq!(q.capacity_remaining(), 3);
+        q.pop_next().unwrap();
+        assert_eq!(q.capacity_remaining(), 4);
     }
 
     #[test]
