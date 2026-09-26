@@ -443,6 +443,16 @@ pub struct OutboundOwnerStatus {
     pub audio_dropped_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboundOwnerState {
+    Idle,
+    Queued,
+    Writing,
+    Draining,
+    Closed,
+    Failed,
+}
+
 /// Producer-side handoff for the single socket owner.
 ///
 /// The channel is bounded by packet count. The owner applies the stricter
