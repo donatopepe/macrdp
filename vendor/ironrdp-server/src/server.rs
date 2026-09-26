@@ -4247,6 +4247,10 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
                     let elapsed_ms = elapsed.as_millis().min(u128::from(u32::MAX)) as u32;
                     diag.socket_write_ms.store(elapsed_ms, Ordering::Relaxed);
                     diag.socket_write_window.record(elapsed_ms);
+                    if audio {
+                        diag.audio_write_ms.store(elapsed_ms, Ordering::Relaxed);
+                        diag.audio_write_window.record(elapsed_ms);
+                    }
                 }
                 return Ok(());
             }

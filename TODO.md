@@ -266,7 +266,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
   written buffer. Scheduler remains
   isolated from live `client_loop`;
   wiring still requires a controlled producer handoff and shutdown test before changing the active
-  path.
+  path. SharedWriter now labels audio socket-write timing separately without changing ownership;
+  live owner wiring remains blocked.
 - [ ] **Perf (upstream candidates, vendored server — do NOT land as new divergences):** from
   the same audit: (a) `SharedWriter`/dispatch write coalescing — every fragment/event is its
   own `write_all` = 2 boxed futures + syscall + flush (`server.rs:2643` + git-pinned
