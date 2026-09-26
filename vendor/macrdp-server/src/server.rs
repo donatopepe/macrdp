@@ -527,6 +527,13 @@ pub struct DiagnosticsHandle {
     pub audio_queue_window: LatencyWindow,
     pub audio_write_window: LatencyWindow,
     pub audio_queue_wait_window: LatencyWindow,
+    /// Opt-in live-owner queue/counter gauges; defaults are no-op when absent.
+    pub outbound_queued_packets: Arc<AtomicU64>,
+    pub outbound_queued_bytes: Arc<AtomicU64>,
+    pub outbound_enqueued_packets: Arc<AtomicU64>,
+    pub outbound_rejected_packets: Arc<AtomicU64>,
+    pub outbound_sent_packets: Arc<AtomicU64>,
+    pub outbound_sent_bytes: Arc<AtomicU64>,
 }
 
 pub struct RdpServer {

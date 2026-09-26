@@ -2467,6 +2467,12 @@ async fn async_main() -> Result<()> {
         audio_queue_window: Default::default(),
         audio_write_window: Default::default(),
         audio_queue_wait_window: Default::default(),
+        outbound_queued_packets: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        outbound_queued_bytes: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        outbound_enqueued_packets: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        outbound_rejected_packets: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        outbound_sent_packets: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        outbound_sent_bytes: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     if let Some(stats) = crate::stats::global() {
         // Reuse the same atomics exposed by the loopback endpoint.
@@ -2486,6 +2492,12 @@ async fn async_main() -> Result<()> {
         diagnostics.audio_resyncs = stats.audio_resyncs.clone();
         diagnostics.audio_resync_dropped = stats.audio_resync_dropped.clone();
         diagnostics.audio_backlog_max_ms = stats.audio_backlog_max_ms.clone();
+        diagnostics.outbound_queued_packets = stats.outbound_queued_packets.clone();
+        diagnostics.outbound_queued_bytes = stats.outbound_queued_bytes.clone();
+        diagnostics.outbound_enqueued_packets = stats.outbound_enqueued_packets.clone();
+        diagnostics.outbound_rejected_packets = stats.outbound_rejected_packets.clone();
+        diagnostics.outbound_sent_packets = stats.outbound_sent_packets.clone();
+        diagnostics.outbound_sent_bytes = stats.outbound_sent_bytes.clone();
         crate::stats::set_diagnostics(diagnostics.clone());
     }
 

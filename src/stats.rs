@@ -62,12 +62,12 @@ pub struct SessionStats {
     /// Current pending legacy bitmap-update queue depth.
     pub display_pending: AtomicU32,
     /// Future live outbound scheduler queue depth, when wired.
-    pub outbound_queued_packets: AtomicU64,
-    pub outbound_queued_bytes: AtomicU64,
-    pub outbound_enqueued_packets: AtomicU64,
-    pub outbound_rejected_packets: AtomicU64,
-    pub outbound_sent_packets: AtomicU64,
-    pub outbound_sent_bytes: AtomicU64,
+    pub outbound_queued_packets: Arc<AtomicU64>,
+    pub outbound_queued_bytes: Arc<AtomicU64>,
+    pub outbound_enqueued_packets: Arc<AtomicU64>,
+    pub outbound_rejected_packets: Arc<AtomicU64>,
+    pub outbound_sent_packets: Arc<AtomicU64>,
+    pub outbound_sent_bytes: Arc<AtomicU64>,
     /// Number of legacy display queue overflows followed by full-frame resync.
     pub display_overflow_resyncs: AtomicU64,
     /// Last measured age from SCK display timestamp to processing, in ms.
