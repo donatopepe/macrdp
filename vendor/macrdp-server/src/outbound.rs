@@ -453,6 +453,59 @@ pub enum OutboundOwnerState {
     Failed,
 }
 
+/// Lifecycle transition helper used by the live integration harness. It is
+/// deliberately pure: the socket owner remains sole authority for writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutboundOwnerLifecycle {
+    state: OutboundOwnerState,
+}
+
+impl Default for OutboundOwnerLifecycle {
+    fn default() -> Self {
+        Self {
+            state: OutboundOwnerState::Idle,
+        }
+    }
+}
+
+impl OutboundOwnerLifecycle {
+    pub fn state(self) -> OutboundOwnerState {
+        self.state
+    }
+
+    pub fn on_ingress(self, has_queued_work: bool) -> Self {
+        Self {
+            state: if has_queued_work {
+                OutboundOwnerState::Queued
+            } else {
+                self.state
+            },
+        }
+    }
+
+    pub fn on_write_start(self) -> Self {
+        Self {
+            state: OutboundOwnerState::Writing,
+        }
+    }
+
+    pub fn on_shutdown(self, drained: bool) -> Self {
+        Self {
+            state: if drained {
+                OutboundOwnerState::Closed
+            } else {
+                OutboundOwnerState::Draining
+            },
+        }
+    }
+
+    pub fn on_error(self) -> Self {
+        Self {
+            state: OutboundOwnerState::Failed,
+        }
+    }
+}
+
 /// Producer-side handoff for the single socket owner.
 ///
 /// The channel is bounded by packet count. The owner applies the stricter
@@ -975,6 +1028,16 @@ mod tests {
             self.writes.push(buf.to_vec());
             std::future::ready(Ok(()))
         }
+    }
+
+    #[test]
+    fn lifecycle_keeps_failed_owner_terminal() {
+        let lifecycle = OutboundOwnerLifecycle::default()
+            .on_ingress(true)
+            .on_write_start()
+            .on_error();
+        assert_eq!(lifecycle.state(), OutboundOwnerState::Failed);
+        assert_eq!(lifecycle.on_shutdown(true).state(), OutboundOwnerState::Closed);
     }
 
     #[tokio::test]

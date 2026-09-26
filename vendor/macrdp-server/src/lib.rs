@@ -48,8 +48,8 @@ pub use multitransport::{
 };
 pub use outbound::{
     AudioEnqueue, EnqueueError, OutboundClass, OutboundClassStats, OutboundIngressWriter, OutboundOwner,
-    OutboundOwnerIngress, OutboundOwnerState, OutboundOwnerStatus, OutboundPacket, OutboundScheduler,
-    OutboundSchedulerSnapshot, OutboundShutdown,
+    OutboundOwnerIngress, OutboundOwnerLifecycle, OutboundOwnerState, OutboundOwnerStatus, OutboundPacket,
+    OutboundScheduler, OutboundSchedulerSnapshot, OutboundShutdown,
 };
 pub use rdcamera::{
     CameraSampleSink, CameraServerMessage, RDCAMERA_CHANNEL_NAME, RdCameraDeviceProcessor, RdCameraServer,
