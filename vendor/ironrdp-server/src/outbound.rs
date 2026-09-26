@@ -596,6 +596,14 @@ impl FramedWrite for OutboundIngressWriter {
 }
 
 impl<W> OutboundOwner<W> {
+    pub fn with_ingress<F, R>(writer: W, max_bytes: usize, channel_capacity: usize, callback: F) -> R
+    where
+        F: FnOnce(OutboundOwner<W>, OutboundOwnerIngress, mpsc::Receiver<OutboundPacket>) -> R,
+    {
+        let (owner, ingress, receiver) = Self::channel(writer, max_bytes, channel_capacity);
+        callback(owner, ingress, receiver)
+    }
+
     pub fn ingress_snapshot(&self, ingress: &OutboundOwnerIngress) -> (u64, u64) {
         (ingress.enqueued_packets(), ingress.rejected_packets())
     }
