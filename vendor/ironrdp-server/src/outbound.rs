@@ -74,6 +74,15 @@ pub enum EnqueueError {
     QueueFull(OutboundPacket),
 }
 
+/// Result of an audio admission check performed before the caller frames the
+/// audio wave. `DroppedBeforeFraming` is an intentional stale-audio drop, not
+/// a wire-buffer rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioEnqueue {
+    Enqueued,
+    DroppedBeforeFraming { estimated_bytes: usize },
+}
+
 /// Single-thread-owned scheduler state. Move it into future socket-owner task;
 /// no mutex is needed inside that task. `MAX_URGENT_BURST` bounds audio/control
 /// priority so a steady stream cannot starve EGFX or display updates.
@@ -90,6 +99,8 @@ pub struct OutboundScheduler {
     rejected_packets: u64,
     sent_packets: u64,
     sent_bytes: u64,
+    audio_dropped_packets: u64,
+    audio_dropped_bytes: u64,
 }
 
 impl OutboundScheduler {
@@ -108,6 +119,8 @@ impl OutboundScheduler {
             rejected_packets: 0,
             sent_packets: 0,
             sent_bytes: 0,
+            audio_dropped_packets: 0,
+            audio_dropped_bytes: 0,
         }
     }
 
@@ -147,11 +160,28 @@ impl OutboundScheduler {
         self.sent_bytes
     }
 
+    pub fn audio_dropped_packets(&self) -> u64 {
+        self.audio_dropped_packets
+    }
+
+    pub fn audio_dropped_bytes(&self) -> u64 {
+        self.audio_dropped_bytes
+    }
+
+    fn has_capacity_for(&self, bytes: usize) -> bool {
+        bytes <= self.max_bytes.saturating_sub(self.queued_bytes)
+    }
+
+    fn record_audio_drop(&mut self, estimated_bytes: usize) {
+        self.audio_dropped_packets = self.audio_dropped_packets.saturating_add(1);
+        self.audio_dropped_bytes = self.audio_dropped_bytes.saturating_add(estimated_bytes as u64);
+    }
+
     /// Enqueue one complete wire buffer. Full queue returns packet to caller;
     /// this is intentional: audio may be dropped before framing, while EGFX
     /// must apply backpressure rather than silently lose a reference frame.
     pub fn try_push(&mut self, packet: OutboundPacket) -> Result<(), EnqueueError> {
-        if packet.len() > self.max_bytes.saturating_sub(self.queued_bytes) {
+        if !self.has_capacity_for(packet.len()) {
             self.rejected_packets = self.rejected_packets.saturating_add(1);
             return Err(EnqueueError::QueueFull(packet));
         }
@@ -159,6 +189,30 @@ impl OutboundScheduler {
         self.queued_bytes += packet.len();
         self.queues[packet.class.index()].push_back(packet);
         Ok(())
+    }
+
+    /// Admit audio before framing it.
+    ///
+    /// `upper_bound_bytes` must conservatively cover the complete wire buffer
+    /// produced by `build`. If the current byte budget cannot accommodate that
+    /// upper bound, `build` is not called and the wave is dropped before any
+    /// RDP framing/encoding work. If the bound is wrong, the normal
+    /// `QueueFull` error returns the built packet so the caller can handle the
+    /// programming error explicitly rather than silently losing it.
+    pub fn try_push_audio<F>(&mut self, upper_bound_bytes: usize, build: F) -> Result<AudioEnqueue, EnqueueError>
+    where
+        F: FnOnce() -> Vec<u8>,
+    {
+        if !self.has_capacity_for(upper_bound_bytes) {
+            self.record_audio_drop(upper_bound_bytes);
+            return Ok(AudioEnqueue::DroppedBeforeFraming {
+                estimated_bytes: upper_bound_bytes,
+            });
+        }
+
+        let packet = OutboundPacket::new(OutboundClass::Audio, build());
+        self.try_push(packet)?;
+        Ok(AudioEnqueue::Enqueued)
     }
 
     fn pop_class(&mut self, class: OutboundClass) -> Option<OutboundPacket> {
@@ -274,6 +328,13 @@ impl<W> OutboundOwner<W> {
         self.scheduler.try_push(packet)
     }
 
+    pub fn try_push_audio<F>(&mut self, upper_bound_bytes: usize, build: F) -> Result<AudioEnqueue, EnqueueError>
+    where
+        F: FnOnce() -> Vec<u8>,
+    {
+        self.scheduler.try_push_audio(upper_bound_bytes, build)
+    }
+
     pub fn into_inner(self) -> W {
         self.writer
     }
@@ -329,6 +390,41 @@ mod tests {
             self.writes.push(buf.to_vec());
             std::future::ready(Ok(()))
         }
+    }
+
+    #[test]
+    fn audio_drop_happens_before_builder_and_is_telemetried() {
+        let mut q = OutboundScheduler::new(4);
+        let mut built = false;
+        let result = q
+            .try_push_audio(8, || {
+                built = true;
+                vec![1, 2, 3, 4]
+            })
+            .unwrap();
+
+        assert_eq!(result, AudioEnqueue::DroppedBeforeFraming { estimated_bytes: 8 });
+        assert!(!built);
+        assert_eq!(q.audio_dropped_packets(), 1);
+        assert_eq!(q.audio_dropped_bytes(), 8);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn audio_admission_builds_only_when_budget_allows() {
+        let mut q = OutboundScheduler::new(8);
+        let mut built = false;
+        let result = q
+            .try_push_audio(4, || {
+                built = true;
+                vec![1, 2, 3]
+            })
+            .unwrap();
+
+        assert_eq!(result, AudioEnqueue::Enqueued);
+        assert!(built);
+        assert_eq!(q.class_len(OutboundClass::Audio), 1);
+        assert_eq!(q.audio_dropped_packets(), 0);
     }
 
     #[test]
