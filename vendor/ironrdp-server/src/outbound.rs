@@ -368,6 +368,10 @@ impl OutboundScheduler {
             .or_else(|| self.pop_class(OutboundClass::Audio))
     }
 
+    pub fn urgent_budget_remaining(&self) -> usize {
+        self.urgent_remaining
+    }
+
     fn coalesce_same_class(&mut self, mut packet: OutboundPacket) -> OutboundPacket {
         while packet.len() < Self::MAX_COALESCED_BYTES {
             let Some(next) = self.queues[packet.class.index()].front() else {
@@ -1140,6 +1144,15 @@ mod tests {
         let err = q.try_push(packet(OutboundClass::Egfx, 2)).unwrap_err();
         assert_eq!(err, EnqueueError::QueueFull(packet(OutboundClass::Egfx, 2)));
         assert_eq!(q.pop_next().unwrap().bytes, vec![1]);
+    }
+
+    #[test]
+    fn urgent_budget_is_observable_without_changing_selection() {
+        let mut q = OutboundScheduler::new(1000);
+        assert_eq!(q.urgent_budget_remaining(), OutboundScheduler::MAX_URGENT_BURST);
+        q.try_push(packet(OutboundClass::Audio, 1)).unwrap();
+        q.pop_next().unwrap();
+        assert_eq!(q.urgent_budget_remaining(), OutboundScheduler::MAX_URGENT_BURST - 1);
     }
 
     #[test]
