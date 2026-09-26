@@ -29,6 +29,15 @@ pub enum OutboundClass {
 }
 
 impl OutboundClass {
+    pub const ALL: [Self; 6] = [
+        Self::Control,
+        Self::Audio,
+        Self::Clipboard,
+        Self::Egfx,
+        Self::Display,
+        Self::Bulk,
+    ];
+
     const DATA_SLOTS: [Self; 8] = [
         Self::Clipboard,
         Self::Egfx,
@@ -74,6 +83,31 @@ pub enum EnqueueError {
     QueueFull(OutboundPacket),
 }
 
+/// Current queue occupancy for one typed outbound class.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OutboundClassStats {
+    pub packets: usize,
+    pub bytes: usize,
+}
+
+/// Snapshot suitable for opt-in scheduler telemetry.
+///
+/// Counters are cumulative since the scheduler was created; queue occupancy is
+/// instantaneous. The snapshot contains no socket or framing state and can be
+/// collected without changing packet selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutboundSchedulerSnapshot {
+    pub queued_packets: usize,
+    pub queued_bytes: usize,
+    pub classes: [OutboundClassStats; 6],
+    pub enqueued_packets: u64,
+    pub rejected_packets: u64,
+    pub sent_packets: u64,
+    pub sent_bytes: u64,
+    pub audio_dropped_packets: u64,
+    pub audio_dropped_bytes: u64,
+}
+
 /// Result of an audio admission check performed before the caller frames the
 /// audio wave. `DroppedBeforeFraming` is an intentional stale-audio drop, not
 /// a wire-buffer rejection.
@@ -88,6 +122,7 @@ pub enum AudioEnqueue {
 /// priority so a steady stream cannot starve EGFX or display updates.
 pub struct OutboundScheduler {
     queues: [VecDeque<OutboundPacket>; 6],
+    class_bytes: [usize; 6],
     queued_bytes: usize,
     max_bytes: usize,
     data_cursor: usize,
@@ -111,6 +146,7 @@ impl OutboundScheduler {
     pub fn new(max_bytes: usize) -> Self {
         Self {
             queues: std::array::from_fn(|_| VecDeque::new()),
+            class_bytes: [0; 6],
             queued_bytes: 0,
             max_bytes,
             data_cursor: 0,
@@ -142,6 +178,27 @@ impl OutboundScheduler {
 
     pub fn class_len(&self, class: OutboundClass) -> usize {
         self.queues[class.index()].len()
+    }
+
+    pub fn class_stats(&self, class: OutboundClass) -> OutboundClassStats {
+        OutboundClassStats {
+            packets: self.class_len(class),
+            bytes: self.class_bytes[class.index()],
+        }
+    }
+
+    pub fn snapshot(&self) -> OutboundSchedulerSnapshot {
+        OutboundSchedulerSnapshot {
+            queued_packets: self.len(),
+            queued_bytes: self.queued_bytes,
+            classes: std::array::from_fn(|index| self.class_stats(OutboundClass::ALL[index])),
+            enqueued_packets: self.enqueued_packets,
+            rejected_packets: self.rejected_packets,
+            sent_packets: self.sent_packets,
+            sent_bytes: self.sent_bytes,
+            audio_dropped_packets: self.audio_dropped_packets,
+            audio_dropped_bytes: self.audio_dropped_bytes,
+        }
     }
 
     pub fn enqueued_packets(&self) -> u64 {
@@ -187,6 +244,7 @@ impl OutboundScheduler {
         }
         self.enqueued_packets = self.enqueued_packets.saturating_add(1);
         self.queued_bytes += packet.len();
+        self.class_bytes[packet.class.index()] += packet.len();
         self.queues[packet.class.index()].push_back(packet);
         Ok(())
     }
@@ -218,6 +276,7 @@ impl OutboundScheduler {
     fn pop_class(&mut self, class: OutboundClass) -> Option<OutboundPacket> {
         let packet = self.queues[class.index()].pop_front()?;
         self.queued_bytes = self.queued_bytes.saturating_sub(packet.len());
+        self.class_bytes[class.index()] = self.class_bytes[class.index()].saturating_sub(packet.len());
         self.sent_packets = self.sent_packets.saturating_add(1);
         self.sent_bytes = self.sent_bytes.saturating_add(packet.len() as u64);
         Some(packet)
@@ -390,6 +449,28 @@ mod tests {
             self.writes.push(buf.to_vec());
             std::future::ready(Ok(()))
         }
+    }
+
+    #[test]
+    fn snapshot_reports_typed_queue_occupancy_and_counters() {
+        let mut q = OutboundScheduler::new(32);
+        q.try_push(packet(OutboundClass::Control, 1)).unwrap();
+        q.try_push(OutboundPacket::new(OutboundClass::Egfx, vec![2, 3]))
+            .unwrap();
+        let snapshot = q.snapshot();
+
+        assert_eq!(snapshot.queued_packets, 2);
+        assert_eq!(snapshot.queued_bytes, 3);
+        assert_eq!(snapshot.classes[OutboundClass::Control.index()].packets, 1);
+        assert_eq!(snapshot.classes[OutboundClass::Egfx.index()].bytes, 2);
+        assert_eq!(snapshot.enqueued_packets, 2);
+        assert_eq!(snapshot.sent_packets, 0);
+
+        let _ = q.pop_next_coalesced();
+        let snapshot = q.snapshot();
+        assert_eq!(snapshot.queued_packets, 1);
+        assert_eq!(snapshot.sent_packets, 1);
+        assert_eq!(snapshot.sent_bytes, 1);
     }
 
     #[test]

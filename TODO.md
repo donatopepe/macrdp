@@ -249,9 +249,10 @@ then delete; promote a parked item to *In flight* when work actually starts.
   remains upstream-sensitive.
 - [x] **Outbound scheduler core** — added/tested owner-friendly typed queues, bounded bytes,
   urgent audio/control priority, weighted data fairness, FIFO EGFX behavior, bounded same-class
-  coalescing, pre-framing audio admission/drop telemetry, and local enqueue/reject/sent packet+byte
-  counters in `vendor/ironrdp-server/src/outbound.rs`. Coalescing preserves complete-buffer byte
-  order and caps each owner write at 64 KiB; scheduler is not wired to live socket yet.
+  coalescing, pre-framing audio admission/drop telemetry, typed queue snapshots, and local
+  enqueue/reject/sent packet+byte counters in `vendor/ironrdp-server/src/outbound.rs`. Coalescing
+  preserves complete-buffer byte order and caps each owner write at 64 KiB; scheduler is not wired
+  to live socket yet.
 - [~] **Live socket-owner adapter** — blocked safely at design boundary: current
   `FramedWrite::write_all` is not cancellation-safe and can duplicate partial frames on retry.
   Added isolated `OutboundOwner` complete-buffer handoff, bounded same-class coalescing,
