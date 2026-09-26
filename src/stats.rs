@@ -184,6 +184,8 @@ impl AvDriftHysteresis {
     pub const EXIT_OFFSET_MS: i64 = 40;
     pub const ENTER_DRIFT_PPM: i64 = 500;
     pub const EXIT_DRIFT_PPM: i64 = 250;
+    pub const MAX_ABS_OFFSET_MS: i64 = 10_000;
+    pub const MAX_ABS_DRIFT_PPM: i64 = 100_000;
     #[allow(dead_code)]
     pub const DEFAULT_HOLD_SAMPLES: u8 = 3;
 
@@ -244,6 +246,8 @@ impl AvDriftHysteresis {
     }
 
     pub fn update(&mut self, offset_ms: i64, drift_ppm: i64) -> AvDriftZone {
+        let offset_ms = offset_ms.clamp(-Self::MAX_ABS_OFFSET_MS, Self::MAX_ABS_OFFSET_MS);
+        let drift_ppm = drift_ppm.clamp(-Self::MAX_ABS_DRIFT_PPM, Self::MAX_ABS_DRIFT_PPM);
         let desired = self.desired_zone(offset_ms, drift_ppm);
         if desired == self.zone {
             self.pending_zone = None;
@@ -646,6 +650,13 @@ mod tests {
         assert_eq!(h.update(0, 600), AvDriftZone::Stable);
         assert_eq!(h.update(0, 600), AvDriftZone::Stable);
         assert_eq!(h.update(0, 600), AvDriftZone::AudioAhead);
+    }
+
+    #[test]
+    fn drift_hysteresis_clamps_pathological_values() {
+        let mut h = AvDriftHysteresis::new(1);
+        assert_eq!(h.update(i64::MAX, i64::MAX), AvDriftZone::AudioAhead);
+        assert_eq!(h.update(i64::MIN, i64::MIN), AvDriftZone::AudioBehind);
     }
 
     #[test]
