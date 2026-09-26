@@ -730,6 +730,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owner_drains_pending_packet_after_scheduler_byte_budget_frees_space() {
+        let (owner, ingress, receiver) = OutboundOwner::channel(FakeWriter::default(), 2, 4);
+        ingress.send(packet(OutboundClass::Control, 1)).await.unwrap();
+        ingress.send(packet(OutboundClass::Egfx, 2)).await.unwrap();
+        drop(ingress);
+
+        let writer = owner.run(receiver).await.unwrap();
+        assert_eq!(writer.writes, vec![vec![1], vec![2]]);
+    }
+
+    #[tokio::test]
     async fn owner_channel_rejects_packet_larger_than_byte_budget() {
         let (owner, ingress, receiver) = OutboundOwner::channel(FakeWriter::default(), 2, 1);
         ingress
