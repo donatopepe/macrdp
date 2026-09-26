@@ -252,6 +252,10 @@ impl OutboundScheduler {
         self.class_stats(class)
     }
 
+    pub fn is_packet_within_budget(&self, packet: &OutboundPacket) -> bool {
+        packet.len() <= self.max_bytes && self.has_capacity_for(packet.len())
+    }
+
     pub fn has_capacity_for_class(&self, bytes: usize) -> bool {
         self.has_capacity_for(bytes)
     }
