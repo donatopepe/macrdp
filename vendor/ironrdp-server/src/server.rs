@@ -2968,6 +2968,7 @@ impl RdpServer {
             // dispatch_server_events) for the rationale.
             const MAX_LAG_MS: f64 = 200.0;
             const RESYNC_DEFICIT_MS: f64 = 300.0;
+            const RESYNC_QUEUE_MS: f64 = 260.0;
             // 16-bit stereo PCM at 44.1 kHz = 4 bytes/frame × 44 100 = 176 400 B/s,
             // i.e. 176.4 bytes per ms of audio. Matches `src/audio.rs::our_format()`
             // in the macrdp tree. Update if the audio backend's format changes.
@@ -3014,6 +3015,17 @@ impl RdpServer {
                     audio_shipped_ms = real_elapsed_ms;
                 }
                 let projected_buffer_ms = audio_shipped_ms + wave_ms - real_elapsed_ms;
+                if projected_buffer_ms > RESYNC_QUEUE_MS {
+                    let dropped = audio_receiver.drop_oldest_until_below(MAX_LAG_MS);
+                    if dropped > 0 {
+                        debug!(
+                            target: "audio_backlog",
+                            dropped,
+                            projected_buffer_ms,
+                            "resynced stale audio queue before playback"
+                        );
+                    }
+                }
                 if projected_buffer_ms > MAX_LAG_MS {
                     debug!(
                         target: "audio_backlog",
