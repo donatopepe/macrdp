@@ -386,8 +386,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
   crosses 260 ms, trimming toward 200 ms; AAC duration metadata is honored. This is hysteretic
   stale-audio resync, not playback-clock correction; PTS drift EWMA remains telemetry-only and
   AAC priming/packet-loss validation remains open. Opt-in stats now expose current/maximum source
-  A/V offset and producer-to-dispatch AudioWave queue wait alongside resync action/drop
-  counters plus maximum projected backlog, with JSON serialization tests; current binary shows
+  A/V offset, producer-to-dispatch AudioWave queue wait, and emitted AU/byte counters alongside
+  resync action/drop counters plus maximum projected backlog, with JSON serialization tests; current binary shows
   queue wait fields only after the next controlled app update; debug logs include queue
   duration before/after trim.
   Detail:

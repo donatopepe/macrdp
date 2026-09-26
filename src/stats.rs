@@ -98,6 +98,8 @@ pub struct SessionStats {
     pub audio_queue_wait_p50_ms: Arc<AtomicU32>,
     pub audio_queue_wait_p95_ms: Arc<AtomicU32>,
     pub audio_queue_wait_max_ms: Arc<AtomicU32>,
+    pub audio_waves_emitted: AtomicU64,
+    pub audio_bytes_emitted: AtomicU64,
     /// Number of hysteretic stale-audio resync actions.
     pub audio_resyncs: Arc<AtomicU64>,
     /// Waves removed by hysteretic stale-audio resync.
@@ -307,7 +309,7 @@ impl SessionStats {
                 "\"encode_latency_ms\":{},\"ship_latency_ms\":{},\"encoded_pending\":{},",
                 "\"server_event_queue\":{},\"socket_write_stalls\":{},\"socket_write_ms\":{},",
                 "\"audio_queue\":{},\"audio_queue_ms\":{},\"audio_drops\":{},",
-                "\"audio_write_stalls\":{},\"audio_write_ms\":{},\"audio_queue_wait_ms\":{},\"audio_queue_wait_p50_ms\":{},\"audio_queue_wait_p95_ms\":{},\"audio_queue_wait_max_ms\":{},\"audio_resyncs\":{},\"audio_resync_dropped\":{},\"audio_backlog_max_ms\":{},",
+                "\"audio_write_stalls\":{},\"audio_write_ms\":{},\"audio_queue_wait_ms\":{},\"audio_queue_wait_p50_ms\":{},\"audio_queue_wait_p95_ms\":{},\"audio_queue_wait_max_ms\":{},\"audio_waves_emitted\":{},\"audio_bytes_emitted\":{},\"audio_resyncs\":{},\"audio_resync_dropped\":{},\"audio_backlog_max_ms\":{},",
                 "\"capture_age_p50_ms\":{},\"capture_age_p95_ms\":{},\"capture_age_max_ms\":{},",
                 "\"encode_latency_p50_ms\":{},\"encode_latency_p95_ms\":{},\"encode_latency_max_ms\":{},",
                 "\"ship_latency_p50_ms\":{},\"ship_latency_p95_ms\":{},\"ship_latency_max_ms\":{},",
@@ -356,6 +358,8 @@ impl SessionStats {
             self.audio_queue_wait_p50_ms.load(Ordering::Relaxed),
             self.audio_queue_wait_p95_ms.load(Ordering::Relaxed),
             self.audio_queue_wait_max_ms.load(Ordering::Relaxed),
+            self.audio_waves_emitted.load(Ordering::Relaxed),
+            self.audio_bytes_emitted.load(Ordering::Relaxed),
             self.audio_resyncs.load(Ordering::Relaxed),
             self.audio_resync_dropped.load(Ordering::Relaxed),
             self.audio_backlog_max_ms.load(Ordering::Relaxed),
@@ -661,6 +665,8 @@ mod tests {
         assert!(j.contains("\"outbound_sent_bytes\":0"));
         assert!(j.contains("\"audio_resync_dropped\":0"));
         assert!(j.contains("\"audio_backlog_max_ms\":0"));
+        assert!(j.contains("\"audio_waves_emitted\":0"));
+        assert!(j.contains("\"audio_bytes_emitted\":0"));
         assert!(j.contains("\"av_drift_samples\":0"));
         assert!(j.contains("\"av_drift_zone\":0"));
         assert!(j.contains("\"av_hysteresis_samples\":0"));

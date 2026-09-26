@@ -739,6 +739,10 @@ async fn capture_loop(
                 for (data, duration_ms) in waves {
                     waves_emitted += 1;
                     bytes_emitted += data.len() as u64;
+                    if let Some(stats) = crate::stats::global() {
+                        stats.audio_waves_emitted.fetch_add(1, Ordering::Relaxed);
+                        stats.audio_bytes_emitted.fetch_add(data.len() as u64, Ordering::Relaxed);
+                    }
                     let ts_ms = start_instant.elapsed().as_millis() as u32;
 
                     // Lazy resolve both senders on first need. If set_sender /
