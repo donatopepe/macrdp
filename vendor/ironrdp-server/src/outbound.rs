@@ -741,6 +741,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owner_run_stops_after_writer_error_without_requeue() {
+        #[derive(Debug, Clone)]
+        struct FailingWriter {
+            writes: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+        }
+
+        impl FramedWrite for FailingWriter {
+            type WriteAllFut<'write>
+                = std::future::Ready<io::Result<()>>
+            where
+                Self: 'write;
+
+            fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+                self.writes.lock().unwrap().push(buf.to_vec());
+                std::future::ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "fake")))
+            }
+        }
+
+        let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (owner, ingress, receiver) = OutboundOwner::channel(
+            FailingWriter {
+                writes: std::sync::Arc::clone(&writes),
+            },
+            32,
+            4,
+        );
+        ingress.send(packet(OutboundClass::Egfx, 1)).await.unwrap();
+        ingress.send(packet(OutboundClass::Display, 2)).await.unwrap();
+        drop(ingress);
+
+        let error = owner.run(receiver).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(*writes.lock().unwrap(), vec![vec![1]]);
+    }
+
+    #[tokio::test]
     async fn owner_channel_rejects_packet_larger_than_byte_budget() {
         let (owner, ingress, receiver) = OutboundOwner::channel(FakeWriter::default(), 2, 1);
         ingress
