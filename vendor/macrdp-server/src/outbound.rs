@@ -590,6 +590,18 @@ pub struct OutboundIngressWriter {
     rejected_packets: std::sync::Arc<AtomicU64>,
 }
 
+/// Typed producer writers used by client-loop migration. No socket handle is
+/// exposed; each writer only owns the bounded owner ingress channel.
+#[derive(Clone)]
+pub struct OutboundIngressSet {
+    pub control: OutboundIngressWriter,
+    pub audio: OutboundIngressWriter,
+    pub clipboard: OutboundIngressWriter,
+    pub egfx: OutboundIngressWriter,
+    pub display: OutboundIngressWriter,
+    pub bulk: OutboundIngressWriter,
+}
+
 impl OutboundOwnerIngress {
     pub async fn send(&self, packet: OutboundPacket) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
         match self.sender.send(packet).await {
@@ -631,6 +643,17 @@ impl OutboundOwnerIngress {
             class,
             enqueued_packets: std::sync::Arc::clone(&self.enqueued_packets),
             rejected_packets: std::sync::Arc::clone(&self.rejected_packets),
+        }
+    }
+
+    pub fn typed_writers(&self) -> OutboundIngressSet {
+        OutboundIngressSet {
+            control: self.writer(OutboundClass::Control),
+            audio: self.writer(OutboundClass::Audio),
+            clipboard: self.writer(OutboundClass::Clipboard),
+            egfx: self.writer(OutboundClass::Egfx),
+            display: self.writer(OutboundClass::Display),
+            bulk: self.writer(OutboundClass::Bulk),
         }
     }
 
@@ -1229,6 +1252,22 @@ mod tests {
 
         let writer = owner.into_inner();
         assert_eq!(writer.writes, vec![vec![3], vec![1, 2], vec![4]]);
+    }
+
+    #[tokio::test]
+    async fn typed_writer_set_routes_every_class() {
+        let (_owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 8);
+        let mut writers = ingress.typed_writers();
+        writers.control.write_all(&[1]).await.unwrap();
+        writers.audio.write_all(&[2]).await.unwrap();
+        writers.clipboard.write_all(&[3]).await.unwrap();
+        writers.egfx.write_all(&[4]).await.unwrap();
+        writers.display.write_all(&[5]).await.unwrap();
+        writers.bulk.write_all(&[6]).await.unwrap();
+
+        for expected in 1..=6 {
+            assert_eq!(receiver.recv().await.unwrap().bytes, vec![expected]);
+        }
     }
 
     #[tokio::test]
