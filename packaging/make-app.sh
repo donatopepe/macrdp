@@ -233,11 +233,19 @@ rm -rf "$APP_DIR/macrdp.app"
 cp -R "$STAGE" "$APP_DIR/macrdp.app"
 codesign --verify --strict "$APP_DIR/macrdp.app"
 
-# Keep the installed executable byte-identical to this checkout's release
-# build. This makes an update verifiable before any LaunchAgent restart.
+# Verify installed executable payload matches this checkout's release build
+# before any LaunchAgent restart. Signing adds different code signatures to the
+# source and bundle copies, so compare temporary unsigned payloads instead of
+# comparing signed files byte-for-byte.
 INSTALLED_BIN="$APP_DIR/macrdp.app/Contents/MacOS/macrdp"
-if ! cmp -s "$BIN" "$INSTALLED_BIN"; then
-    echo "installed executable differs from target/release/macrdp" >&2
+VERIFY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/macrdp-install-verify.XXXXXX")"
+trap 'rm -rf "$VERIFY_TMP"' EXIT
+cp "$BIN" "$VERIFY_TMP/source"
+cp "$INSTALLED_BIN" "$VERIFY_TMP/installed"
+codesign --remove-signature "$VERIFY_TMP/source" 2>/dev/null || true
+codesign --remove-signature "$VERIFY_TMP/installed" 2>/dev/null || true
+if ! cmp -s "$VERIFY_TMP/source" "$VERIFY_TMP/installed"; then
+    echo "installed executable payload differs from target/release/macrdp" >&2
     exit 1
 fi
 
