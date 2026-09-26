@@ -440,6 +440,13 @@ impl<W> OutboundOwner<W> {
 }
 
 impl<W: FramedWrite> OutboundOwner<W> {
+    /// Maximum number of producer packets admitted between socket writes.
+    ///
+    /// A continuously-ready ingress must not keep the owner in `try_recv`
+    /// forever; this bound returns control to the scheduler and writer after a
+    /// finite batch.
+    pub const MAX_INGRESS_BATCH: usize = 64;
+
     /// Run the single socket owner until all producers close the handoff.
     ///
     /// The receive side may use `try_recv` while no write is in progress to
@@ -466,9 +473,12 @@ impl<W: FramedWrite> OutboundOwner<W> {
                 }
             }
 
+            let mut admitted_this_turn = 0;
             if let Some(packet) = pending.take() {
                 match Self::admit_packet(&mut self.scheduler, packet, max_bytes) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        admitted_this_turn += 1;
+                    }
                     Err(AdmissionError::TooLarge(packet)) => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
@@ -481,10 +491,12 @@ impl<W: FramedWrite> OutboundOwner<W> {
                 }
             }
 
-            while !closed && pending.is_none() {
+            while !closed && pending.is_none() && admitted_this_turn < Self::MAX_INGRESS_BATCH {
                 match receiver.try_recv() {
                     Ok(packet) => match Self::admit_packet(&mut self.scheduler, packet, max_bytes) {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            admitted_this_turn += 1;
+                        }
                         Err(AdmissionError::TooLarge(packet)) => {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidInput,

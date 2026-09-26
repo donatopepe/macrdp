@@ -256,8 +256,9 @@ then delete; promote a parked item to *In flight* when work actually starts.
 - [~] **Live socket-owner adapter** — blocked safely at design boundary: current
   `FramedWrite::write_all` is not cancellation-safe and can duplicate partial frames on retry.
   Added isolated `OutboundOwner` complete-buffer handoff, bounded same-class coalescing,
-  shutdown-drain, bounded ingress backpressure, partial-write, and fake-writer tests; it awaits
-  each write exactly once and never retries a failed/partially written buffer. Scheduler remains
+  shutdown-drain, bounded ingress backpressure, finite ingress-batch fairness, partial-write, and
+  fake-writer tests; it awaits each write exactly once and never retries a failed/partially written
+  buffer. Scheduler remains
   isolated from live `client_loop`;
   wiring still requires a controlled producer handoff and shutdown test before changing the active
   path.
