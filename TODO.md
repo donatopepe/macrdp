@@ -387,7 +387,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
   stale-audio resync, not playback-clock correction; PTS drift EWMA remains telemetry-only and
   AAC priming/packet-loss validation remains open. Opt-in stats now expose current/maximum source
   A/V offset and producer-to-dispatch AudioWave queue wait alongside resync action/drop
-  counters plus maximum projected backlog, with JSON serialization tests; debug logs include queue
+  counters plus maximum projected backlog, with JSON serialization tests; current binary shows
+  queue wait fields only after the next controlled app update; debug logs include queue
   duration before/after trim.
   Detail:
   `project_av_sync_under_drops` memory.
