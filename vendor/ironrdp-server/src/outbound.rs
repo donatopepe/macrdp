@@ -691,6 +691,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owner_ingress_try_send_preserves_packet_when_channel_is_full() {
+        let (_owner, ingress, _receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 1);
+        ingress.try_send(packet(OutboundClass::Control, 1)).unwrap();
+
+        let rejected = ingress.try_send(packet(OutboundClass::Egfx, 2)).unwrap_err();
+        match rejected {
+            mpsc::error::TrySendError::Full(packet) => {
+                assert_eq!(packet.class, OutboundClass::Egfx);
+                assert_eq!(packet.bytes, vec![2]);
+            }
+            mpsc::error::TrySendError::Closed(_) => panic!("owner ingress unexpectedly closed"),
+        }
+    }
+
+    #[tokio::test]
     async fn owner_channel_runs_single_writer_and_drains_on_ingress_close() {
         let (owner, ingress, receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 4);
         ingress.send(packet(OutboundClass::Egfx, 1)).await.unwrap();
