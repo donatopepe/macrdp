@@ -2878,6 +2878,8 @@ impl RdpServer {
         debug!("Starting client loop");
         let mut display_updates = self.display.lock().await.updates().await?;
         let mut writer = SharedWriter::new(writer, self.diagnostics.clone());
+        // Controlled migration seam remains isolated: live producers still use
+        // SharedWriter until every producer is routed through typed ingress.
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
         let mut audio_writer = writer.clone();
