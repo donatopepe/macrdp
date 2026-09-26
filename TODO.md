@@ -260,7 +260,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
   drain, writer-error, partial-write, all-class typed ingress, ingress counters/snapshot accessors,
   owner scheduler snapshots with ingress counters and tests,
   per-class packet/byte occupancy and class snapshots, packet budget probes, typed audio result helpers,
-  opt-in outbound queue JSON gauges (reserved fields), pre-framing upper-bound admission,
+  opt-in outbound queue JSON gauges (reserved fields) and cumulative counter fields, pre-framing upper-bound admission,
   audio-admission debug guard, and fake-writer tests; it awaits each write
   exactly once and never retries a failed/partially
   written buffer. Scheduler remains

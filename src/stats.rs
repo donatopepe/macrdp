@@ -64,6 +64,10 @@ pub struct SessionStats {
     /// Future live outbound scheduler queue depth, when wired.
     pub outbound_queued_packets: AtomicU64,
     pub outbound_queued_bytes: AtomicU64,
+    pub outbound_enqueued_packets: AtomicU64,
+    pub outbound_rejected_packets: AtomicU64,
+    pub outbound_sent_packets: AtomicU64,
+    pub outbound_sent_bytes: AtomicU64,
     /// Number of legacy display queue overflows followed by full-frame resync.
     pub display_overflow_resyncs: AtomicU64,
     /// Last measured age from SCK display timestamp to processing, in ms.
@@ -289,7 +293,7 @@ impl SessionStats {
                 "{{\"connected\":{},\"width\":{},\"height\":{},\"bitrate_bps\":{},",
                 "\"ceiling_bps\":{},\"rtt_ms\":{},\"queue_delay_ms\":{},\"fps\":{},",
                 "\"frames_sent\":{},\"capture_drops\":{},\"capture_sample_drops\":{},",
-                "\"capture_superseded\":{},\"capture_buffered\":{},\"display_pending\":{},\"outbound_queued_packets\":{},\"outbound_queued_bytes\":{},\"display_overflow_resyncs\":{},\"capture_age_ms\":{},",
+                "\"capture_superseded\":{},\"capture_buffered\":{},\"display_pending\":{},\"outbound_queued_packets\":{},\"outbound_queued_bytes\":{},\"outbound_enqueued_packets\":{},\"outbound_rejected_packets\":{},\"outbound_sent_packets\":{},\"outbound_sent_bytes\":{},\"display_overflow_resyncs\":{},\"capture_age_ms\":{},",
                 "\"encode_latency_ms\":{},\"ship_latency_ms\":{},\"encoded_pending\":{},",
                 "\"server_event_queue\":{},\"socket_write_stalls\":{},\"socket_write_ms\":{},",
                 "\"audio_queue\":{},\"audio_queue_ms\":{},\"audio_drops\":{},",
@@ -321,6 +325,10 @@ impl SessionStats {
             self.display_pending.load(Ordering::Relaxed),
             self.outbound_queued_packets.load(Ordering::Relaxed),
             self.outbound_queued_bytes.load(Ordering::Relaxed),
+            self.outbound_enqueued_packets.load(Ordering::Relaxed),
+            self.outbound_rejected_packets.load(Ordering::Relaxed),
+            self.outbound_sent_packets.load(Ordering::Relaxed),
+            self.outbound_sent_bytes.load(Ordering::Relaxed),
             self.display_overflow_resyncs.load(Ordering::Relaxed),
             self.capture_age_ms.load(Ordering::Relaxed),
             self.encode_latency_ms.load(Ordering::Relaxed),
@@ -623,6 +631,10 @@ mod tests {
         assert!(j.contains("\"audio_resyncs\":0"));
         assert!(j.contains("\"outbound_queued_packets\":0"));
         assert!(j.contains("\"outbound_queued_bytes\":0"));
+        assert!(j.contains("\"outbound_enqueued_packets\":0"));
+        assert!(j.contains("\"outbound_rejected_packets\":0"));
+        assert!(j.contains("\"outbound_sent_packets\":0"));
+        assert!(j.contains("\"outbound_sent_bytes\":0"));
         assert!(j.contains("\"audio_resync_dropped\":0"));
         assert!(j.contains("\"audio_backlog_max_ms\":0"));
         assert!(j.contains("\"av_drift_samples\":0"));
