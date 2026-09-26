@@ -919,6 +919,7 @@ mod tests {
         assert!(owner.write_next().await.unwrap());
         assert!(owner.write_next().await.unwrap());
         assert!(!owner.is_drained());
+        assert_eq!(owner.scheduler_snapshot().queued_packets, 1);
         owner.drain().await.unwrap();
         assert!(owner.is_drained());
         assert!(!owner.write_next().await.unwrap());
