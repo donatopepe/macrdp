@@ -2453,6 +2453,8 @@ async fn async_main() -> Result<()> {
         audio_drops: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         audio_write_stalls: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         audio_write_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        audio_resyncs: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        audio_resync_dropped: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         capture_age_window: Default::default(),
         encode_latency_window: Default::default(),
         ship_latency_window: Default::default(),
@@ -2471,6 +2473,8 @@ async fn async_main() -> Result<()> {
         diagnostics.audio_drops = stats.audio_drops.clone();
         diagnostics.audio_write_stalls = stats.audio_write_stalls.clone();
         diagnostics.audio_write_ms = stats.audio_write_ms.clone();
+        diagnostics.audio_resyncs = stats.audio_resyncs.clone();
+        diagnostics.audio_resync_dropped = stats.audio_resync_dropped.clone();
         crate::stats::set_diagnostics(diagnostics.clone());
     }
 

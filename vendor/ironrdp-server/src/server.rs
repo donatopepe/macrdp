@@ -513,6 +513,8 @@ pub struct DiagnosticsHandle {
     pub audio_drops: Arc<AtomicU64>,
     pub audio_write_stalls: Arc<AtomicU64>,
     pub audio_write_ms: Arc<AtomicU32>,
+    pub audio_resyncs: Arc<AtomicU64>,
+    pub audio_resync_dropped: Arc<AtomicU64>,
     pub capture_age_window: LatencyWindow,
     pub encode_latency_window: LatencyWindow,
     pub ship_latency_window: LatencyWindow,
@@ -2983,7 +2985,7 @@ impl RdpServer {
                     }
                 };
                 let diagnostics = { this.lock().await.diagnostics.clone() };
-                if let Some(diag) = diagnostics {
+                if let Some(ref diag) = diagnostics {
                     let queue_ms = audio_receiver.queued_duration_ms().max(0.0).min(f64::from(u32::MAX)) as u32;
                     diag.audio_queue.store(audio_receiver.len() as u32, Ordering::Relaxed);
                     diag.audio_queue_ms.store(queue_ms, Ordering::Relaxed);
@@ -3019,6 +3021,10 @@ impl RdpServer {
                     let queued_before = audio_receiver.queued_duration_ms();
                     let dropped = audio_receiver.drop_oldest_until_below(MAX_LAG_MS);
                     if dropped > 0 {
+                        if let Some(diag) = &diagnostics {
+                            diag.audio_resyncs.fetch_add(1, Ordering::Relaxed);
+                            diag.audio_resync_dropped.fetch_add(dropped as u64, Ordering::Relaxed);
+                        }
                         debug!(
                             target: "audio_backlog",
                             dropped,
