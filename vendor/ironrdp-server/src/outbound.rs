@@ -892,14 +892,17 @@ mod tests {
         owner.try_push(packet(OutboundClass::Egfx, 1)).unwrap();
         owner.try_push(packet(OutboundClass::Egfx, 2)).unwrap();
         owner.try_push(packet(OutboundClass::Audio, 3)).unwrap();
+        owner.try_push(packet(OutboundClass::Display, 4)).unwrap();
 
         assert!(owner.write_next().await.unwrap());
         assert!(owner.write_next().await.unwrap());
+        assert!(!owner.is_drained());
         owner.drain().await.unwrap();
+        assert!(owner.is_drained());
         assert!(!owner.write_next().await.unwrap());
 
         let writer = owner.into_inner();
-        assert_eq!(writer.writes, vec![vec![3], vec![1, 2]]);
+        assert_eq!(writer.writes, vec![vec![3], vec![1, 2], vec![4]]);
     }
 
     #[tokio::test]
