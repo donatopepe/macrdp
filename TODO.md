@@ -372,8 +372,10 @@ then delete; promote a parked item to *In flight* when work actually starts.
   in sync" + less catch-up speed-up); **B** (remaining) — tighten the audio-lag resync
   (vendored `dispatch_audio`, ~300 ms threshold tuned for resize-freezes, not slow drift)
   to keep audio live, at the cost of choppier audio. Lever A substantially improved it;
-  B only if the residual drift/skips still bother in daily use. Detail:
-  `project_av_sync_under_drops` memory.
+  B only if the residual drift/skips still bother in daily use. A safe queue primitive
+  `AudioWaveReceiver::drop_oldest_until_below` plus unit tests now exists, but no automatic
+  correction invokes it yet; threshold/hysteresis and AAC-priming policy remain to be validated.
+  Detail: `project_av_sync_under_drops` memory.
 - [ ] **EGFX-over-UDP watchdog — ack-lag-pegged secondary trigger** (refinement of the
   shipped watchdog above). The watchdog fires on ~3s of *fully silent* acks; a real wedge
   dribbles a few stray acks before going silent, so it latched at `since_ack_ms≈7.7s` in

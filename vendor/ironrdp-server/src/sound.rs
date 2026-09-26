@@ -146,6 +146,30 @@ impl AudioWaveReceiver {
     pub fn dropped(&self) -> u64 {
         self.inner.dropped.load(Ordering::Relaxed)
     }
+
+    /// Remove oldest waves until queued duration is below `max_ms`.
+    ///
+    /// Used only by an explicit audio resync policy. Normal playback path
+    /// remains unchanged when caller does not invoke it.
+    pub fn drop_oldest_until_below(&mut self, max_ms: f64) -> usize {
+        let mut queue = self.inner.queue.lock().expect("audio queue mutex poisoned");
+        let mut dropped = 0;
+        let mut queued_ms: f64 = queue
+            .iter()
+            .map(|(data, _, duration)| duration.unwrap_or_else(|| data.len() as f64 / 176.4))
+            .sum();
+        while queued_ms > max_ms {
+            let Some((data, _, duration)) = queue.pop_front() else {
+                break;
+            };
+            queued_ms -= duration.unwrap_or_else(|| data.len() as f64 / 176.4);
+            dropped += 1;
+        }
+        if dropped > 0 {
+            self.inner.dropped.fetch_add(dropped as u64, Ordering::Relaxed);
+        }
+        dropped
+    }
 }
 
 impl Drop for AudioWaveReceiver {
@@ -173,6 +197,33 @@ pub fn audio_wave_channel(capacity: usize) -> (AudioWaveSender, AudioWaveReceive
         },
         AudioWaveReceiver { inner },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn receiver_drops_oldest_until_duration_bound() {
+        let (sender, mut receiver) = audio_wave_channel(8);
+        for id in 0..3 {
+            sender.try_send((vec![id], u32::from(id), Some(100.0))).unwrap();
+        }
+
+        assert_eq!(receiver.drop_oldest_until_below(150.0), 2);
+        assert_eq!(receiver.queued_duration_ms(), 100.0);
+        assert_eq!(receiver.dropped(), 2);
+        assert_eq!(receiver.recv().await.unwrap().0, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn receiver_keeps_queue_when_already_below_bound() {
+        let (sender, mut receiver) = audio_wave_channel(4);
+        sender.try_send((vec![1], 0, Some(40.0))).unwrap();
+        assert_eq!(receiver.drop_oldest_until_below(40.0), 0);
+        assert_eq!(receiver.dropped(), 0);
+        assert_eq!(receiver.recv().await.unwrap().0, vec![1]);
+    }
 }
 
 pub trait SoundServerFactory: ServerEventSender {
