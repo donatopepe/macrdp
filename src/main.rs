@@ -2528,7 +2528,7 @@ async fn async_main() -> Result<()> {
     // the same `Arc<AtomicBool>` can be handed to both the capture
     // backend (which reads it to gate frame emission) and the vendor
     // server (whose per-connection PDU handler writes it). See
-    // `vendor/ironrdp-server` `display_suppressed` plumbing.
+    // `vendor/macrdp-server` `display_suppressed` plumbing.
     let display_suppressed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let display = CaptureDisplay {

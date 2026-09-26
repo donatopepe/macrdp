@@ -273,14 +273,14 @@ src/camera/       Camera redirection (MS-RDPECAM) — presents the CLIENT's webc
                   separate process: gui/Sources/macrdpcamera (see the gui note above).
 build.rs          Bakes Xcode Swift-runtime rpath into the final binary
 
-vendor/ironrdp-server/    Local fork of ironrdp-server 0.10.0, pulled in via
+vendor/macrdp-server/    Local fork of ironrdp-server 0.10.0, pulled in via
                           [patch.crates-io] in Cargo.toml. The live
                           divergences (audio-lag tracker, resize-stall
                           resync, per-batch dispatch priority, SuppressOutput
                           handling, NSCodec encoder, opt-in QOI Rgb
                           workaround, honor-client-desktop-size plumbing)
                           are documented in
-                          vendor/ironrdp-server/CLAUDE.md — that nested
+                          vendor/macrdp-server/CLAUDE.md — that nested
                           memory loads when you work in the fork. Keep the
                           vendor dir until all of those are upstreamed AND
                           released.
@@ -307,7 +307,7 @@ vendor/ironrdp-rdpdr/     Local fork of ironrdp-rdpdr 0.5.0 (added 2026-06-16,
                           (ClientName/DeviceListAnnounce/DeviceAnnounceHeader)
                           so a server can read what the client sends. The
                           server-side RdpdrServer processor itself lives in
-                          vendor/ironrdp-server/src/rdpdr.rs. See
+                          vendor/macrdp-server/src/rdpdr.rs. See
                           vendor/ironrdp-rdpdr/CLAUDE.md.
 
 (vendor/ironrdp-rdpeusb/  DE-VENDORED at the a5d1c682 pin bump (v0.9.5, 2026-08-06).

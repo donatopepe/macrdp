@@ -3,7 +3,7 @@
 //! Gated behind the `multitransport` cargo feature (default off) so the
 //! standard build is byte-identical. This is the macrdp UDP-multitransport
 //! effort; see `docs/rdp-udp-multitransport-feasibility.md` and the
-//! `vendor/ironrdp-server/CLAUDE.md` divergence (12) for the full plan.
+//! `vendor/macrdp-server/CLAUDE.md` divergence (12) for the full plan.
 //!
 //! # Milestone status
 //!

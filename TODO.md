@@ -250,7 +250,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
 - [x] **Outbound scheduler core** — added/tested owner-friendly typed queues, bounded bytes,
   urgent audio/control priority, weighted data fairness, FIFO EGFX behavior, bounded same-class
   coalescing, pre-framing audio admission/drop telemetry, typed queue snapshots, and local
-  enqueue/reject/sent packet+byte counters in `vendor/ironrdp-server/src/outbound.rs`. Coalescing
+  enqueue/reject/sent packet+byte counters in `vendor/macrdp-server/src/outbound.rs`. Coalescing
   preserves complete-buffer byte order and caps each owner write at explicit 64 KiB; typed snapshots are
   available for opt-in telemetry, and scheduler is not wired to live socket yet.
 - [~] **Live socket-owner adapter** — blocked safely at design boundary: current
@@ -723,7 +723,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
 
 - **▶ UPDATE 2026-09-16 — supersedes the "ZERO open clintcan PRs" note below.** clintcan has 0 open
   upstream PRs and 2 open issues (#1484, #1969). Detail: the `project_upstream_ironrdp_open_prs` memory
-  and the divergence notes in `vendor/ironrdp-server/CLAUDE.md`.
+  and the divergence notes in `vendor/macrdp-server/CLAUDE.md`.
   - **Divergence (23), second-client preemption, is upstream — with traps.** #1476 MERGED 2026-09-08;
     #1913 MERGED 2026-09-11 replaced its bool with `ConnectionPolicy { Queue (default), Reject, Preempt }`
     via `with_connection_policy`. The bump must add `.with_connection_policy(ConnectionPolicy::Preempt)`
@@ -863,7 +863,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
   (do NOT file a competing PR): (a) the ironrdp-server seam = uchouT's OPEN PR #1417 (adds
   ServerBuilder::with_usb_factory + src/urbdrc.rs + UsbDeviceHandle + per-device backend — near-exact
   match to div 16; blocked by #1416, stale 07-15); (b) when #1417+#1394 merge + pin bump, macrdp adopts
-  upstream's with_usb_factory/UsbDeviceHandle/backend and DELETES vendor/ironrdp-server/src/rdpeusb.rs.
+  upstream's with_usb_factory/UsbDeviceHandle/backend and DELETES vendor/macrdp-server/src/rdpeusb.rs.
   Only constructive move for us: VALIDATE #1417 from macrdp's real-URBDRC-server perspective (like the
   #1509 validation) once it's unblocked. Track it, don't file. Pin-bump-era adoption. -->
   clipboard, RDPDR, blank-recovery, USB if entitled) → ship as its own release with nothing else

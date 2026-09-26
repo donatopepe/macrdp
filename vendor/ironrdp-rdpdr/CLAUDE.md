@@ -25,7 +25,7 @@ reused as-is; we only add the missing server-direction halves.
       widened from `pub(crate)` to `pub`, so the server can read the announced
       device id / type / label.
     These pair with the **server-side `RdpdrServer` processor** that lives in
-    `vendor/ironrdp-server/src/rdpdr.rs` (divergence (11) there) — kept out of
+    `vendor/macrdp-server/src/rdpdr.rs` (divergence (11) there) — kept out of
     this crate so the macrdp-facing factory/backend traits sit next to the other
     server channel factories. Outbound (server→client) reuses the existing
     `RdpdrPdu`/`*::encode` impls unchanged: `VersionAndIdPdu`, `CoreCapability`,
@@ -121,7 +121,7 @@ reused as-is; we only add the missing server-direction halves.
     redirected reader.
 
     Server-side path (the "STILL TODO" below) is DONE — see
-    `vendor/ironrdp-server/src/rdpdr.rs` divergence (11) smart-card phase: the
+    `vendor/macrdp-server/src/rdpdr.rs` divergence (11) smart-card phase: the
     `RdpdrHandle::scard_*` methods + completion router.
 
 Cargo notes: the de-worked `Cargo.toml` inlines the workspace-inherited fields

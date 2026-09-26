@@ -57,7 +57,7 @@ context; the RETIRED ones were NOT re-applied. Server-fork div-9 (honor-size for
     server sees ANY of this, the acceptor has already committed a size in
     Demand Active inside `accept_finalize`.
 
-    Consumed by `vendor/ironrdp-server` divergence (9): `RdpServer::
+    Consumed by `vendor/macrdp-server` divergence (9): `RdpServer::
     set_honor_client_desktop_size` forwards the flag to each connection's
     acceptor; macrdp wires it from the default-on client-resolution
     auto-adopt (`--no-client-resolution` opts out). The server's display
@@ -96,7 +96,7 @@ context; the RETIRED ones were NOT re-applied. Server-fork div-9 (honor-size for
     but UNCONDITIONALLY — it's free and harmless), carried across
     `new_deactivation_reactivation`, and surfaced as a new
     `pub keyboard_layout: u32` field on `AcceptorResult` (0 = not sent).
-    Consumed by `vendor/ironrdp-server` divergence (10), which publishes it
+    Consumed by `vendor/macrdp-server` divergence (10), which publishes it
     to a shared cell macrdp's input handler reads to auto-select a non-US
     keyboard layout (`src/keyboard_layout.rs`). Purely additive (a new struct
     field + a new private field). Upstreamed as #1397 (MERGED 2026-07-01, same
@@ -120,7 +120,7 @@ context; the RETIRED ones were NOT re-applied. Server-fork div-9 (honor-size for
     `AcceptorResult`. Upstream parses the block into
     `ClientGccBlocks.multi_transport_channel` and then discards it (only
     early-capability flags, core size, and keyboard layout are kept). Consumed
-    by `vendor/ironrdp-server` divergence (12), which decides whether to send a
+    by `vendor/macrdp-server` divergence (12), which decides whether to send a
     Server Initiate Multitransport Request. Purely additive (same shape as (2)),
     so trivially upstreamable — offer alongside (1)/(2). See the
     docs/rdp-udp-multitransport-feasibility.md plan.

@@ -43,7 +43,7 @@ ironrdp-acceptor = "0.10"
 ironrdp-pdu = "0.9"
 # MS-RDPEDISP monitor-layout PDU types (read-only use: CaptureDisplay::request_layout
 # decodes the client's live-resize request). The DVC processor itself is already
-# wired up unconditionally inside vendor/ironrdp-server; this just gets us the PDU
+# wired up unconditionally inside vendor/macrdp-server; this just gets us the PDU
 # accessors (DisplayControlMonitorLayout::monitors()).
 ironrdp-displaycontrol = "0.8"
 # CSPRNG for the Server Auto-Reconnect Cookie random bits (already in the tree
@@ -95,16 +95,16 @@ screencapturekit = { version = "2.1", features = ["async"] }
 # for AVC/H.264, etc.) only exist on `master`. The pinned commit is bumped
 # manually so the build is reproducible.
 #
-# `ironrdp-server` is the one exception — it stays vendored locally because
-# our wave-drop fix isn't merged upstream yet (PR
+# `ironrdp-server` is the one exception — it stays in the macrdp-server fork because
+# our local audio/scheduler changes aren't upstream yet (PR
 # https://github.com/Devolutions/IronRDP/pull/1276). Our vendored 0.10.0
 # compiles against the patched (master) sibling crates because upstream hasn't
 # bumped the inter-crate version numbers since 0.10.0 was released. Once the
-# wave-drop PR merges, drop the vendor block and add `ironrdp-server` to the
-# git pin list below.
+# wave-drop PR merges, review the fork against upstream before changing this
+# patch; the package name remains `ironrdp-server` for API compatibility.
 [patch.crates-io]
-ironrdp-server = { path = "vendor/ironrdp-server" }
-# ironrdp-acceptor is vendored (same upstream rev as the git pins below) for
+ironrdp-server = { path = "vendor/macrdp-server" }
+# ironrdp-acceptor is a separate compatibility fork (same upstream rev as the git pins below) for
 # the honor-client-desktop-size divergence — serve the resolution the client
 # requests. See vendor/ironrdp-acceptor/CLAUDE.md.
 ironrdp-acceptor = { path = "vendor/ironrdp-acceptor" }

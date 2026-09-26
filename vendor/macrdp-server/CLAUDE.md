@@ -1,9 +1,14 @@
-# vendor/ironrdp-server — divergence log
+# vendor/macrdp-server — local RDP server fork divergence log
+
+macrdp-server is macrdp's maintained fork, based on and grateful to
+[Devolutions IronRDP](https://github.com/Devolutions/IronRDP). The package name
+remains `ironrdp-server` for Cargo/API compatibility; directory and local
+symbols/docs use `macrdp-server` when referring to this fork.
 
 Local fork of ironrdp-server 0.10.0, pulled in via `[patch.crates-io]` in
 `Cargo.toml`. The audio-lag control and bounded newest-first jitter buffer in the dedicated
 `dispatch_audio` task (carved out of `dispatch_server_events`) are live divergences. Keep this
-vendor dir until (2)/(3)/(4)/(5)/(6)/(8)/(9)/(10)/(11)/(12)/(13)/(14)/(15)/(16)/(18)/(19)/(20)/(21)/(22)/(23) below are upstreamed
+macrdp-server fork until (2)/(3)/(4)/(5)/(6)/(8)/(9)/(10)/(11)/(12)/(13)/(14)/(15)/(16)/(18)/(19)/(20)/(21)/(22)/(23) below are upstreamed
 AND released — #1276 landing is NOT sufficient. ((7) was HARVESTED at the a5d1c682 pin bump — see (7).)
 **(23) is now UPSTREAMED — Devolutions/IronRDP#1476 MERGED 2026-09-08 (`5198cde0`) — so it drops at the
 next pin bump; it is still listed above because the code is still IN this fork until that bump. Read (23)'s
@@ -95,7 +100,7 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     (as merged): same wiring but the encoder lives in a dedicated `ironrdp-nscodec`
     peer crate (CBenoit's architecture preference, confirmed in discussion #1322),
     gated by a new `nscodec` feature on `ironrdp-server`; here the vendor uses the
-    in-tree `vendor/ironrdp-server/src/encoder/nscodec.rs` directly with no feature
+    in-tree `vendor/macrdp-server/src/encoder/nscodec.rs` directly with no feature
     gate. **Post-release migration:** drop this in-tree wiring and depend on the
     published `ironrdp-nscodec` crate + enable the `nscodec` feature on
     `ironrdp-server`.
