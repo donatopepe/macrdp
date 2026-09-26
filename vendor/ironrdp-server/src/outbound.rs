@@ -227,6 +227,10 @@ impl OutboundScheduler {
         self.audio_dropped_bytes
     }
 
+    pub fn queued_bytes_for_class(&self, class: OutboundClass) -> usize {
+        self.class_bytes[class.index()]
+    }
+
     fn has_capacity_for(&self, bytes: usize) -> bool {
         bytes <= self.max_bytes.saturating_sub(self.queued_bytes)
     }
