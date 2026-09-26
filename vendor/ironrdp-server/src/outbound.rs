@@ -401,6 +401,56 @@ impl OutboundOwnerIngress {
         debug_assert_eq!(packet.class, OutboundClass::Audio);
         self.try_send(packet)
     }
+
+    pub async fn send_control(&self, packet: OutboundPacket) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Control);
+        self.send(packet).await
+    }
+
+    pub fn try_send_control(&self, packet: OutboundPacket) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Control);
+        self.try_send(packet)
+    }
+
+    pub async fn send_clipboard(&self, packet: OutboundPacket) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Clipboard);
+        self.send(packet).await
+    }
+
+    pub fn try_send_clipboard(&self, packet: OutboundPacket) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Clipboard);
+        self.try_send(packet)
+    }
+
+    pub async fn send_egfx(&self, packet: OutboundPacket) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Egfx);
+        self.send(packet).await
+    }
+
+    pub fn try_send_egfx(&self, packet: OutboundPacket) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Egfx);
+        self.try_send(packet)
+    }
+
+    pub async fn send_display(&self, packet: OutboundPacket) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Display);
+        self.send(packet).await
+    }
+
+    pub fn try_send_display(&self, packet: OutboundPacket) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Display);
+        self.try_send(packet)
+    }
+
+    pub async fn send_bulk(&self, packet: OutboundPacket) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Bulk);
+        self.send(packet).await
+    }
+
+    pub fn try_send_bulk(&self, packet: OutboundPacket) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
+        debug_assert_eq!(packet.class, OutboundClass::Bulk);
+        self.try_send(packet)
+    }
 }
 
 impl<W> OutboundOwner<W> {
@@ -708,6 +758,20 @@ mod tests {
 
         let writer = owner.into_inner();
         assert_eq!(writer.writes, vec![vec![3], vec![1, 2]]);
+    }
+
+    #[tokio::test]
+    async fn typed_ingress_routes_all_non_audio_classes() {
+        let (_owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 8);
+        ingress.try_send_control(packet(OutboundClass::Control, 1)).unwrap();
+        ingress.try_send_clipboard(packet(OutboundClass::Clipboard, 2)).unwrap();
+        ingress.try_send_egfx(packet(OutboundClass::Egfx, 3)).unwrap();
+        ingress.try_send_display(packet(OutboundClass::Display, 4)).unwrap();
+        ingress.try_send_bulk(packet(OutboundClass::Bulk, 5)).unwrap();
+
+        for expected in 1..=5 {
+            assert_eq!(receiver.recv().await.unwrap().bytes, vec![expected]);
+        }
     }
 
     #[tokio::test]
