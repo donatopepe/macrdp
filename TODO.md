@@ -248,15 +248,16 @@ then delete; promote a parked item to *In flight* when work actually starts.
   event ordering is untouched; oversized fragments bypass coalescing. Full EGFX write batching
   remains upstream-sensitive.
 - [x] **Outbound scheduler core** — added/tested owner-friendly typed queues, bounded bytes,
-  urgent audio/control priority, weighted data fairness, FIFO EGFX behavior, and local enqueue/
-  reject/sent packet+byte counters in `vendor/ironrdp-server/src/outbound.rs`. Not wired to live
-  socket yet; adapter migration remains next step because `write_all` is cancellation-unsafe.
+  urgent audio/control priority, weighted data fairness, FIFO EGFX behavior, bounded same-class
+  coalescing, and local enqueue/reject/sent packet+byte counters in
+  `vendor/ironrdp-server/src/outbound.rs`. Coalescing preserves complete-buffer byte order and
+  caps each owner write at 64 KiB; scheduler is not wired to live socket yet.
 - [~] **Live socket-owner adapter** — blocked safely at design boundary: current
   `FramedWrite::write_all` is not cancellation-safe and can duplicate partial frames on retry.
-  Added isolated `OutboundOwner` complete-buffer handoff, shutdown-drain, and fake-writer tests;
-  it awaits each write exactly once and never retries a failed/partially written buffer. Scheduler
-  remains isolated from live `client_loop`; wiring still requires a controlled producer handoff and
-  shutdown test before changing the active path.
+  Added isolated `OutboundOwner` complete-buffer handoff, bounded same-class coalescing,
+  shutdown-drain, and fake-writer tests; it awaits each write exactly once and never retries a
+  failed/partially written buffer. Scheduler remains isolated from live `client_loop`; wiring still
+  requires a controlled producer handoff and shutdown test before changing the active path.
 - [ ] **Perf (upstream candidates, vendored server — do NOT land as new divergences):** from
   the same audit: (a) `SharedWriter`/dispatch write coalescing — every fragment/event is its
   own `write_all` = 2 boxed futures + syscall + flush (`server.rs:2643` + git-pinned

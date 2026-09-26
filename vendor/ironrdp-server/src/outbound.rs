@@ -94,6 +94,8 @@ pub struct OutboundScheduler {
 
 impl OutboundScheduler {
     pub const MAX_URGENT_BURST: usize = 8;
+    /// Bound one same-class write so coalescing cannot monopolize the socket.
+    pub const MAX_COALESCED_BYTES: usize = 64 * 1024;
 
     pub fn new(max_bytes: usize) -> Self {
         Self {
@@ -211,6 +213,33 @@ impl OutboundScheduler {
         self.pop_class(OutboundClass::Control)
             .or_else(|| self.pop_class(OutboundClass::Audio))
     }
+
+    fn coalesce_same_class(&mut self, mut packet: OutboundPacket) -> OutboundPacket {
+        while packet.len() < Self::MAX_COALESCED_BYTES {
+            let Some(next) = self.queues[packet.class.index()].front() else {
+                break;
+            };
+            if packet.len().saturating_add(next.len()) > Self::MAX_COALESCED_BYTES {
+                break;
+            }
+            let next = self
+                .pop_class(packet.class)
+                .expect("same-class queue front disappeared");
+            packet.bytes.extend(next.bytes);
+        }
+        packet
+    }
+
+    /// Select and coalesce consecutive output buffers of the selected class.
+    ///
+    /// Coalescing happens only after the normal scheduler decision, so it
+    /// cannot change class fairness. It concatenates complete buffers without
+    /// changing their byte order; in particular, EGFX reference ordering is
+    /// preserved. The 64 KiB bound keeps a busy class from monopolizing the
+    /// socket owner.
+    pub fn pop_next_coalesced(&mut self) -> Option<OutboundPacket> {
+        self.pop_next().map(|packet| self.coalesce_same_class(packet))
+    }
 }
 
 /// Single-owner adapter for complete outbound wire buffers.
@@ -259,7 +288,7 @@ impl<W: FramedWrite> OutboundOwner<W> {
     /// the selected packet is never retried because it may have been partially
     /// written already.
     pub async fn write_next(&mut self) -> io::Result<bool> {
-        let Some(packet) = self.scheduler.pop_next() else {
+        let Some(packet) = self.scheduler.pop_next_coalesced() else {
             return Ok(false);
         };
         self.writer.write_all(&packet.bytes).await?;
@@ -302,6 +331,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn coalesces_only_same_class_with_a_byte_bound() {
+        let mut q = OutboundScheduler::new(OutboundScheduler::MAX_COALESCED_BYTES + 8);
+        q.try_push(OutboundPacket::new(OutboundClass::Egfx, vec![1, 2]))
+            .unwrap();
+        q.try_push(OutboundPacket::new(OutboundClass::Egfx, vec![3, 4]))
+            .unwrap();
+        q.try_push(packet(OutboundClass::Display, 5)).unwrap();
+
+        let merged = q.pop_next_coalesced().unwrap();
+        assert_eq!(merged.class, OutboundClass::Egfx);
+        assert_eq!(merged.bytes, vec![1, 2, 3, 4]);
+        assert_eq!(q.pop_next_coalesced().unwrap().class, OutboundClass::Display);
+    }
+
+    #[test]
+    fn coalescing_keeps_large_next_buffer_separate() {
+        let mut q = OutboundScheduler::new(OutboundScheduler::MAX_COALESCED_BYTES + 1);
+        q.try_push(OutboundPacket::new(
+            OutboundClass::Egfx,
+            vec![1; OutboundScheduler::MAX_COALESCED_BYTES],
+        ))
+        .unwrap();
+        q.try_push(packet(OutboundClass::Egfx, 2)).unwrap();
+
+        let first = q.pop_next_coalesced().unwrap();
+        assert_eq!(first.bytes.len(), OutboundScheduler::MAX_COALESCED_BYTES);
+        assert_eq!(q.pop_next_coalesced().unwrap().bytes, vec![2]);
+    }
+
     #[tokio::test]
     async fn owner_writes_complete_buffers_in_scheduler_order_and_drains() {
         let mut owner = OutboundOwner::new(FakeWriter::default(), 32);
@@ -315,7 +374,7 @@ mod tests {
         assert!(!owner.write_next().await.unwrap());
 
         let writer = owner.into_inner();
-        assert_eq!(writer.writes, vec![vec![3], vec![1], vec![2]]);
+        assert_eq!(writer.writes, vec![vec![3], vec![1, 2]]);
     }
 
     #[tokio::test]
@@ -338,12 +397,9 @@ mod tests {
 
         let mut owner = OutboundOwner::new(FailingWriter { writes: Vec::new() }, 32);
         owner.try_push(packet(OutboundClass::Egfx, 1)).unwrap();
-        owner.try_push(packet(OutboundClass::Egfx, 2)).unwrap();
+        owner.try_push(packet(OutboundClass::Display, 2)).unwrap();
 
-        assert_eq!(
-            owner.write_next().await.unwrap_err().kind(),
-            io::ErrorKind::BrokenPipe
-        );
+        assert_eq!(owner.write_next().await.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
         assert_eq!(owner.scheduler().len(), 1);
 
         let writer = owner.into_inner();
