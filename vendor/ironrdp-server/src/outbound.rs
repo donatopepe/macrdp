@@ -15,6 +15,7 @@ use std::collections::VecDeque;
 use std::io;
 
 use ironrdp_async::FramedWrite;
+use tokio::sync::mpsc;
 
 /// Outbound traffic class. Ordering is FIFO within each class; scheduler policy
 /// only decides which class gets next service.
@@ -367,12 +368,51 @@ pub struct OutboundOwner<W> {
     writer: W,
 }
 
+/// Producer-side handoff for the single socket owner.
+///
+/// The channel is bounded by packet count. The owner applies the stricter
+/// complete-buffer byte budget before a packet reaches the writer; non-audio
+/// callers must retain/backpressure a `TrySendError::Full` packet rather than
+/// silently dropping it.
+#[derive(Debug)]
+enum AdmissionError {
+    TooLarge(OutboundPacket),
+    QueueFull(OutboundPacket),
+}
+
+#[derive(Clone)]
+pub struct OutboundOwnerIngress {
+    sender: mpsc::Sender<OutboundPacket>,
+}
+
+impl OutboundOwnerIngress {
+    pub async fn send(&self, packet: OutboundPacket) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
+        self.sender.send(packet).await
+    }
+
+    pub fn try_send(&self, packet: OutboundPacket) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
+        self.sender.try_send(packet)
+    }
+}
+
 impl<W> OutboundOwner<W> {
     pub fn new(writer: W, max_bytes: usize) -> Self {
         Self {
             scheduler: OutboundScheduler::new(max_bytes),
             writer,
         }
+    }
+
+    /// Create an owner and a bounded producer handoff channel. The receiver
+    /// must be moved into [`Self::run`] on the task that exclusively owns the
+    /// socket writer.
+    pub fn channel(
+        writer: W,
+        max_bytes: usize,
+        channel_capacity: usize,
+    ) -> (Self, OutboundOwnerIngress, mpsc::Receiver<OutboundPacket>) {
+        let (sender, receiver) = mpsc::channel(channel_capacity);
+        (Self::new(writer, max_bytes), OutboundOwnerIngress { sender }, receiver)
     }
 
     pub fn scheduler(&self) -> &OutboundScheduler {
@@ -400,6 +440,102 @@ impl<W> OutboundOwner<W> {
 }
 
 impl<W: FramedWrite> OutboundOwner<W> {
+    /// Run the single socket owner until all producers close the handoff.
+    ///
+    /// The receive side may use `try_recv` while no write is in progress to
+    /// fill the typed scheduler, but every `write_next` call is awaited
+    /// directly. It is never placed in `select!`, timed out, aborted, or
+    /// retried, preserving `FramedWrite::write_all`'s cancellation contract.
+    /// A packet too large for the byte budget is returned as an I/O error;
+    /// callers must reject/drop audio before framing instead of sending it.
+    pub async fn run(mut self, mut receiver: mpsc::Receiver<OutboundPacket>) -> io::Result<W> {
+        let max_bytes = self.scheduler.max_bytes();
+        let mut closed = false;
+        let mut pending = None;
+
+        loop {
+            // Wait for one packet only when there is no work already admitted.
+            // Once a packet arrives, drain immediately available producers into
+            // the typed scheduler before selecting the next write. This keeps
+            // the owner in control of class priority without ever receiving
+            // while `write_all` is in flight.
+            if pending.is_none() && self.scheduler.is_empty() && !closed {
+                match receiver.recv().await {
+                    Some(packet) => pending = Some(packet),
+                    None => closed = true,
+                }
+            }
+
+            if let Some(packet) = pending.take() {
+                match Self::admit_packet(&mut self.scheduler, packet, max_bytes) {
+                    Ok(()) => {}
+                    Err(AdmissionError::TooLarge(packet)) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("outbound packet exceeds owner byte budget: {}", packet.len()),
+                        ));
+                    }
+                    Err(AdmissionError::QueueFull(packet)) => {
+                        pending = Some(packet);
+                    }
+                }
+            }
+
+            while !closed && pending.is_none() {
+                match receiver.try_recv() {
+                    Ok(packet) => match Self::admit_packet(&mut self.scheduler, packet, max_bytes) {
+                        Ok(()) => {}
+                        Err(AdmissionError::TooLarge(packet)) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                format!("outbound packet exceeds owner byte budget: {}", packet.len()),
+                            ));
+                        }
+                        Err(AdmissionError::QueueFull(packet)) => {
+                            pending = Some(packet);
+                            break;
+                        }
+                    },
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        closed = true;
+                        break;
+                    }
+                }
+            }
+
+            if !self.scheduler.is_empty() {
+                self.write_next().await?;
+                continue;
+            }
+
+            if pending.is_some() {
+                // A packet that fits an empty scheduler must be admitted. This
+                // guard protects the owner if admission invariants change.
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "outbound packet cannot be admitted",
+                ));
+            }
+            if closed {
+                return Ok(self.writer);
+            }
+        }
+    }
+
+    fn admit_packet(
+        scheduler: &mut OutboundScheduler,
+        packet: OutboundPacket,
+        max_bytes: usize,
+    ) -> Result<(), AdmissionError> {
+        if packet.len() > max_bytes {
+            return Err(AdmissionError::TooLarge(packet));
+        }
+        scheduler.try_push(packet).map_err(|error| match error {
+            EnqueueError::QueueFull(packet) => AdmissionError::QueueFull(packet),
+        })
+    }
+
     /// Write one queued complete buffer.
     ///
     /// `FramedWrite::write_all` is not cancellation-safe. The caller must
@@ -434,7 +570,7 @@ mod tests {
         OutboundPacket::new(class, vec![id])
     }
 
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     struct FakeWriter {
         writes: Vec<Vec<u8>>,
     }
@@ -552,6 +688,31 @@ mod tests {
 
         let writer = owner.into_inner();
         assert_eq!(writer.writes, vec![vec![3], vec![1, 2]]);
+    }
+
+    #[tokio::test]
+    async fn owner_channel_runs_single_writer_and_drains_on_ingress_close() {
+        let (owner, ingress, receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 4);
+        ingress.send(packet(OutboundClass::Egfx, 1)).await.unwrap();
+        ingress.send(packet(OutboundClass::Egfx, 2)).await.unwrap();
+        ingress.send(packet(OutboundClass::Audio, 3)).await.unwrap();
+        drop(ingress);
+
+        let writer = owner.run(receiver).await.unwrap();
+        assert_eq!(writer.writes, vec![vec![3], vec![1, 2]]);
+    }
+
+    #[tokio::test]
+    async fn owner_channel_rejects_packet_larger_than_byte_budget() {
+        let (owner, ingress, receiver) = OutboundOwner::channel(FakeWriter::default(), 2, 1);
+        ingress
+            .send(OutboundPacket::new(OutboundClass::Egfx, vec![1, 2, 3]))
+            .await
+            .unwrap();
+        drop(ingress);
+
+        let error = owner.run(receiver).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[tokio::test]
