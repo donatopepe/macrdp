@@ -17,8 +17,8 @@ use std::io;
 use std::pin::Pin;
 
 use ironrdp_async::FramedWrite;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use tokio::sync::{Notify, mpsc};
 
 /// Outbound traffic class. Ordering is FIFO within each class; scheduler policy
 /// only decides which class gets next service.
@@ -443,6 +443,44 @@ enum AdmissionError {
 }
 
 #[derive(Clone)]
+pub struct OutboundShutdown {
+    requested: std::sync::Arc<AtomicBool>,
+    notify: std::sync::Arc<Notify>,
+}
+
+impl OutboundShutdown {
+    pub fn new() -> Self {
+        Self {
+            requested: std::sync::Arc::new(AtomicBool::new(false)),
+            notify: std::sync::Arc::new(Notify::new()),
+        }
+    }
+
+    pub fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+
+    pub async fn wait(&self) {
+        let notified = self.notify.notified();
+        if self.is_requested() {
+            return;
+        }
+        notified.await;
+    }
+}
+
+impl Default for OutboundShutdown {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Clone)]
 pub struct OutboundOwnerIngress {
     sender: mpsc::Sender<OutboundPacket>,
     enqueued_packets: std::sync::Arc<AtomicU64>,
@@ -709,7 +747,15 @@ impl<W: FramedWrite> OutboundOwner<W> {
     /// retried, preserving `FramedWrite::write_all`'s cancellation contract.
     /// A packet too large for the byte budget is returned as an I/O error;
     /// callers must reject/drop audio before framing instead of sending it.
-    pub async fn run(mut self, mut receiver: mpsc::Receiver<OutboundPacket>) -> io::Result<W> {
+    pub async fn run(self, receiver: mpsc::Receiver<OutboundPacket>) -> io::Result<W> {
+        self.run_with_shutdown(receiver, OutboundShutdown::new()).await
+    }
+
+    pub async fn run_with_shutdown(
+        mut self,
+        mut receiver: mpsc::Receiver<OutboundPacket>,
+        shutdown: OutboundShutdown,
+    ) -> io::Result<W> {
         let max_bytes = self.scheduler.max_bytes();
         let mut closed = false;
         let mut pending = None;
@@ -721,9 +767,16 @@ impl<W: FramedWrite> OutboundOwner<W> {
             // the owner in control of class priority without ever receiving
             // while `write_all` is in flight.
             if pending.is_none() && self.scheduler.is_empty() && !closed {
-                match receiver.recv().await {
-                    Some(packet) => pending = Some(packet),
-                    None => closed = true,
+                if shutdown.is_requested() {
+                    closed = true;
+                } else {
+                    tokio::select! {
+                        _ = shutdown.wait() => closed = true,
+                        packet = receiver.recv() => match packet {
+                            Some(packet) => pending = Some(packet),
+                            None => closed = true,
+                        },
+                    }
                 }
             }
 
@@ -771,7 +824,10 @@ impl<W: FramedWrite> OutboundOwner<W> {
             }
 
             if !self.scheduler.is_empty() {
-                self.write_next().await?;
+                if let Err(error) = self.write_next().await {
+                    shutdown.request();
+                    return Err(error);
+                }
                 continue;
             }
 
@@ -789,7 +845,7 @@ impl<W: FramedWrite> OutboundOwner<W> {
         }
     }
 
-    pub async fn run_until_drained(mut self, receiver: mpsc::Receiver<OutboundPacket>) -> io::Result<W> {
+    pub async fn run_until_drained(self, receiver: mpsc::Receiver<OutboundPacket>) -> io::Result<W> {
         let writer = self.run(receiver).await?;
         Ok(writer)
     }
@@ -883,6 +939,17 @@ mod tests {
             self.writes.push(buf.to_vec());
             std::future::ready(Ok(()))
         }
+    }
+
+    #[tokio::test]
+    async fn shutdown_request_stops_idle_owner_without_cancelling_write() {
+        let (owner, _ingress, receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 1);
+        let shutdown = OutboundShutdown::new();
+        let waiter = shutdown.clone();
+        let task = tokio::spawn(async move { owner.run_with_shutdown(receiver, waiter).await });
+        shutdown.request();
+        let writer = task.await.unwrap().unwrap();
+        assert!(writer.writes.is_empty());
     }
 
     #[tokio::test]
