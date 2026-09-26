@@ -134,6 +134,8 @@ pub struct SessionStats {
     pub av_offset_ewma_samples: AtomicU64,
     /// EWMA source-clock drift in parts per million (audio relative to video).
     pub av_drift_ppm: AtomicI64,
+    /// Number of source-clock samples folded into the ppm estimator.
+    pub av_drift_samples: AtomicU64,
     pub aac: AtomicBool,
     av_clock: AvClockTracker,
 }
@@ -170,7 +172,7 @@ impl SessionStats {
                 "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
                 "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
                 "\"av_offset_ewma_ms\":{},\"av_offset_ewma_samples\":{},",
-                "\"av_drift_ppm\":{},",
+                "\"av_drift_ppm\":{},\"av_drift_samples\":{},",
                 "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
             ),
             self.connected.load(Ordering::Relaxed),
@@ -228,6 +230,7 @@ impl SessionStats {
             self.av_offset_ewma_ms.load(Ordering::Relaxed),
             self.av_offset_ewma_samples.load(Ordering::Relaxed),
             self.av_drift_ppm.load(Ordering::Relaxed),
+            self.av_drift_samples.load(Ordering::Relaxed),
             self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
@@ -295,6 +298,7 @@ pub fn record_av_clock_pair(audio_pts_ms: i64, video_pts_ms: i64) {
                 .drift_ppm
                 .saturating_add((instant_ppm.saturating_sub(clock.drift_ppm)) / 8);
             stats.av_drift_ppm.store(clock.drift_ppm, Ordering::Relaxed);
+            stats.av_drift_samples.fetch_add(1, Ordering::Relaxed);
             clock.anchor_pts_ms = Some(video_pts_ms);
             clock.anchor_offset_ms = offset_ms;
         }
@@ -483,6 +487,7 @@ mod tests {
         assert!(j.contains("\"audio_resyncs\":0"));
         assert!(j.contains("\"audio_resync_dropped\":0"));
         assert!(j.contains("\"audio_backlog_max_ms\":0"));
+        assert!(j.contains("\"av_drift_samples\":0"));
     }
 
     #[test]
