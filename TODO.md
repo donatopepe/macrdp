@@ -251,7 +251,7 @@ then delete; promote a parked item to *In flight* when work actually starts.
   urgent audio/control priority, weighted data fairness, FIFO EGFX behavior, bounded same-class
   coalescing, pre-framing audio admission/drop telemetry, typed queue snapshots, and local
   enqueue/reject/sent packet+byte counters in `vendor/ironrdp-server/src/outbound.rs`. Coalescing
-  preserves complete-buffer byte order and caps each owner write at 64 KiB; typed snapshots are
+  preserves complete-buffer byte order and caps each owner write at explicit 64 KiB; typed snapshots are
   available for opt-in telemetry, and scheduler is not wired to live socket yet.
 - [~] **Live socket-owner adapter** — blocked safely at design boundary: current
   `FramedWrite::write_all` is not cancellation-safe and can duplicate partial frames on retry.

@@ -158,6 +158,10 @@ impl OutboundScheduler {
     /// Bound one same-class write so coalescing cannot monopolize the socket.
     pub const MAX_COALESCED_BYTES: usize = 64 * 1024;
 
+    pub const fn max_coalesced_bytes() -> usize {
+        Self::MAX_COALESCED_BYTES
+    }
+
     pub fn new(max_bytes: usize) -> Self {
         Self {
             queues: std::array::from_fn(|_| VecDeque::new()),
@@ -926,6 +930,11 @@ mod tests {
         assert_eq!(merged.class, OutboundClass::Egfx);
         assert_eq!(merged.bytes, vec![1, 2, 3, 4]);
         assert_eq!(q.pop_next_coalesced().unwrap().class, OutboundClass::Display);
+    }
+
+    #[test]
+    fn coalescing_limit_is_explicit_and_stable() {
+        assert_eq!(OutboundScheduler::max_coalesced_bytes(), 64 * 1024);
     }
 
     #[test]
