@@ -119,6 +119,19 @@ pub enum AudioEnqueue {
     DroppedBeforeFraming { estimated_bytes: usize },
 }
 
+impl AudioEnqueue {
+    pub const fn was_dropped(self) -> bool {
+        matches!(self, Self::DroppedBeforeFraming { .. })
+    }
+
+    pub const fn estimated_bytes(self) -> Option<usize> {
+        match self {
+            Self::Enqueued => None,
+            Self::DroppedBeforeFraming { estimated_bytes } => Some(estimated_bytes),
+        }
+    }
+}
+
 /// Single-thread-owned scheduler state. Move it into future socket-owner task;
 /// no mutex is needed inside that task. `MAX_URGENT_BURST` bounds audio/control
 /// priority so a steady stream cannot starve EGFX or display updates.
@@ -772,6 +785,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(result, AudioEnqueue::DroppedBeforeFraming { estimated_bytes: 8 });
+        assert!(result.was_dropped());
+        assert_eq!(result.estimated_bytes(), Some(8));
         assert!(!built);
         assert_eq!(q.audio_dropped_packets(), 1);
         assert_eq!(q.audio_dropped_bytes(), 8);
@@ -790,6 +805,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(result, AudioEnqueue::Enqueued);
+        assert!(!result.was_dropped());
+        assert_eq!(result.estimated_bytes(), None);
         assert!(built);
         assert_eq!(q.class_len(OutboundClass::Audio), 1);
         assert_eq!(q.audio_dropped_packets(), 0);

@@ -258,8 +258,8 @@ then delete; promote a parked item to *In flight* when work actually starts.
   Added isolated `OutboundOwner` complete-buffer handoff, bounded same-class coalescing,
   shutdown-drain, bounded ingress backpressure, finite ingress-batch fairness, pending-buffer
   drain, writer-error, partial-write, all-class typed ingress, ingress counters/snapshot accessors,
-  per-class packet/byte occupancy and class snapshots, capacity probes, opt-in outbound queue JSON gauges,
-  pre-framing upper-bound admission,
+  per-class packet/byte occupancy and class snapshots, capacity probes, typed audio result helpers,
+  opt-in outbound queue JSON gauges, pre-framing upper-bound admission,
   audio-admission debug guard, and fake-writer tests; it awaits each write
   exactly once and never retries a failed/partially
   written buffer. Scheduler remains
