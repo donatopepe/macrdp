@@ -2453,6 +2453,10 @@ async fn async_main() -> Result<()> {
         audio_drops: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         audio_write_stalls: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         audio_write_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        audio_queue_wait_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        audio_queue_wait_p50_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        audio_queue_wait_p95_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        audio_queue_wait_max_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
         audio_resyncs: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         audio_resync_dropped: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         audio_backlog_max_ms: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -2462,6 +2466,7 @@ async fn async_main() -> Result<()> {
         socket_write_window: Default::default(),
         audio_queue_window: Default::default(),
         audio_write_window: Default::default(),
+        audio_queue_wait_window: Default::default(),
     };
     if let Some(stats) = crate::stats::global() {
         // Reuse the same atomics exposed by the loopback endpoint.
@@ -2474,6 +2479,10 @@ async fn async_main() -> Result<()> {
         diagnostics.audio_drops = stats.audio_drops.clone();
         diagnostics.audio_write_stalls = stats.audio_write_stalls.clone();
         diagnostics.audio_write_ms = stats.audio_write_ms.clone();
+        diagnostics.audio_queue_wait_ms = stats.audio_queue_wait_ms.clone();
+        diagnostics.audio_queue_wait_p50_ms = stats.audio_queue_wait_p50_ms.clone();
+        diagnostics.audio_queue_wait_p95_ms = stats.audio_queue_wait_p95_ms.clone();
+        diagnostics.audio_queue_wait_max_ms = stats.audio_queue_wait_max_ms.clone();
         diagnostics.audio_resyncs = stats.audio_resyncs.clone();
         diagnostics.audio_resync_dropped = stats.audio_resync_dropped.clone();
         diagnostics.audio_backlog_max_ms = stats.audio_backlog_max_ms.clone();

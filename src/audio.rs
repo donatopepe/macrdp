@@ -7,9 +7,10 @@
 //! ship via `RdpsndServerMessage::Wave`.
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
+use std::time::Instant;
 
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use ironrdp_rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServerHandler};
@@ -332,7 +333,7 @@ async fn capture_loop(
     aac_bitrate: u32,
     target_display_id: Option<u32>,
 ) -> anyhow::Result<()> {
-    use anyhow::{anyhow, Context};
+    use anyhow::{Context, anyhow};
     use rubato::Resampler;
     use screencapturekit::async_api::{AsyncSCShareableContent, AsyncSCStream};
     use screencapturekit::prelude::{SCContentFilter, SCStreamConfiguration, SCStreamOutputType};
@@ -754,7 +755,7 @@ async fn capture_loop(
                         // than block the capture loop (which would back up the
                         // SCK ring buffer and lose newer audio anyway). Use
                         // try_send: on Full, log+drop; on Closed, exit.
-                        match audio_ref.try_send((data, ts_ms, duration_ms)) {
+                        match audio_ref.try_send((data, ts_ms, duration_ms, Some(Instant::now()))) {
                             Ok(true) => {
                                 debug!(
                                     queue_len = audio_ref.len(),

@@ -513,6 +513,10 @@ pub struct DiagnosticsHandle {
     pub audio_drops: Arc<AtomicU64>,
     pub audio_write_stalls: Arc<AtomicU64>,
     pub audio_write_ms: Arc<AtomicU32>,
+    pub audio_queue_wait_ms: Arc<AtomicU32>,
+    pub audio_queue_wait_p50_ms: Arc<AtomicU32>,
+    pub audio_queue_wait_p95_ms: Arc<AtomicU32>,
+    pub audio_queue_wait_max_ms: Arc<AtomicU32>,
     pub audio_resyncs: Arc<AtomicU64>,
     pub audio_resync_dropped: Arc<AtomicU64>,
     pub audio_backlog_max_ms: Arc<AtomicU32>,
@@ -522,6 +526,7 @@ pub struct DiagnosticsHandle {
     pub socket_write_window: LatencyWindow,
     pub audio_queue_window: LatencyWindow,
     pub audio_write_window: LatencyWindow,
+    pub audio_queue_wait_window: LatencyWindow,
 }
 
 pub struct RdpServer {
@@ -2978,7 +2983,7 @@ impl RdpServer {
             const BYTES_PER_MS: f64 = 176.4;
 
             loop {
-                let (data, ts, duration_ms) = match audio_receiver.recv().await {
+                let (data, ts, duration_ms, enqueued_at) = match audio_receiver.recv().await {
                     Some(wave) => wave,
                     None => {
                         debug!("audio channel closed; stopping audio dispatch");
@@ -2992,6 +2997,15 @@ impl RdpServer {
                     diag.audio_queue_ms.store(queue_ms, Ordering::Relaxed);
                     diag.audio_queue_window.record(queue_ms);
                     diag.audio_drops.store(audio_receiver.dropped(), Ordering::Relaxed);
+                    if let Some(enqueued_at) = enqueued_at {
+                        let wait_ms = enqueued_at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+                        diag.audio_queue_wait_ms.store(wait_ms, Ordering::Relaxed);
+                        diag.audio_queue_wait_window.record(wait_ms);
+                        let (p50, p95, max) = diag.audio_queue_wait_window.percentiles();
+                        diag.audio_queue_wait_p50_ms.store(p50, Ordering::Relaxed);
+                        diag.audio_queue_wait_p95_ms.store(p95, Ordering::Relaxed);
+                        diag.audio_queue_wait_max_ms.store(max, Ordering::Relaxed);
+                    }
                 }
 
                 // PCM waves leave `duration_ms` None and we derive the

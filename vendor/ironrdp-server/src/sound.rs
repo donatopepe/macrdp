@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::Notify;
 
 use crate::ServerEventSender;
@@ -22,8 +23,9 @@ use crate::ServerEventSender;
 /// dispatcher derive it from the byte length assuming uncompressed PCM
 /// (`BYTES_PER_MS`). A compressed codec (AAC) MUST set it explicitly: its
 /// byte length bears no fixed relationship to playback time, so the
-/// PCM-bytes-to-ms assumption in the audio-lag model would collapse.
-pub type AudioWave = (Vec<u8>, u32, Option<f64>);
+/// PCM-bytes-to-ms assumption in the audio-lag model would collapse. The fourth
+/// element is producer enqueue time, when available, for queue-wait telemetry.
+pub type AudioWave = (Vec<u8>, u32, Option<f64>, Option<Instant>);
 
 /// Result of inserting one wave into bounded audio jitter buffer.
 #[derive(Debug)]
@@ -139,7 +141,7 @@ impl AudioWaveReceiver {
             .lock()
             .expect("audio queue mutex poisoned")
             .iter()
-            .map(|(data, _, duration)| duration.unwrap_or_else(|| data.len() as f64 / 176.4))
+            .map(|(data, _, duration, _)| duration.unwrap_or_else(|| data.len() as f64 / 176.4))
             .sum()
     }
 
@@ -156,10 +158,10 @@ impl AudioWaveReceiver {
         let mut dropped = 0;
         let mut queued_ms: f64 = queue
             .iter()
-            .map(|(data, _, duration)| duration.unwrap_or_else(|| data.len() as f64 / 176.4))
+            .map(|(data, _, duration, _)| duration.unwrap_or_else(|| data.len() as f64 / 176.4))
             .sum();
         while queued_ms > max_ms {
-            let Some((data, _, duration)) = queue.pop_front() else {
+            let Some((data, _, duration, _)) = queue.pop_front() else {
                 break;
             };
             queued_ms -= duration.unwrap_or_else(|| data.len() as f64 / 176.4);
@@ -207,7 +209,7 @@ mod tests {
     async fn receiver_drops_oldest_until_duration_bound() {
         let (sender, mut receiver) = audio_wave_channel(8);
         for id in 0..3 {
-            sender.try_send((vec![id], u32::from(id), Some(100.0))).unwrap();
+            sender.try_send((vec![id], u32::from(id), Some(100.0), None)).unwrap();
         }
 
         assert_eq!(receiver.drop_oldest_until_below(150.0), 2);
@@ -219,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn receiver_keeps_queue_when_already_below_bound() {
         let (sender, mut receiver) = audio_wave_channel(4);
-        sender.try_send((vec![1], 0, Some(40.0))).unwrap();
+        sender.try_send((vec![1], 0, Some(40.0), None)).unwrap();
         assert_eq!(receiver.drop_oldest_until_below(40.0), 0);
         assert_eq!(receiver.dropped(), 0);
         assert_eq!(receiver.recv().await.unwrap().0, vec![1]);
