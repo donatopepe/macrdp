@@ -443,6 +443,20 @@ pub struct OutboundOwnerStatus {
     pub audio_dropped_bytes: u64,
 }
 
+impl OutboundOwnerStatus {
+    pub const fn zero() -> Self {
+        Self {
+            queued_packets: 0,
+            queued_bytes: 0,
+            sent_packets: 0,
+            sent_bytes: 0,
+            rejected_packets: 0,
+            audio_dropped_packets: 0,
+            audio_dropped_bytes: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutboundOwnerState {
     Idle,
