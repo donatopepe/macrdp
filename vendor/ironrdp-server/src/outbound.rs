@@ -763,6 +763,14 @@ impl<W: FramedWrite> OutboundOwner<W> {
     pub fn is_drained(&self) -> bool {
         self.scheduler.is_empty()
     }
+
+    pub fn queued_packets(&self) -> usize {
+        self.scheduler.len()
+    }
+
+    pub fn queued_bytes(&self) -> usize {
+        self.scheduler.queued_bytes()
+    }
 }
 
 #[cfg(test)]
@@ -920,6 +928,8 @@ mod tests {
         assert!(owner.write_next().await.unwrap());
         assert!(!owner.is_drained());
         assert_eq!(owner.scheduler_snapshot().queued_packets, 1);
+        assert_eq!(owner.queued_packets(), 1);
+        assert_eq!(owner.queued_bytes(), 1);
         owner.drain().await.unwrap();
         assert!(owner.is_drained());
         assert!(!owner.write_next().await.unwrap());
