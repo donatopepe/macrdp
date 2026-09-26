@@ -606,6 +606,31 @@ impl<W: FramedWrite> OutboundOwnerSession<W> {
     }
 }
 
+impl<W> OutboundOwnerSession<W>
+where
+    W: FramedWrite + Send + 'static,
+    for<'a> W::WriteAllFut<'a>: Send,
+{
+    /// Spawn owner as independent task. Its cancellation-sensitive write is
+    /// not a branch of client-loop `select!`; shutdown is explicit.
+    pub fn spawn(
+        self,
+        ingress: OutboundOwnerIngress,
+    ) -> (
+        OutboundOwnerIngress,
+        OutboundIngressSet,
+        OutboundShutdown,
+        tokio::task::JoinHandle<io::Result<W>>,
+    ) {
+        let typed = ingress.typed_writers();
+        let shutdown = self.shutdown.clone();
+        let waiter = shutdown.clone();
+        let OutboundOwnerSession { owner, receiver, .. } = self;
+        let task = tokio::spawn(async move { owner.run_with_shutdown(receiver, waiter).await });
+        (ingress, typed, shutdown, task)
+    }
+}
+
 #[derive(Clone)]
 pub struct OutboundOwnerIngress {
     sender: mpsc::Sender<OutboundPacket>,
@@ -1365,12 +1390,19 @@ mod tests {
     #[tokio::test]
     async fn owner_session_wraps_typed_handoff_and_shutdown() {
         let (session, ingress, mut writers) = OutboundOwnerSession::channel(FakeWriter::default(), 64, 8);
-        let shutdown = session.shutdown_handle();
         writers.control.write_all(&[1]).await.unwrap();
         drop(ingress);
         let writer = session.run().await.unwrap();
         assert_eq!(writer.writes, vec![vec![1]]);
+    }
+
+    #[tokio::test]
+    async fn owner_session_spawn_has_explicit_shutdown() {
+        let (session, ingress, _) = OutboundOwnerSession::channel(FakeWriter::default(), 64, 8);
+        let (_ingress, _writers, shutdown, task) = session.spawn(ingress);
         shutdown.request();
+        let writer = task.await.unwrap().unwrap();
+        assert!(writer.writes.is_empty());
     }
 
     #[tokio::test]
