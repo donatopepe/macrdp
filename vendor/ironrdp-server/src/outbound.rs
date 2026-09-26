@@ -708,6 +708,17 @@ impl<W: FramedWrite> OutboundOwner<W> {
         self.scheduler.snapshot()
     }
 
+    pub fn scheduler_snapshot_with_ingress(
+        &self,
+        ingress: &OutboundOwnerIngress,
+    ) -> (OutboundSchedulerSnapshot, u64, u64) {
+        (
+            self.scheduler.snapshot(),
+            ingress.enqueued_packets(),
+            ingress.rejected_packets(),
+        )
+    }
+
     /// Write one queued complete buffer.
     ///
     /// `FramedWrite::write_all` is not cancellation-safe. The caller must
