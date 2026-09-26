@@ -602,6 +602,12 @@ pub struct OutboundIngressSet {
     pub bulk: OutboundIngressWriter,
 }
 
+impl OutboundIngressSet {
+    pub fn classes() -> [OutboundClass; 6] {
+        OutboundClass::ALL
+    }
+}
+
 impl OutboundOwnerIngress {
     pub async fn send(&self, packet: OutboundPacket) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
         match self.sender.send(packet).await {
