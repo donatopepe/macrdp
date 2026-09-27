@@ -1252,6 +1252,8 @@ impl<W: FramedWrite> OutboundOwner<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
 
     fn packet(class: OutboundClass, id: u8) -> OutboundPacket {
         OutboundPacket::new(class, vec![id])
@@ -1510,6 +1512,49 @@ mod tests {
         shutdown.request();
         let writer = task.await.unwrap().unwrap();
         assert!(writer.writes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn diagnostic_owner_publishes_live_queue_and_sent_status() {
+        let diagnostics = crate::DiagnosticsHandle {
+            event_queue: std::sync::Arc::new(AtomicU32::new(0)),
+            socket_write_stalls: std::sync::Arc::new(AtomicU64::new(0)),
+            socket_write_ms: std::sync::Arc::new(AtomicU32::new(0)),
+            audio_queue: std::sync::Arc::new(AtomicU32::new(0)),
+            audio_queue_ms: std::sync::Arc::new(AtomicU32::new(0)),
+            audio_drops: std::sync::Arc::new(AtomicU64::new(0)),
+            audio_write_stalls: std::sync::Arc::new(AtomicU64::new(0)),
+            audio_write_ms: std::sync::Arc::new(AtomicU32::new(0)),
+            audio_queue_wait_ms: std::sync::Arc::new(AtomicU32::new(0)),
+            audio_queue_wait_p50_ms: std::sync::Arc::new(AtomicU32::new(0)),
+            audio_queue_wait_p95_ms: std::sync::Arc::new(AtomicU32::new(0)),
+            audio_queue_wait_max_ms: std::sync::Arc::new(AtomicU32::new(0)),
+            audio_resyncs: std::sync::Arc::new(AtomicU64::new(0)),
+            audio_resync_dropped: std::sync::Arc::new(AtomicU64::new(0)),
+            audio_backlog_max_ms: std::sync::Arc::new(AtomicU32::new(0)),
+            capture_age_window: Default::default(),
+            encode_latency_window: Default::default(),
+            ship_latency_window: Default::default(),
+            socket_write_window: Default::default(),
+            audio_queue_window: Default::default(),
+            audio_write_window: Default::default(),
+            audio_queue_wait_window: Default::default(),
+            outbound_queued_packets: Arc::new(AtomicU64::new(0)),
+            outbound_queued_bytes: Arc::new(AtomicU64::new(0)),
+            outbound_enqueued_packets: Arc::new(AtomicU64::new(0)),
+            outbound_rejected_packets: Arc::new(AtomicU64::new(0)),
+            outbound_sent_packets: Arc::new(AtomicU64::new(0)),
+            outbound_sent_bytes: Arc::new(AtomicU64::new(0)),
+        };
+        let (owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 64, 2);
+        ingress.send(packet(OutboundClass::Control, 7)).await.unwrap();
+        let mut owner = owner.with_diagnostics(diagnostics.clone());
+        owner.publish_status(&ingress);
+        assert_eq!(diagnostics.outbound_queued_packets.load(Ordering::Relaxed), 0);
+        assert!(owner.owner.pump_one_ingress(&mut receiver).await.unwrap());
+        owner.publish_status(&ingress);
+        assert_eq!(diagnostics.outbound_sent_packets.load(Ordering::Relaxed), 1);
+        assert_eq!(diagnostics.outbound_sent_bytes.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
