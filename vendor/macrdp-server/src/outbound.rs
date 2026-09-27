@@ -1073,6 +1073,17 @@ impl<W: FramedWrite> OutboundOwner<W> {
         Self::new(writer, max_bytes)
     }
 
+    /// Run owner loop while caller continues processing cancellation-sensitive reads.
+    /// The owner remains sole writer; shutdown/error are explicit and no write
+    /// future is cancelled or retried.
+    pub async fn run_until_shutdown(
+        self,
+        receiver: mpsc::Receiver<OutboundPacket>,
+        shutdown: OutboundShutdown,
+    ) -> io::Result<W> {
+        self.run_with_shutdown(receiver, shutdown).await
+    }
+
     /// Maximum number of producer packets admitted between socket writes.
     ///
     /// A continuously-ready ingress must not keep the owner in `try_recv`
