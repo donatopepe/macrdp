@@ -1405,6 +1405,16 @@ mod tests {
         assert_eq!(lifecycle.on_shutdown(true).state(), OutboundOwnerState::Closed);
     }
 
+    #[test]
+    fn lifecycle_preserves_preemption_reconnect_shutdown_transition() {
+        let active = OutboundOwnerLifecycle::default().on_ingress(true).on_write_start();
+        let draining = active.on_shutdown(false);
+        assert_eq!(draining.state(), OutboundOwnerState::Draining);
+        assert_eq!(draining.on_ingress(true).state(), OutboundOwnerState::Queued);
+        assert_eq!(draining.on_error().state(), OutboundOwnerState::Failed);
+        assert_eq!(draining.on_shutdown(true).state(), OutboundOwnerState::Closed);
+    }
+
     #[tokio::test]
     async fn shutdown_request_stops_idle_owner_without_cancelling_write() {
         let (owner, _ingress, receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 1);
