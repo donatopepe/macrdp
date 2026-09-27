@@ -1582,7 +1582,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[tokio::test]
     async fn typed_writer_byte_api_routes_class_without_socket() {
         let (_owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 4);
         let writers = ingress.typed_writers();
