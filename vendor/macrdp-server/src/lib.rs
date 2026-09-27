@@ -47,9 +47,10 @@ pub use multitransport::{
     CookieRegistry, MultitransportProvider, TunnelSender, encode_initiate_request, tunnel_channel,
 };
 pub use outbound::{
-    AudioEnqueue, EnqueueError, OutboundClass, OutboundClassStats, OutboundIngressSet, OutboundIngressWriter,
-    OutboundOwner, OutboundOwnerIngress, OutboundOwnerLifecycle, OutboundOwnerSession, OutboundOwnerState,
-    OutboundOwnerStatus, OutboundPacket, OutboundScheduler, OutboundSchedulerSnapshot, OutboundShutdown,
+    AudioEnqueue, EnqueueError, OutboundClass, OutboundClassStats, OutboundDiagnosticOwner, OutboundIngressSet,
+    OutboundIngressWriter, OutboundOwner, OutboundOwnerIngress, OutboundOwnerLifecycle, OutboundOwnerSession,
+    OutboundOwnerState, OutboundOwnerStatus, OutboundPacket, OutboundScheduler, OutboundSchedulerSnapshot,
+    OutboundShutdown,
 };
 pub use rdcamera::{
     CameraSampleSink, CameraServerMessage, RDCAMERA_CHANNEL_NAME, RdCameraDeviceProcessor, RdCameraServer,

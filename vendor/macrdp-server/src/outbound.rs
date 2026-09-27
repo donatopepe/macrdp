@@ -430,6 +430,39 @@ pub struct OutboundOwner<W> {
     writer: W,
 }
 
+pub struct OutboundDiagnosticOwner<W> {
+    owner: OutboundOwner<W>,
+    diagnostics: crate::DiagnosticsHandle,
+}
+
+impl<W: FramedWrite> OutboundDiagnosticOwner<W> {
+    pub async fn write_next(&mut self) -> io::Result<bool> {
+        let started = std::time::Instant::now();
+        let result = self.owner.write_next().await;
+        let elapsed = started.elapsed();
+        let elapsed_ms = elapsed.as_millis().min(u128::from(u32::MAX)) as u32;
+        if elapsed >= std::time::Duration::from_millis(10) {
+            self.diagnostics.socket_write_stalls.fetch_add(1, Ordering::Relaxed);
+        }
+        self.diagnostics.socket_write_ms.store(elapsed_ms, Ordering::Relaxed);
+        self.diagnostics.socket_write_window.record(elapsed_ms);
+        result
+    }
+
+    pub fn scheduler_snapshot(&self) -> OutboundSchedulerSnapshot {
+        self.owner.scheduler_snapshot()
+    }
+
+    pub fn into_inner(self) -> W {
+        self.owner.into_inner()
+    }
+
+    pub async fn drain(&mut self) -> io::Result<()> {
+        while self.write_next().await? {}
+        Ok(())
+    }
+}
+
 /// Owner snapshot that can be shared with diagnostics without exposing writer
 /// state or allowing producers to bypass the single socket owner.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -904,6 +937,15 @@ impl<W> OutboundOwner<W> {
 }
 
 impl<W: FramedWrite> OutboundOwner<W> {
+    /// Attach opt-in diagnostics to owner writes without changing scheduling.
+    /// Caller must provide shared atomics; absent diagnostics remain no-op.
+    pub fn with_diagnostics(self, diagnostics: crate::DiagnosticsHandle) -> OutboundDiagnosticOwner<W> {
+        OutboundDiagnosticOwner {
+            owner: self,
+            diagnostics,
+        }
+    }
+
     pub fn from_writer(writer: W, max_bytes: usize) -> Self {
         Self::new(writer, max_bytes)
     }
@@ -1440,7 +1482,8 @@ mod tests {
 
     #[tokio::test]
     async fn pump_one_ingress_reports_close_before_socket_write() {
-        let (mut owner, _ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 64, 2);
+        let (mut owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 64, 2);
+        drop(ingress);
         assert!(!owner.pump_one_ingress(&mut receiver).await.unwrap());
     }
 
