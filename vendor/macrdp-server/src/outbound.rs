@@ -430,6 +430,18 @@ pub struct OutboundOwner<W> {
     writer: W,
 }
 
+impl<W: FramedWrite> OutboundOwner<W> {
+    pub async fn write_packet(&mut self, packet: OutboundPacket) -> io::Result<()> {
+        self.try_push(packet).map_err(|error| match error {
+            EnqueueError::QueueFull(packet) => io::Error::new(
+                io::ErrorKind::WouldBlock,
+                format!("outbound packet queue full: {}", packet.len()),
+            ),
+        })?;
+        self.drain().await
+    }
+}
+
 pub struct OutboundDiagnosticOwner<W> {
     owner: OutboundOwner<W>,
     diagnostics: crate::DiagnosticsHandle,
