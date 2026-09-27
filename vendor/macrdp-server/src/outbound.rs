@@ -1124,14 +1124,22 @@ impl<W: FramedWrite> OutboundOwner<W> {
             // while `write_all` is in flight.
             if pending.is_none() && self.scheduler.is_empty() && !closed {
                 if shutdown.is_requested() {
+                    receiver.close();
                     closed = true;
                 } else {
-                    tokio::select! {
-                        _ = shutdown.wait() => closed = true,
-                        packet = receiver.recv() => match packet {
-                            Some(packet) => pending = Some(packet),
-                            None => closed = true,
+                    let shutdown_fired = tokio::select! {
+                        _ = shutdown.wait() => true,
+                        packet = receiver.recv() => {
+                            match packet {
+                                Some(packet) => pending = Some(packet),
+                                None => closed = true,
+                            }
+                            false
                         },
+                    };
+                    if shutdown_fired {
+                        receiver.close();
+                        closed = true;
                     }
                 }
             }
@@ -1154,7 +1162,7 @@ impl<W: FramedWrite> OutboundOwner<W> {
                 }
             }
 
-            while !closed && pending.is_none() && admitted_this_turn < Self::MAX_INGRESS_BATCH {
+            while pending.is_none() && admitted_this_turn < Self::MAX_INGRESS_BATCH {
                 match receiver.try_recv() {
                     Ok(packet) => match Self::admit_packet(&mut self.scheduler, packet, max_bytes) {
                         Ok(()) => {
@@ -1557,6 +1565,17 @@ mod tests {
         let mut owner = OutboundOwner::new(FakeWriter::default(), 8);
         owner.write_packet(packet(OutboundClass::Control, 7)).await.unwrap();
         assert_eq!(owner.into_inner().writes, vec![vec![7]]);
+    }
+
+    #[tokio::test]
+    async fn owner_session_drains_typed_ingress_on_explicit_shutdown() {
+        let (session, ingress, writers) = OutboundOwnerSession::channel(FakeWriter::default(), 64, 4);
+        writers.control.send_bytes(vec![1, 2]).await.unwrap();
+        let shutdown = session.shutdown_handle();
+        let task = tokio::spawn(session.run());
+        shutdown.request();
+        assert_eq!(task.await.unwrap().unwrap().writes, vec![vec![1, 2]]);
+        drop(ingress);
     }
 
     #[tokio::test]
