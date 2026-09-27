@@ -452,6 +452,19 @@ impl<W: FramedWrite> OutboundDiagnosticOwner<W> {
         }
         self.diagnostics.socket_write_ms.store(elapsed_ms, Ordering::Relaxed);
         self.diagnostics.socket_write_window.record(elapsed_ms);
+        let snapshot = self.owner.scheduler_snapshot();
+        self.diagnostics
+            .outbound_queued_packets
+            .store(snapshot.queued_packets as u64, Ordering::Relaxed);
+        self.diagnostics
+            .outbound_queued_bytes
+            .store(snapshot.queued_bytes as u64, Ordering::Relaxed);
+        self.diagnostics
+            .outbound_sent_packets
+            .store(snapshot.sent_packets, Ordering::Relaxed);
+        self.diagnostics
+            .outbound_sent_bytes
+            .store(snapshot.sent_bytes, Ordering::Relaxed);
         result
     }
 
