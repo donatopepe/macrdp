@@ -1,9 +1,9 @@
 //! Deterministic outbound scheduling primitives.
 //!
-//! This module is the first step toward a single-owner RDP socket writer. It
-//! deliberately does not touch the live `client_loop` yet: callers can test
-//! queue ordering and fairness before wiring any cancellation-sensitive
-//! `FramedWrite::write_all` path to it.
+//! This module provides deterministic scheduling and a controlled live-owner
+//! handoff seam. The live server still uses `SharedWriter` until every producer
+//! adapter is migrated; owner methods keep cancellation-sensitive writes out of
+//! `select!`, timeouts, aborts, and retries.
 //!
 //! Invariants:
 //! - each traffic class is FIFO;
