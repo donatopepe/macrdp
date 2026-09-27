@@ -440,6 +440,17 @@ impl<W: FramedWrite> OutboundOwner<W> {
         })?;
         self.drain().await
     }
+
+    pub async fn write_packet_with_ingress_status(
+        &mut self,
+        packet: OutboundPacket,
+        ingress: &OutboundOwnerIngress,
+    ) -> io::Result<()> {
+        let result = self.write_packet(packet).await;
+        let status = self.status(ingress);
+        let _ = status;
+        result
+    }
 }
 
 pub struct OutboundDiagnosticOwner<W> {
@@ -1474,6 +1485,13 @@ mod tests {
         let first = q.pop_next_coalesced().unwrap();
         assert_eq!(first.bytes.len(), OutboundScheduler::MAX_COALESCED_BYTES);
         assert_eq!(q.pop_next_coalesced().unwrap().bytes, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn owner_write_packet_admits_and_drains_complete_buffer() {
+        let mut owner = OutboundOwner::new(FakeWriter::default(), 8);
+        owner.write_packet(packet(OutboundClass::Control, 7)).await.unwrap();
+        assert_eq!(owner.into_inner().writes, vec![vec![7]]);
     }
 
     #[tokio::test]
