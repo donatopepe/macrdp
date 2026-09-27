@@ -703,6 +703,14 @@ impl<W: FramedWrite> OutboundOwnerSession<W> {
         self.shutdown.clone()
     }
 
+    pub fn from_writer(
+        writer: W,
+        max_bytes: usize,
+        channel_capacity: usize,
+    ) -> (Self, OutboundOwnerIngress, OutboundIngressSet) {
+        Self::channel(writer, max_bytes, channel_capacity)
+    }
+
     pub async fn run(self) -> io::Result<W> {
         self.owner.run_with_shutdown(self.receiver, self.shutdown).await
     }
