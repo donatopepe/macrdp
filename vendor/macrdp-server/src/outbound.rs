@@ -619,6 +619,12 @@ pub struct OutboundOwnerSession<W> {
     shutdown: OutboundShutdown,
 }
 
+impl<W> OutboundOwnerSession<W> {
+    pub fn into_parts(self) -> (OutboundOwner<W>, mpsc::Receiver<OutboundPacket>, OutboundShutdown) {
+        (self.owner, self.receiver, self.shutdown)
+    }
+}
+
 impl OutboundShutdown {
     pub fn new() -> Self {
         Self {
