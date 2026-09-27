@@ -1063,6 +1063,31 @@ impl<W: FramedWrite> OutboundOwner<W> {
         Ok(progressed)
     }
 
+    /// Admit one already-framed buffer from ingress and flush owner queue.
+    /// This is the smallest live adapter seam: caller owns no socket and must
+    /// await completion before yielding/cancelling client-loop control.
+    pub async fn pump_one_ingress(&mut self, receiver: &mut mpsc::Receiver<OutboundPacket>) -> io::Result<bool> {
+        let Some(mut packet) = receiver.recv().await else {
+            return Ok(false);
+        };
+        loop {
+            match self.try_push(packet) {
+                Ok(()) => break,
+                Err(EnqueueError::QueueFull(returned)) => {
+                    packet = returned;
+                    if !self.write_next().await? {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "outbound ingress packet cannot fit owner budget",
+                        ));
+                    }
+                }
+            }
+        }
+        while self.write_next().await? {}
+        Ok(true)
+    }
+
     fn admit_packet(
         scheduler: &mut OutboundScheduler,
         packet: OutboundPacket,
@@ -1403,6 +1428,20 @@ mod tests {
         shutdown.request();
         let writer = task.await.unwrap().unwrap();
         assert!(writer.writes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pump_one_ingress_flushes_framed_buffer_without_retry() {
+        let (mut owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 64, 2);
+        ingress.send(packet(OutboundClass::Control, 9)).await.unwrap();
+        assert!(owner.pump_one_ingress(&mut receiver).await.unwrap());
+        assert_eq!(owner.into_inner().writes, vec![vec![9]]);
+    }
+
+    #[tokio::test]
+    async fn pump_one_ingress_reports_close_before_socket_write() {
+        let (mut owner, _ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 64, 2);
+        assert!(!owner.pump_one_ingress(&mut receiver).await.unwrap());
     }
 
     #[tokio::test]
