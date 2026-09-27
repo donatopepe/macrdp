@@ -1609,6 +1609,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typed_byte_api_routes_every_class_and_reports_close() {
+        let (_owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 8);
+        let writers = ingress.typed_writers();
+        writers.control.send_bytes(vec![1]).await.unwrap();
+        writers.audio.send_bytes(vec![2]).await.unwrap();
+        writers.clipboard.send_bytes(vec![3]).await.unwrap();
+        writers.egfx.send_bytes(vec![4]).await.unwrap();
+        writers.display.send_bytes(vec![5]).await.unwrap();
+        writers.bulk.send_bytes(vec![6]).await.unwrap();
+
+        for expected in 1..=6 {
+            assert_eq!(receiver.recv().await.unwrap().bytes, vec![expected]);
+        }
+
+        drop(receiver);
+        let error = writers.egfx.send_bytes(vec![7]).await.unwrap_err();
+        assert_eq!(error.0.bytes, vec![7]);
+    }
+
+    #[tokio::test]
     async fn owner_session_wraps_typed_handoff_and_shutdown() {
         let (session, ingress, mut writers) = OutboundOwnerSession::channel(FakeWriter::default(), 64, 8);
         writers.control.write_all(&[1]).await.unwrap();
