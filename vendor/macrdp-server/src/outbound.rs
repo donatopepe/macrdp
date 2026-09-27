@@ -436,6 +436,27 @@ pub struct OutboundDiagnosticOwner<W> {
 }
 
 impl<W: FramedWrite> OutboundDiagnosticOwner<W> {
+    pub fn publish_status(&self, ingress: &OutboundOwnerIngress) {
+        let status = self.owner.status(ingress);
+        self.diagnostics
+            .outbound_queued_packets
+            .store(status.queued_packets as u64, Ordering::Relaxed);
+        self.diagnostics
+            .outbound_queued_bytes
+            .store(status.queued_bytes as u64, Ordering::Relaxed);
+        self.diagnostics
+            .outbound_sent_packets
+            .store(status.sent_packets, Ordering::Relaxed);
+        self.diagnostics
+            .outbound_sent_bytes
+            .store(status.sent_bytes, Ordering::Relaxed);
+        self.diagnostics
+            .outbound_rejected_packets
+            .store(status.rejected_packets, Ordering::Relaxed);
+    }
+}
+
+impl<W: FramedWrite> OutboundDiagnosticOwner<W> {
     pub fn ingest_snapshot(&self, ingress: &OutboundOwnerIngress) -> OutboundOwnerStatus {
         self.owner.status(ingress)
     }
