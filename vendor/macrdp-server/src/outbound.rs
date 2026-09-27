@@ -897,6 +897,44 @@ impl OutboundOwnerIngress {
     }
 }
 
+impl OutboundIngressWriter {
+    pub fn class(&self) -> OutboundClass {
+        self.class
+    }
+
+    pub fn packet(&self, bytes: Vec<u8>) -> OutboundPacket {
+        OutboundPacket::new(self.class, bytes)
+    }
+
+    pub fn try_send_bytes(&self, bytes: Vec<u8>) -> Result<(), mpsc::error::TrySendError<OutboundPacket>> {
+        let packet = self.packet(bytes);
+        match self.sender.try_send(packet) {
+            Ok(()) => {
+                self.enqueued_packets.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(error) => {
+                self.rejected_packets.fetch_add(1, Ordering::Relaxed);
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn send_bytes(&self, bytes: Vec<u8>) -> Result<(), mpsc::error::SendError<OutboundPacket>> {
+        let packet = self.packet(bytes);
+        match self.sender.send(packet).await {
+            Ok(()) => {
+                self.enqueued_packets.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(error) => {
+                self.rejected_packets.fetch_add(1, Ordering::Relaxed);
+                Err(error)
+            }
+        }
+    }
+}
+
 impl FramedWrite for OutboundIngressWriter {
     type WriteAllFut<'write>
         = Pin<Box<dyn Future<Output = io::Result<()>> + 'write>>
@@ -1530,6 +1568,17 @@ mod tests {
 
         let writer = owner.into_inner();
         assert_eq!(writer.writes, vec![vec![3], vec![1, 2], vec![4]]);
+    }
+
+    #[tokio::test]
+    #[tokio::test]
+    async fn typed_writer_byte_api_routes_class_without_socket() {
+        let (_owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 32, 4);
+        let writers = ingress.typed_writers();
+        writers.egfx.send_bytes(vec![4, 5]).await.unwrap();
+        let packet = receiver.recv().await.unwrap();
+        assert_eq!(packet.class, OutboundClass::Egfx);
+        assert_eq!(packet.bytes, vec![4, 5]);
     }
 
     #[tokio::test]
