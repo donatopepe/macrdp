@@ -436,6 +436,12 @@ pub struct OutboundDiagnosticOwner<W> {
 }
 
 impl<W: FramedWrite> OutboundDiagnosticOwner<W> {
+    pub fn ingest_snapshot(&self, ingress: &OutboundOwnerIngress) -> OutboundOwnerStatus {
+        self.owner.status(ingress)
+    }
+}
+
+impl<W: FramedWrite> OutboundDiagnosticOwner<W> {
     pub async fn write_next(&mut self) -> io::Result<bool> {
         let started = std::time::Instant::now();
         let result = self.owner.write_next().await;
