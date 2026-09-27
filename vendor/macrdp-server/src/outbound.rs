@@ -1006,6 +1006,10 @@ impl<W> OutboundOwner<W> {
 }
 
 impl<W: FramedWrite> OutboundOwner<W> {
+    pub fn from_writer_with_budget(writer: W, max_bytes: usize, _channel_capacity: usize) -> Self {
+        Self::new(writer, max_bytes)
+    }
+
     /// Attach opt-in diagnostics to owner writes without changing scheduling.
     /// Caller must provide shared atomics; absent diagnostics remain no-op.
     pub fn with_diagnostics(self, diagnostics: crate::DiagnosticsHandle) -> OutboundDiagnosticOwner<W> {
