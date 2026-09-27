@@ -516,6 +516,10 @@ impl<W: FramedWrite> OutboundDiagnosticOwner<W> {
         self.owner.scheduler_snapshot()
     }
 
+    pub fn writer_mut(&mut self) -> &mut W {
+        &mut self.owner.writer
+    }
+
     pub fn into_inner(self) -> W {
         self.owner.into_inner()
     }
