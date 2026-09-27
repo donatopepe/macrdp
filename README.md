@@ -38,21 +38,15 @@ upstream project:
 These changes are local maintenance and integration work. They do not replace
 upstream ownership or upstream license terms.
 
-## Status
+## Status and operational contract
 
-v0 — daily-driver usable on a trusted LAN, and usable **over the internet** (VPN / ZeroTier / high-latency links, including mobile). **Latest release: [v0.9.7](https://github.com/clintcan/macrdp/releases/latest)** — *dependency & security patch*: carries three advisories out of the dependency tree — **rustls** 0.23.45 (RUSTSEC-2026-0285: TLS 1.3 handshake messages accepted at the wrong encryption level, and macrdp terminates TLS itself), **cryptoki** 0.12.1 (RUSTSEC-2026-0286: an out-of-bounds read reached via `sspi`) and **h2** 0.4.16 — plus a yanked-`chacha20` clear-out, and the `--app-switcher-hud` overlay restyled to look like the native Cmd+Tab switcher (#185, @antonmos; opt-in, nothing changes unless the flag is passed). Builds on **v0.9.6** (*bug-fix patch*, both fixes @antonmos): corrects a **scroll-down regression** from v0.9.5 (a vendored wheel-decode compensation double-corrected once the pin bump moved past upstream's own fix — every downward scroll inflated ~255× while up stayed correct, #179) and an **unauthenticated remote DoS** latent since v0.9.3 (a single silent TCP connection could wedge the second-client-preemption accept loop — health-watchdog-invisible — now bounded; #180 also fixes two more preemption correctness bugs). Builds on **v0.9.5** (*maintenance*: the IronRDP dependency pin was bumped `879ffed8` → `a5d1c682` (133 upstream commits) and vendored divergence shrank — two vendored forks retired, one divergence harvested; no user-facing change). Builds on **v0.9.4** (*security hotfix*: an unauthenticated remote client could wedge the **entire server** with a single malformed 2-byte frame — a pre-TLS 100%-CPU spin in the IronRDP framing reader that both the auth-guard and the health-check watchdog miss; now cleanly rejected instead of spinning, macrdp's upstream PR #1556). Builds on **v0.9.3** (*storm-guard fix + the connection/input batch*): the mstsc/Windows-App reconnect-blank drop loop can no longer run away — the reconnect-storm guard's counter now resets only on a genuinely **established** (sustained) session, so a brief-present-then-blank counts toward the cap and the loop bounds/trips instead of cycling forever (live-verified over ZeroTier). Ships with four merged contributions (@antonmos): a second client now **takes over** the live session (full-auth-gated) instead of hanging (#174), a blank-recovery heal-confirmation deadline (#175), relative-mouse + edge-clamp input fixes (#176), and a clipboard pre-connect-sync fix (#173). The default runtime path is unchanged. Builds on **v0.9.2** (*blank-recovery clean-presentation latch*) and **v0.9.1** (*the lockable-headless release*: the opt-in **`--shield-primary`** headless blanking mode that keeps the Mac lockable, client-resolution auto-adopt on `--virtual-display`, and a `--detach-primary` launchd-restart stopgap for the macOS-26 panel-re-enable bug) and **v0.9.0** (*the webcam release*: a client webcam presents as a **real macOS camera** via `--enable-camera-redirection` — as far as is known the first known open-source RDP _server_ to do so; H.264 over MS-RDPECAM → VideoToolbox decode → a CoreMediaIO Camera system extension, live-verified at 1080p/~30 fps), v0.8.40 (the *headless-laptop release*), and v0.8.39 (the *smooth-resize release*).
+This distribution targets one trusted interactive session on a Mac. It is intended for a LAN or a private VPN, not for public exposure, multi-user hosting, or enterprise workloads. The latest upstream release is [v0.9.7](https://github.com/clintcan/macrdp/releases/latest); local changes and live verification notes are tracked in the [release history](docs/release-history.md).
 
-Full per-release notes (what shipped, what was verified live, and the war stories): **[docs/release-history.md](docs/release-history.md)**.
+**Verified workflow:** TLS/NLA (CredSSP) against the Mac account, per-IP authentication throttling and audit logging, display/input including non-US layouts, bidirectional clipboard and file copy, system audio, optional drive and smart-card redirection, headless virtual displays, and optional hardware H.264/EGFX. The project also ships signed-app/LaunchAgent packaging and a health-check watchdog.
 
-## Production readiness
+**Known limits:** one session and one user; no multi-monitor or printer redirection; macOS policy can black out DRM video and password-manager windows; synthetic input cannot reach login or secure fields; an `mstsc` reconnect can briefly blank while the server reactivates the RDP core; opt-in UDP paths are newer than the TCP path; no enterprise SLA. Never expose RDP directly on a public IP—use a VPN or RD Gateway.
 
-Short version: **a polished v0 daily-driver for trusted LANs and your own VPN — not an enterprise RDP server.** Use it to reach your own Mac over a network you control; don't put it on a public IP or treat it as multi-user/critical infrastructure.
-
-**Solid (verified on real mstsc / Microsoft Remote Desktop / FreeRDP):** TLS + NLA/CredSSP auth against your Mac account (Keychain-backed, real CA certs supported, per-IP rate-limiting + lockout + audit log); the full daily workflow (display, input incl. non-US layouts, clipboard/files both ways, audio, drive + smart-card redirection, headless virtual displays); H.264 with congestion-responsive rate control that degrades gracefully instead of freezing; signed/notarized packaging with a LaunchAgent, menu-bar controller, and a health-check watchdog; 160+ tests in CI.
-
-**Know before relying on it:** single session/single user; no multi-monitor or printer redirection; DRM video and password-manager windows capture black (macOS policy, not fixable); synthetic input can't reach the login window/secure fields (same); reconnecting *mstsc* can briefly show a blank screen (client quirk — the server now auto-heals it in ~4 s by reactivating the RDP core in place, no user action); the UDP paths are opt-in and newer than the TCP core; it's a solo v0 on vendored [IronRDP] forks, no SLA. **Never expose any RDP server on a raw public IP — reach it over a VPN or RD Gateway.**
-
-Details and the path to closing the gaps: [docs/production-readiness-roadmap.md](docs/production-readiness-roadmap.md).
+See the [production-readiness roadmap](docs/production-readiness-roadmap.md) for remaining gaps and verification evidence.
 
 ## Quick start
 
@@ -204,13 +198,9 @@ Both are **ad-hoc signed, not notarized** — open the app once via **right-clic
 
 ## Why this was made
 
-This was done to scratch an itch. There are practically no active open source RDP servers for macOS. The closest project with this functionality is xrdp; however it only runs on Linux/Unix machines and has no homebrew equivalent on Macs. The initial POC was done in a few hours with the help of Claude and ran pretty well from the start. Additional combing through pcap files and documentation, and debugging each mstsc/FreeRDP connect, is what makes this work tedious yet rewarding when it finally works. Multi-monitor support is on the list for when I'm bored or need a distraction from real life.
+macrdp exists to provide a native macOS RDP server where the practical alternatives are limited. The project grew from a small proof of concept into a maintained daily-driver through protocol investigation, packet captures, and repeated interoperability testing with Windows Remote Desktop and FreeRDP.
 
-## Support this project
-
-macrdp is free and open source. If it's helped you out, you can buy me a coffee to help me get through the bumps — totally optional, no pressure.
-
-- ☕ **[Buy me a coffee on Ko-fi](https://ko-fi.com/clintcan)**
+It is intentionally focused: one reliable interactive session, clear macOS integration, and honest operational limits rather than enterprise feature breadth. Multi-monitor support remains future work.
 
 ## License
 
