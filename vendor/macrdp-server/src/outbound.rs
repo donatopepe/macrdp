@@ -1445,6 +1445,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pump_one_ingress_preserves_egfx_fifo_and_same_class_coalescing() {
+        let (mut owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 64, 4);
+        ingress.send(packet(OutboundClass::Egfx, 1)).await.unwrap();
+        ingress.send(packet(OutboundClass::Egfx, 2)).await.unwrap();
+        assert!(owner.pump_one_ingress(&mut receiver).await.unwrap());
+        assert!(owner.pump_one_ingress(&mut receiver).await.unwrap());
+        let writer = owner.into_inner();
+        assert_eq!(writer.writes, vec![vec![1], vec![2]]);
+    }
+
+    #[tokio::test]
+    async fn pump_one_ingress_rejects_oversized_packet_without_write() {
+        let (mut owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 2, 2);
+        ingress
+            .send(OutboundPacket::new(OutboundClass::Control, vec![1, 2, 3]))
+            .await
+            .unwrap();
+        let error = owner.pump_one_ingress(&mut receiver).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(owner.into_inner().writes.is_empty());
+    }
+
+    #[tokio::test]
     async fn live_handoff_harness_runs_all_typed_producers_and_drains() {
         let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let (owner, ingress, receiver) = OutboundOwner::channel(
