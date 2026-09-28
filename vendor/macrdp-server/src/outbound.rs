@@ -1235,7 +1235,6 @@ impl<W: FramedWrite> OutboundOwner<W> {
                                 "outbound ingress packet cannot fit owner budget",
                             ));
                         }
-                        progressed = true;
                     }
                 }
             }
