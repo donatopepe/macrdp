@@ -271,7 +271,10 @@ mod macos {
             "fr" | "french" | "azerty" => "com.apple.keylayout.French",
             "de" | "german" | "qwertz" => "com.apple.keylayout.German",
             "es" | "spanish" => "com.apple.keylayout.Spanish-ISO",
-            "it" | "italian" => "com.apple.keylayout.Italian",
+            // Prefer Italian-Pro by default: KLID 0x0410 does not encode
+            // Italian vs Italian-Pro variant, while this machine's established
+            // remote typing path expects Pro symbols (AltGr/ISO punctuation).
+            "it" | "italian" | "italian-pro" | "italianpro" => "com.apple.keylayout.Italian-Pro",
             "pt" | "portuguese" => "com.apple.keylayout.Portuguese",
             "br" | "brazilian" => "com.apple.keylayout.Brazilian",
             "nl" | "dutch" => "com.apple.keylayout.Dutch",
@@ -301,7 +304,9 @@ mod macos {
             0x0407 => "com.apple.keylayout.German",
             0x0807 => "com.apple.keylayout.SwissGerman",
             0x040A => "com.apple.keylayout.Spanish-ISO",
-            0x0410 => "com.apple.keylayout.Italian",
+            // Windows Italian KLID is shared by Italian and Italian-Pro;
+            // prefer Pro so automatic detection matches expected remote layout.
+            0x0410 => "com.apple.keylayout.Italian-Pro",
             0x0413 => "com.apple.keylayout.Dutch",
             0x0813 => "com.apple.keylayout.Belgian",
             0x0416 => "com.apple.keylayout.Brazilian",
@@ -382,6 +387,14 @@ mod macos {
             assert_eq!(
                 spec_to_source_id("0x040C"),
                 Some("com.apple.keylayout.French")
+            );
+            assert_eq!(
+                spec_to_source_id("italian"),
+                Some("com.apple.keylayout.Italian-Pro")
+            );
+            assert_eq!(
+                spec_to_source_id("0x0410"),
+                Some("com.apple.keylayout.Italian-Pro")
             );
             assert_eq!(
                 spec_to_source_id("040c"),
