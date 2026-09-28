@@ -73,10 +73,10 @@ const fn build_scancode_normal() -> [u16; 256] {
     t[0x28] = 0x27; // '
     t[0x29] = 0x32; // `
     t[0x2A] = 0x38; // Left Shift
-                    // ISO 102-key physical key between Left Shift and Z. Treat as the
-                    // macOS ISO Section key; Italian-Pro uses it for < / > and UCKeyTranslate
-                    // must see this distinct key instead of US backslash.
-    t[0x56] = 0x0A; // ISO Section / < > physical key
+                    // Windows Italian's ISO-102 angle-bracket key is scancode 0x56.
+                    // Italian-Pro's Carbon table produces <> from macOS ANSI Grave (0x32),
+                    // so route this physical key there instead of ISO Section (0x0A).
+    t[0x56] = 0x32; // ISO-102 < > physical key
     t[0x2B] = 0x2A; // backslash
     t[0x2C] = 0x06; // Z
     t[0x2D] = 0x07; // X
@@ -183,6 +183,7 @@ mod tests {
         assert_eq!(scancode_to_cgkeycode(0x1C, false), Some(0x24)); // Enter
         assert_eq!(scancode_to_cgkeycode(0x1D, false), Some(0x3B)); // Left Ctrl
         assert_eq!(scancode_to_cgkeycode(0x2A, false), Some(0x38)); // Left Shift
+        assert_eq!(scancode_to_cgkeycode(0x56, false), Some(0x32)); // ISO < > via Italian-Pro grave slot
     }
 
     #[test]
