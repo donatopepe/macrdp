@@ -73,10 +73,10 @@ const fn build_scancode_normal() -> [u16; 256] {
     t[0x28] = 0x27; // '
     t[0x29] = 0x32; // `
     t[0x2A] = 0x38; // Left Shift
-                    // Remote keyboard mapping verified against client: OEM102 (0x56) is
-                    // the backslash/pipe position; 0x2B is the ISO angle-bracket pair.
-    t[0x56] = 0x2A; // remote physical \\ / |
-    t[0x2B] = 0x0A; // remote physical < / >
+                    // Standard Set-1 mapping. Keep physical-key interpretation untouched;
+                    // input.rs logs raw scancode/vk pairs for layout analysis.
+    t[0x56] = 0x0A; // ISO Section
+    t[0x2B] = 0x2A; // backslash
     t[0x2C] = 0x06; // Z
     t[0x2D] = 0x07; // X
     t[0x2E] = 0x08; // C
@@ -182,8 +182,7 @@ mod tests {
         assert_eq!(scancode_to_cgkeycode(0x1C, false), Some(0x24)); // Enter
         assert_eq!(scancode_to_cgkeycode(0x1D, false), Some(0x3B)); // Left Ctrl
         assert_eq!(scancode_to_cgkeycode(0x2A, false), Some(0x38)); // Left Shift
-        assert_eq!(scancode_to_cgkeycode(0x56, false), Some(0x2A)); // backslash/pipe physical key
-        assert_eq!(scancode_to_cgkeycode(0x2B, false), Some(0x0A)); // angle-bracket physical key
+        assert_eq!(scancode_to_cgkeycode(0x56, false), Some(0x0A)); // backslash/pipe physical key
     }
 
     #[test]
