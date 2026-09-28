@@ -155,6 +155,11 @@ mod macos {
             option: bool,
             caps: bool,
         ) -> Option<String> {
+            // macOS Italian-Pro's Carbon table reports the ISO Section pair
+            // opposite to the RDP physical-key meaning: its Shift state is
+            // inverted for this one key. Swap only that modifier so all other
+            // keys retain UCKeyTranslate behavior.
+            let shift = if keycode == 0x0A { !shift } else { shift };
             let ptr = unsafe { CFDataGetBytePtr(self.uchr.as_concrete_TypeRef() as *const c_void) };
             if ptr.is_null() {
                 return None;
