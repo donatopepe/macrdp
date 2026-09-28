@@ -73,11 +73,10 @@ const fn build_scancode_normal() -> [u16; 256] {
     t[0x28] = 0x27; // '
     t[0x29] = 0x32; // `
     t[0x2A] = 0x38; // Left Shift
-                    // RDP physical pair is opposite to macOS Italian-Pro's Carbon positions:
-                    // remote 0x56 is backslash/pipe, while 0x2B is angle brackets.
-                    // Italian-Pro resolves these at ISO Section (0x0A) and ANSI Grave (0x32).
-    t[0x56] = 0x0A; // physical backslash/pipe
-    t[0x2B] = 0x32; // physical < >
+                    // Standard Set-1 mapping. Keep physical-key interpretation untouched;
+                    // input.rs logs raw scancode/vk pairs for layout analysis.
+    t[0x56] = 0x0A; // ISO Section
+    t[0x2B] = 0x2A; // backslash
     t[0x2C] = 0x06; // Z
     t[0x2D] = 0x07; // X
     t[0x2E] = 0x08; // C

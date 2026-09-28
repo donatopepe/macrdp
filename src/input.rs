@@ -879,6 +879,7 @@ mod macos {
             let before = self.mods.cg_flags();
             let is_fkey = is_function_key_vk(vk);
             tracing::debug!(
+                target: "keyboard_trace",
                 scancode = format!("0x{scancode:02X}"),
                 extended,
                 down,
@@ -896,6 +897,7 @@ mod macos {
             if ModifierState::is_modifier_vk(vk) {
                 let changed = self.mods.apply(vk, down);
                 tracing::debug!(
+                    target: "keyboard_trace",
                     scancode = format!("0x{scancode:02X}"),
                     extended,
                     down,
@@ -967,12 +969,18 @@ mod macos {
             // tracked in `consumed_keys` so the bare key-up doesn't reach
             // the focused app either.
             if down && self.try_symbolic_hotkey(vk) {
-                tracing::debug!(vk = format!("0x{vk:02X}"), "input key swallowed symbolic hotkey");
+                tracing::debug!(
+                    vk = format!("0x{vk:02X}"),
+                    "input key swallowed symbolic hotkey"
+                );
                 self.consumed_keys.insert(vk);
                 return;
             }
             if !down && self.consumed_keys.remove(&vk) {
-                tracing::debug!(vk = format!("0x{vk:02X}"), "input key swallowed consumed release");
+                tracing::debug!(
+                    vk = format!("0x{vk:02X}"),
+                    "input key swallowed consumed release"
+                );
                 return;
             }
 
@@ -986,7 +994,10 @@ mod macos {
             // there.
             if !down && self.remapped_keys.remove(&vk) {
                 self.post_ctrl_as_cmd(vk, false);
-                tracing::debug!(vk = format!("0x{vk:02X}"), "input key handled ctrl-to-cmd release");
+                tracing::debug!(
+                    vk = format!("0x{vk:02X}"),
+                    "input key handled ctrl-to-cmd release"
+                );
                 return;
             }
             if down
@@ -997,7 +1008,10 @@ mod macos {
                 && is_remappable_shortcut(vk)
                 && !frontmost_is_excluded()
             {
-                tracing::debug!(vk = format!("0x{vk:02X}"), "input key handled ctrl-to-cmd press");
+                tracing::debug!(
+                    vk = format!("0x{vk:02X}"),
+                    "input key handled ctrl-to-cmd press"
+                );
                 self.post_ctrl_as_cmd(vk, true);
                 self.remapped_keys.insert(vk);
                 return;
@@ -1135,7 +1149,11 @@ mod macos {
                     "input modifier flags before post"
                 );
                 ev.post(CGEventTapLocation::HID);
-                tracing::debug!(vk = format!("0x{vk:02X}"), source = source_name, "input modifier flags posted");
+                tracing::debug!(
+                    vk = format!("0x{vk:02X}"),
+                    source = source_name,
+                    "input modifier flags posted"
+                );
             }
         }
 
