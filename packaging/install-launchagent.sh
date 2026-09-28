@@ -35,6 +35,12 @@ fi
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 sed -e "s#__LABEL__#$LABEL#g" -e "s#__APP_DIR__#$APP_DIR#g" -e "s#__HOME__#$HOME#g" \
     "$PKG_DIR/launchagent.plist.template" > "$PLIST"
+# Keep operator-supplied RUST_LOG from config.env in LaunchAgent environment.
+if grep -q '^RUST_LOG=' "$CONFIG"; then
+    RUST_LOG_VALUE="$(grep '^RUST_LOG=' "$CONFIG" | tail -1 | cut -d= -f2- | sed 's/^\"//; s/\"$//')"
+    /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:RUST_LOG string $RUST_LOG_VALUE" "$PLIST" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:RUST_LOG $RUST_LOG_VALUE" "$PLIST"
+fi
 echo "==> wrote $PLIST"
 
 # 3. (Re)bootstrap the agent. `bootstrap` immediately after `bootout` can fail
