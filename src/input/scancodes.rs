@@ -73,6 +73,10 @@ const fn build_scancode_normal() -> [u16; 256] {
     t[0x28] = 0x27; // '
     t[0x29] = 0x32; // `
     t[0x2A] = 0x38; // Left Shift
+                    // ISO 102-key physical key between Left Shift and Z. Treat as the
+                    // macOS ISO Section key; Italian-Pro uses it for < / > and UCKeyTranslate
+                    // must see this distinct key instead of US backslash.
+    t[0x56] = 0x0A; // ISO Section / < > physical key
     t[0x2B] = 0x2A; // backslash
     t[0x2C] = 0x06; // Z
     t[0x2D] = 0x07; // X
