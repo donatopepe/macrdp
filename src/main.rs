@@ -1688,6 +1688,15 @@ fn args_from_config(path: &Path) -> Result<Args> {
     // plist's EnvironmentVariables. Unset keys keep the on-by-default defaults.
     for (cfg_key, env_var) in [
         ("CONN_GUARD", "MACRDP_CONN_GUARD"),
+        ("H264_BLANK_RECOVERY", "MACRDP_BLANK_RECOVERY"),
+        (
+            "H264_BLANK_RECOVERY_MAX_ATTEMPTS",
+            "MACRDP_BLANK_RECOVERY_MAX_ATTEMPTS",
+        ),
+        (
+            "H264_BLANK_RECOVERY_MAX_CONSECUTIVE_DROPS",
+            "MACRDP_BLANK_RECOVERY_MAX_CONSECUTIVE_DROPS",
+        ),
         ("AUDIT_LOG", "MACRDP_AUDIT_LOG"),
         ("GUARD_RL_MAX", "MACRDP_GUARD_RL_MAX"),
         ("GUARD_RL_WINDOW_SECS", "MACRDP_GUARD_RL_WINDOW_SECS"),
