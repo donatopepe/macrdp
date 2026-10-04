@@ -1348,7 +1348,7 @@ mod tests {
         let stride = w * 4;
         for c in colors {
             let mut bgra = vec![0u8; stride * h];
-            for px in bgra.chunks_exact_mut(4) {
+            for px in bgra.as_chunks_mut::<4>().0 {
                 px.copy_from_slice(&c);
             }
             let (mut y_s, mut cbcr_s) = (vec![0u8; w * h], vec![0u8; w * (h / 2)]);
@@ -1656,7 +1656,7 @@ mod tests {
         let stride = w * 4;
         for c in colors {
             let mut bgra = vec![0u8; stride * h];
-            for px in bgra.chunks_exact_mut(4) {
+            for px in bgra.as_chunks_mut::<4>().0 {
                 px.copy_from_slice(&c);
             }
             let mut y_s = vec![0u8; w * h];
@@ -1700,7 +1700,7 @@ mod tests {
         let h: u16 = 240;
         let stride = usize::from(w) * 4;
         let mut frame = vec![0u8; stride * usize::from(h)];
-        for px in frame.chunks_exact_mut(4) {
+        for px in frame.as_chunks_mut::<4>().0 {
             px[0] = 0x33; // B
             px[1] = 0x77; // G
             px[2] = 0xcc; // R

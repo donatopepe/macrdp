@@ -21,7 +21,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Status
 
 Functional v0 — daily-driver usable on a trusted LAN and over the internet
-(VPN/ZeroTier). **Latest release: v0.9.7** (dependency & security patch — three advisories carried out of the dependency tree, plus one opt-in UI change; no change to the default runtime path beyond the updates themselves. **rustls 0.23.40 → 0.23.45** (RUSTSEC-2026-0285): TLS 1.3 handshake messages were accepted at the wrong encryption level — a plaintext `EncryptedExtensions` packed into the same record as the `ServerHello` — where RFC 8446 §5.1 requires an `unexpected_message` alert; the transcript stays authenticated so a network attacker cannot alter or complete a handshake, but this is macrdp's OWN TLS stack, so it headlines the release. **cryptoki 0.12.0 → 0.12.1** (RUSTSEC-2026-0286): the `CKA_ALLOWED_MECHANISMS` byte count was treated as an element count → out-of-bounds slice; reaches macrdp via `sspi` → `ironrdp-connector`. **h2 0.4.14 → 0.4.16** (RUSTSEC-2026-0258). **chacha20 0.10.1 → 0.10.2** — a YANK, not a vulnerability (SSE4.1 intrinsic in the SSE2 backend; nil exposure on Apple Silicon/Intel Macs) but a yanked crate reds the daily scan. The rustls bump also moved the crypto provider beneath it: aws-lc-rs 1.16.3 → 1.18.1, aws-lc-sys 0.40.0 → 0.45.0, rustls-webpki 0.103.13 → 0.103.15. Plus **#185** (@antonmos): the `--app-switcher-hud` overlay restyled to the native Cmd+Tab look (translucent slab, screen-fit icon scaling, subtler selection ring) — opt-in, inert without the flag. The daily cargo-deny scan was RED 2026-09-15 → 09-17 on the rustls/cryptoki pair and is green again.) Earlier: **v0.9.6** (bug-fix patch — TWO things that shipped broken get
+(VPN/ZeroTier). **Latest release: v0.9.8** (the TCC prompt storm + an explicit
+code identity, two install-path defects, and two CI gates that had been red
+since v0.9.6 — **the default runtime path is unchanged**, capture/encode/RDP
+untouched and the new flag inert unless asked for. **THE HEADLINE:** a launchd
+agent without the Screen Recording grant exited 1 and `KeepAlive` respawned it
+every ~6-10 s, and merely *attempting* capture is enough for macOS to notify —
+`tccd` logs `Notifying for access kTCCServiceScreenCapture … resp=<pid>` once
+per respawn, so one macOS dialog every few seconds, FOREVER (37 in 12 h
+measured). Suppressing `CGRequestScreenCaptureAccess` is not enough: the capture
+attempt itself prompts. `ensure_screen_recording_access()` now runs FIRST
+(before `caffeinate`, the virtual display and any ScreenCaptureKit call) and,
+when `XPC_SERVICE_NAME` is set (launchd exports it into every job;
+`MACRDP_NO_TCC_PROMPT=1` forces it), logs the actionable message — including
+the exact executable path, because the System Settings row is named after the
+IDENTITY, not the path — and exits 1. Measured: 4 respawns in 40 s -> 0 prompts;
+an interactive session still gets the normal prompt. **The rest:** `dist/install.sh`
+no longer ad-hoc signs (a cdhash-keyed signature is revoked by EVERY rebuild,
+so it silently dropped the user's grants; it now uses the same
+`macrdp Local Code Signing` certificate as `packaging/make-app.sh`, pins
+`--identifier macrdp`, prints the designated requirement and warns when it is a
+`cdhash` one); the two auto-start paths were both installed and competing on
+:3390 (the loser crash-looped on `Address already in use`, and a flagless
+instance could bind `127.0.0.1:3390` ALONGSIDE a healthy `0.0.0.0:3390` listener
+— macOS allows it — silently serving loopback clients with defaults; mutual
+exclusivity is now stated in both README install sections and
+`dist/uninstall.sh` exists at last); **new `macrdp --check-permissions`**
+answers "why is macOS asking again?" in one command — executable, code
+identifier, designated requirement with a STABLE/AD-HOC verdict, both
+permission states, exit 1 when unhealthy, no port/capture/dialog — and
+`make-app.sh` + `install-launchagent.sh` now WARN when the identity changes,
+the one moment a re-grant is actually due; two pre-existing CI gates fixed
+(`cargo fmt --check` red since c3dc866, and `-D warnings` on the macOS job vs
+`libc`'s deprecated Mach time API, now a documented `frame_age_ms()` helper,
+plus clippy's `chunks_exact_to_as_chunks` at all seven sites). Correction on
+record: removing every macrdp row from System Settings does NOT revoke the
+grant on macOS 27.0.1 (both survived intact, no prompt), so a reboot does not
+lose it — use `--check-permissions` rather than inferring from the UI. Earlier:
+**v0.9.7** (dependency & security patch — three advisories carried out of the
+dependency tree, plus one opt-in UI change; no change to the default runtime
+path beyond the updates themselves. **rustls 0.23.40 → 0.23.45** (RUSTSEC-2026-0285): TLS 1.3 handshake messages were accepted at the wrong encryption level — a plaintext `EncryptedExtensions` packed into the same record as the `ServerHello` — where RFC 8446 §5.1 requires an `unexpected_message` alert; the transcript stays authenticated so a network attacker cannot alter or complete a handshake, but this is macrdp's OWN TLS stack, so it headlines the release. **cryptoki 0.12.0 → 0.12.1** (RUSTSEC-2026-0286): the `CKA_ALLOWED_MECHANISMS` byte count was treated as an element count → out-of-bounds slice; reaches macrdp via `sspi` → `ironrdp-connector`. **h2 0.4.14 → 0.4.16** (RUSTSEC-2026-0258). **chacha20 0.10.1 → 0.10.2** — a YANK, not a vulnerability (SSE4.1 intrinsic in the SSE2 backend; nil exposure on Apple Silicon/Intel Macs) but a yanked crate reds the daily scan. The rustls bump also moved the crypto provider beneath it: aws-lc-rs 1.16.3 → 1.18.1, aws-lc-sys 0.40.0 → 0.45.0, rustls-webpki 0.103.13 → 0.103.15. Plus **#185** (@antonmos): the `--app-switcher-hud` overlay restyled to the native Cmd+Tab look (translucent slab, screen-fit icon scaling, subtler selection ring) — opt-in, inert without the flag. The daily cargo-deny scan was RED 2026-09-15 → 09-17 on the rustls/cryptoki pair and is green again.) Earlier: **v0.9.6** (bug-fix patch — TWO things that shipped broken get
 corrected, both @antonmos. **#179**: a v0.9.5 SCROLL-DOWN REGRESSION — the pin bump moved
 `ironrdp-pdu` past its own wheel-decode fix (now proper two's-complement) but did NOT delete
 vendored divergence-17's compensation, so it DOUBLE-corrected → every downward tick inflated
