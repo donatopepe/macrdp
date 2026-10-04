@@ -167,8 +167,8 @@ if [ -f "$IFD_DYLIB" ]; then
     # first: replacing that signature in-place can block codesign indefinitely
     # on recent macOS versions.
     codesign --remove-signature "$IFD_BUNDLE/Contents/MacOS/libifd_macrdp.dylib" 2>/dev/null || true
-    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$IFD_BUNDLE/Contents/MacOS/libifd_macrdp.dylib"
-    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$IFD_BUNDLE"
+    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]+"${CODESIGN_KEYCHAIN_ARGS[@]}"}" -s "$IDENTITY" "$IFD_BUNDLE/Contents/MacOS/libifd_macrdp.dylib"
+    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]+"${CODESIGN_KEYCHAIN_ARGS[@]}"}" -s "$IDENTITY" "$IFD_BUNDLE"
     # Ship the privileged installer alongside it so DMG users can run
     #   /Applications/macrdp.app/Contents/Resources/install-ifd-handler.sh
     # plus the USB-trigger picker the installer invokes (must sit next to it).
@@ -193,7 +193,7 @@ HUD_BIN="$REPO_ROOT/gui/.build/release/macrdphud"
 if [ -f "$HUD_BIN" ]; then
     cp "$HUD_BIN" "$STAGE/Contents/Resources/macrdphud"
     chmod +x "$STAGE/Contents/Resources/macrdphud"
-    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE/Contents/Resources/macrdphud"
+    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]+"${CODESIGN_KEYCHAIN_ARGS[@]}"}" -s "$IDENTITY" "$STAGE/Contents/Resources/macrdphud"
     echo "==> embedded macrdphud (app-switcher HUD helper)"
 else
     echo "==> WARNING: macrdphud not found; app-switcher HUD NOT embedded (unset SKIP_BUILD?)" >&2
@@ -211,7 +211,7 @@ SHIELD_BIN="$REPO_ROOT/gui/.build/release/macrdpshield"
 if [ -f "$SHIELD_BIN" ]; then
     cp "$SHIELD_BIN" "$STAGE/Contents/Resources/macrdpshield"
     chmod +x "$STAGE/Contents/Resources/macrdpshield"
-    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE/Contents/Resources/macrdpshield"
+    codesign --force --options runtime $TS "${CODESIGN_KEYCHAIN_ARGS[@]+"${CODESIGN_KEYCHAIN_ARGS[@]}"}" -s "$IDENTITY" "$STAGE/Contents/Resources/macrdpshield"
     echo "==> embedded macrdpshield (shield-window helper)"
 else
     echo "==> WARNING: macrdpshield not found; --shield-primary will REFUSE to start (unset SKIP_BUILD?)" >&2
@@ -228,8 +228,8 @@ echo "==> codesign (hardened runtime, ts: $TS${ENT_ARG:+, entitlements})"
 # Entitlements go on the main executable (which actually runs) and the bundle.
 # The other signed items (IFD dylib/bundle, macrdphud, macrdpshield) deliberately
 # get NO entitlements — only macrdp needs the USB host-controller capability.
-codesign --force --options runtime $TS $ENT_ARG "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE/Contents/MacOS/macrdp"
-codesign --force --options runtime $TS $ENT_ARG "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE"
+codesign --force --options runtime $TS $ENT_ARG "${CODESIGN_KEYCHAIN_ARGS[@]+"${CODESIGN_KEYCHAIN_ARGS[@]}"}" -s "$IDENTITY" "$STAGE/Contents/MacOS/macrdp"
+codesign --force --options runtime $TS $ENT_ARG "${CODESIGN_KEYCHAIN_ARGS[@]+"${CODESIGN_KEYCHAIN_ARGS[@]}"}" -s "$IDENTITY" "$STAGE"
 codesign --verify --deep --strict "$STAGE"
 
 # 3a. TCC identity guard. macOS keys Screen Recording / Accessibility to the
