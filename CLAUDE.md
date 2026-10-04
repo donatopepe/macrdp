@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Status
 
 Functional v0 — daily-driver usable on a trusted LAN and over the internet
-(VPN/ZeroTier). **Latest release: v0.9.8** (the TCC prompt storm + an explicit
+(VPN/ZeroTier). **Latest release: v0.9.9** (the port preflight + the missing uninstaller — **one behaviour change on the default startup path**: a second macrdp that would have quietly shadowed the first now refuses to start. It could not detect this before, and the ordinary bind structurally cannot: tokio binds with SO_REUSEADDR (mio sets it on every socket) and on Darwin a wildcard+REUSEADDR holder lets `127.0.0.1:P` bind *successfully* beside `0.0.0.0:P` — measured matrix in @docs/known-quirks.md; row 2 of it is the detector, verified to work whether or not the holder set the flag, and a *specific*-address holder is deliberately not reported because it cannot shadow anything. `wildcard_listener_present()` runs BEFORE the TCC check, so a misconfigured second instance cannot raise a prompt storm on its way out. Plus `packaging/uninstall-launchagent.sh`, the counterpart to dist/install.sh: unloads the label, removes the plist (else it returns at the next login), clears the recorded identity, and keeps the app bundle / config.env / Keychain unless --remove-app / --purge-config / --purge-keychain — the bundle is opt-out because the TCC grants hang off its code identity. 218 tests (2 new). Earlier: **v0.9.8** (the TCC prompt storm + an explicit
 code identity, two install-path defects, and two CI gates that had been red
 since v0.9.6 — **the default runtime path is unchanged**, capture/encode/RDP
 untouched and the new flag inert unless asked for. **THE HEADLINE:** a launchd

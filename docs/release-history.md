@@ -4,12 +4,23 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
-## Unreleased (main) — port preflight + the missing uninstaller
+## v0.9.9 — the port preflight and the uninstaller that was missing
 
-Two follow-ups to v0.9.8, both closing items that release explicitly left open.
+A patch over v0.9.8 that closes the two items that release explicitly left open. **One behaviour change on the default startup path**: a second macrdp that would have quietly shadowed the first now refuses to start.
 
-- **macrdp now refuses to start when another listener owns the port.** It could not detect this before, and the ordinary `bind()` structurally cannot: tokio binds with `SO_REUSEADDR` (mio sets it on every socket), and on Darwin a wildcard+REUSEADDR holder lets `127.0.0.1:P` bind *successfully* alongside it — the silent shadowing from v0.9.8. `wildcard_listener_present()` probe-binds the wildcard address and refuses, **before** the TCC check (so a misconfigured second instance cannot raise a prompt storm on its way out), before `caffeinate`, and before the virtual display exists. The two conflict shapes get different explanations — requesting the wildcard port is the `KeepAlive` crash-loop; requesting a specific address is "this would silently serve only your loopback clients, with this process's flags instead of the configured ones". A specific-address holder is deliberately not reported: it cannot shadow anything. Measured matrix, two unit tests, both shapes verified live.
-- **`packaging/uninstall-launchagent.sh`**, the counterpart to `dist/install.sh` that did not exist: unloads the label, removes the plist (otherwise it is back at the next login), clears the recorded identity file, and keeps the app bundle, `config.env` and the Keychain entry unless `--remove-app` / `--purge-config` / `--purge-keychain` are passed. The bundle is opt-*out* on purpose: the Screen Recording / Accessibility grants hang off its code identity, so deleting it silently invalidates them.
+- **The port preflight.** macrdp could not detect another instance on the same port, and the ordinary `bind()` structurally cannot catch the dangerous half of it: it binds through tokio, and mio sets `SO_REUSEADDR` on every socket (`mio-1.2 sys/unix/tcp.rs`), and on Darwin a wildcard+REUSEADDR holder lets `127.0.0.1:P` bind **successfully** alongside `0.0.0.0:P`. Measured on this Mac (A bound, B tries, both REUSEADDR):
+
+  ```text
+  A 0.0.0.0:P   -> B 127.0.0.1:P   BOTH BOUND   <-- the silent trap
+  A 0.0.0.0:P   -> B 0.0.0.0:P     B EADDRINUSE
+  A 127.0.0.1:P -> B 0.0.0.0:P     BOTH BOUND
+  A 127.0.0.1:P -> B 127.0.0.1:P   B EADDRINUSE
+  ```
+
+  Row 2 is the detector — probe-bind the wildcard with `SO_REUSEADDR` and it fails with `EADDRINUSE` exactly when a wildcard listener exists, whether or not the holder set `SO_REUSEADDR` itself (verified). A *specific*-address holder is deliberately **not** reported: it cannot shadow anything, and blocking on it would stop a legitimate second stack. `wildcard_listener_present()` runs **before** the TCC check, so a misconfigured second instance cannot raise a Screen Recording prompt storm on its way to failing, and before `caffeinate` and the virtual display. The two conflict shapes get different explanations because they are different bugs: requesting the wildcard port is the `KeepAlive` crash-loop; requesting a specific address is "this would silently serve only your loopback clients, with this process's flags instead of the configured ones". Two unit tests cover detection and the must-not-detect case; both shapes were verified live against a running agent — and, pointedly, the *pre-guard* bundle reproduced the original bug on this host during that test, binding `127.0.0.1:3390` next to the live agent and serving with defaults.
+- **`packaging/uninstall-launchagent.sh`**, the counterpart to `dist/install.sh` that did not exist: unloads the label, removes the plist (without which `RunAtLoad` brings it back at the next login), clears the recorded identity file, and keeps the app bundle, `config.env` and the Keychain entry unless `--remove-app` / `--purge-config` / `--purge-keychain` are passed. The bundle is opt-*out* on purpose — the Screen Recording / Accessibility grants hang off its code identity, so deleting it silently invalidates them. Idempotent, reports the other install path without touching it. Exercised for real: it removed the live agent, and reinstalling brought it straight back with the same designated requirement and both permissions granted.
+
+Docs updated alongside: the known-quirks entry for the collision now leads with the preflight and keeps the measured matrix; both READMEs point at the two uninstallers.
 
 ## v0.9.8 — the TCC prompt storm, an explicit code identity, and two red CI gates
 
