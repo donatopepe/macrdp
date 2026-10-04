@@ -42,6 +42,20 @@ VERSION="$(grep -m1 '^version' "$REPO_ROOT/Cargo.toml" | cut -d'"' -f2)"
 echo "==> macrdpController v$VERSION  (id: $CONTROLLER_ID, identity: $IDENTITY, install: $APP_DIR)"
 
 echo "==> swift build -c release"
+# SwiftUI's property wrappers are macros on macOS 26/27, so the controller needs
+# the SwiftUI macro plugin — which only a FULL Xcode ships (the Command Line
+# Tools do not, and the failure reads as a missing module rather than a missing
+# toolchain). If xcode-select still points at the CLT but Xcode.app is sitting
+# next to it, use it rather than making the operator remember DEVELOPER_DIR.
+if [ -z "${DEVELOPER_DIR:-}" ] \
+    && [ "$(xcode-select -p 2>/dev/null || true)" = "/Library/Developer/CommandLineTools" ] \
+    && [ -x "/Applications/Xcode.app/Contents/Developer/usr/bin/swift-build" ] \
+    && [ ! -f "$(xcode-select -p 2>/dev/null || echo /nonexistent)/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" ]; then
+    echo "==> xcode-select points at the Command Line Tools, which cannot build SwiftUI"
+    echo "    (no libSwiftUIMacros). Falling back to DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer"
+    echo "    — switch it permanently with: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer"
+    export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+fi
 ( cd "$GUI_DIR" && swift build -c release )
 BIN="$GUI_DIR/.build/release/macrdptray"
 [ -x "$BIN" ] || { echo "build produced no binary at $BIN" >&2; exit 1; }
@@ -189,11 +203,24 @@ if [ "${SETUP_LOGIN_ITEM:-1}" = "1" ]; then
 </plist>
 PLIST_EOF
     launchctl bootout "gui/$(id -u)/$CONTROLLER_ID" 2>/dev/null || true
-    if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
-        echo "    loaded — the menu-bar icon is now persistent (quit it from the menu to hide)"
-    else
+    # Same EIO race install-launchagent.sh documents: `bootstrap` right after
+    # `bootout` can fail with "Input/output error" (5) while launchd is still
+    # tearing the old job down. Retry, and let the last attempt speak up.
+    booted=0
+    for _ in 1 2 3 4 5; do
+        if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
+            booted=1
+            break
+        fi
+        sleep 1
+    done
+    [ "$booted" = 1 ] || launchctl bootstrap "gui/$(id -u)" "$PLIST" || {
         echo "    WARNING: could not load $CONTROLLER_ID; the icon appears only while the app runs." >&2
         echo "    Check: launchctl print gui/\$(id -u)/$CONTROLLER_ID" >&2
+    }
+    launchctl enable "gui/$(id -u)/$CONTROLLER_ID" 2>/dev/null || true
+    if [ "$booted" = 1 ]; then
+        echo "    loaded — the menu-bar icon is now persistent (quit it from the menu to hide)"
     fi
     echo "    Remove it again with: launchctl bootout gui/\$(id -u)/$CONTROLLER_ID && rm $PLIST"
 fi

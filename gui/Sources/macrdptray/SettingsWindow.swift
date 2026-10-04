@@ -586,15 +586,32 @@ struct LiveStats {
     let adaptive: Bool
 }
 
+/// Reference-typed holder for the Status pane's polled values.
+///
+/// These were three `@State` properties on `StatusView` assigned from
+/// `refresh()`. That stops compiling under Swift 6 (Xcode 26/27): assigning to
+/// a property-wrapper backing store from a non-`mutating` method on a struct is
+/// an error ("self is immutable"), and the call sites are `.onAppear` /
+/// `.onReceive` closures, which cannot be mutating. A plain class observed with
+/// `@ObservedObject` has the same invalidation behaviour and no such constraint
+/// — and it is the shape SwiftUI expects for "something outside the body
+/// publishes into this pane".
+private final class StatusStore: ObservableObject {
+    @Published var stats: ServerStats = .stopped
+    @Published var conn: ConnectionInfo = .none
+    @Published var live: LiveStats?
+}
+
 private struct StatusView: View {
     @ObservedObject var model: SettingsModel
-    @State private var stats: ServerStats = .stopped
-    @State private var conn: ConnectionInfo = .none
-    @State private var live: LiveStats?
+    @StateObject private var store = StatusStore()
     // Only ticks while this pane is on screen (subscription cancels on disappear).
     private let tick = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
+        let stats = store.stats
+        let conn = store.conn
+        let live = store.live
         Form {
             Section("Server") {
                 row("Status", stats.running ? "Running (pid \(stats.pid))" : "Stopped")
@@ -645,9 +662,9 @@ private struct StatusView: View {
             let c = controller.currentConnection()
             let l = c.connected ? controller.liveStats() : nil
             DispatchQueue.main.async {
-                stats = s
-                conn = c
-                live = l
+                store.stats = s
+                store.conn = c
+                store.live = l
             }
         }
     }

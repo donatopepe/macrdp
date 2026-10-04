@@ -3578,6 +3578,49 @@ mod config_tests {
         fs::remove_file(&p).ok();
     }
 
+    /// The four keys the menu-bar controller could not write before it gained
+    /// sleep / lossy-audio / USB / restore-windows controls. They were already
+    /// bridged; pinned so a future refactor of the bridge cannot quietly turn a
+    /// visible toggle into a no-op — the ALLOW_SLEEP failure mode.
+    #[test]
+    fn newly_exposed_gui_keys_reach_the_server() {
+        let p = write_temp(
+            "gui1",
+            "ENABLE_LOSSY_AUDIO=1\nRESTORE_WINDOWS_ON_DISCONNECT=1\n",
+        );
+        let a = args_from_config(&p).unwrap();
+        assert!(
+            a.enable_lossy_audio,
+            "ENABLE_LOSSY_AUDIO must reach the server"
+        );
+        assert!(
+            a.restore_windows_on_disconnect,
+            "RESTORE_WINDOWS_ON_DISCONNECT must reach the server"
+        );
+        fs::remove_file(&p).ok();
+
+        // USB_PREFETCH_DEPTH / USB_STREAM_STALL_MS are env-only tunables (read
+        // with getenv() in usb_spike.m), so the bridge maps them to MACRDP_*
+        // env vars rather than to a clap flag — assert that path instead.
+        let p = write_temp(
+            "gui2",
+            "ENABLE_USB_REDIRECTION=1\nUSB_STREAM_STALL_MS=1500\n",
+        );
+        std::env::remove_var("MACRDP_USB_STREAM_STALL_MS");
+        let a = args_from_config(&p).unwrap();
+        assert!(
+            a.enable_usb_redirection,
+            "ENABLE_USB_REDIRECTION must reach the server"
+        );
+        assert_eq!(
+            std::env::var("MACRDP_USB_STREAM_STALL_MS").as_deref(),
+            Ok("1500"),
+            "USB_STREAM_STALL_MS must reach the server as MACRDP_USB_STREAM_STALL_MS"
+        );
+        std::env::remove_var("MACRDP_USB_STREAM_STALL_MS");
+        fs::remove_file(&p).ok();
+    }
+
     #[test]
     fn bitrate_config_bridge() {
         // BITRATE alone maps to --bitrate.
