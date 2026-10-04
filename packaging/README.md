@@ -125,7 +125,26 @@ launchctl print gui/$(id -u)/com.clintcan.macrdp        # status (state/pid)
 $EDITOR "$HOME/Library/Application Support/macrdp/config.env"
 launchctl kickstart -k gui/$(id -u)/com.clintcan.macrdp # apply config change
 launchctl bootout    gui/$(id -u)/com.clintcan.macrdp   # stop entirely
+
+# "why is macOS asking for Screen Recording again?" — one command, no side
+# effects. Exits non-zero if a permission is missing or the identity is ad-hoc.
+~/Applications/macrdp.app/Contents/MacOS/macrdp --check-permissions
 ```
+
+`install-launchagent.sh` records the bundle's **designated requirement** in
+`~/Library/Application Support/macrdp/installed-identity.txt` and warns when it
+differs from the recorded one — the exact moment macOS drops the Screen
+Recording / Accessibility grants and starts asking again (`make-app.sh` warns
+too, comparing against the bundle it replaces). Treat that warning as
+"re-grant both permissions", not as noise; see
+[../docs/known-quirks.md](../docs/known-quirks.md).
+
+The **release artifacts** published by CI are ad-hoc signed (the release
+workflow passes `CODESIGN_IDENTITY=- AUTO_CREATE_LOCAL_CERT=0`, so it never
+tries to mint a certificate in a runner's keychain). That is fine for an
+immutable artifact, but it means every fresh install of a release is a *new*
+code identity to macOS — `make-app.sh` locally is what gives you an identity
+that survives rebuilds.
 
 Edit feature toggles (H.264, AAC, HiDPI, un-minimize-on-Cmd+Tab), the headless virtual display
 (`VIRTUAL_DISPLAY`/`PRIMARY_MODE`/`VD_WIDTH`/`VD_HEIGHT`), bind address, and

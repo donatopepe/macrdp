@@ -15,6 +15,15 @@ RUST_LOG=debug cargo run       # crank logging for troubleshooting
 Useful CLI flags (see `src/main.rs::Args` for the full set):
 ```
 --bind 0.0.0.0:3390       # listen address
+--check-permissions       # print the macOS permission + code-identity report and
+                          #   exit: executable, code identifier, designated
+                          #   requirement with a STABLE/AD-HOC verdict, and the
+                          #   live Screen Recording / Accessibility state. No port,
+                          #   no virtual display, no capture, no dialog — so it is
+                          #   runnable exactly when the server cannot start. Exit 1
+                          #   when a permission is missing or the identity is
+                          #   ad-hoc, so it doubles as a health probe. Start here
+                          #   when macOS re-asks for Screen Recording. macOS-only.
 --username NAME           # default: $USER
 --password PASS           # avoid the interactive prompt (logs are warned)
 --skip-auth               # bypass PAM (also skips password validation)
