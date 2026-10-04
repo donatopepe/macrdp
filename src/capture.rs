@@ -433,6 +433,36 @@ pub struct CaptureDisplay {
         Option<Arc<std::sync::Mutex<Option<crate::virtual_display::ShieldedPrimary>>>>,
 }
 
+/// Age of a captured frame, in milliseconds, from its ScreenCaptureKit
+/// display timestamp to now.
+///
+/// `mach_absolute_time` counts in the *timebase* unit, not nanoseconds: the
+/// ratio is `numer/denom` from `mach_timebase_info` (1/1 on every Mac Apple
+/// ships, but the API is the contract). Tick → ns is `ticks * numer / denom`,
+/// then ns → ms. `None` if the timebase can't be read or the arithmetic
+/// overflows — the age is a diagnostic, so a miss must not break capture.
+///
+/// `libc` marks the whole Mach time API deprecated in favour of the `mach2`
+/// crate. CI compiles with `-D warnings`, so this allow is load-bearing — but
+/// the alternative is a new dependency for two calls: worth doing only if
+/// something else pulls `mach2` in anyway. Arithmetic is unchanged from the
+/// inline block this helper replaced.
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn frame_age_ms(display_time: u64) -> Option<u32> {
+    let now = unsafe { libc::mach_absolute_time() };
+    let elapsed = now.saturating_sub(display_time);
+    let mut timebase = libc::mach_timebase_info { numer: 0, denom: 0 };
+    if unsafe { libc::mach_timebase_info(&mut timebase) } != 0 || timebase.denom == 0 {
+        return None;
+    }
+    let ms = elapsed
+        .saturating_mul(u64::from(timebase.numer))
+        .checked_div(u64::from(timebase.denom))?
+        / 1_000_000;
+    Some(ms.min(u64::from(u32::MAX)) as u32)
+}
+
 /// Look up the primary display's pixel dimensions via ScreenCaptureKit.
 ///
 /// Returns `None` on non-macOS targets so the caller can fall back to a stub
@@ -1574,18 +1604,7 @@ mod macos {
                     }
                     #[cfg(target_os = "macos")]
                     if let Some(display_time) = sample.display_time() {
-                        let now = unsafe { libc::mach_absolute_time() };
-                        let elapsed = now.saturating_sub(display_time);
-                        let mut timebase = libc::mach_timebase_info { numer: 0, denom: 0 };
-                        if unsafe { libc::mach_timebase_info(&mut timebase) } == 0
-                            && timebase.denom != 0
-                        {
-                            let age_ms = elapsed
-                                .saturating_mul(u64::from(timebase.numer))
-                                .checked_div(u64::from(timebase.denom))
-                                .unwrap_or(0)
-                                / 1_000_000;
-                            let age_ms = age_ms.min(u64::from(u32::MAX)) as u32;
+                        if let Some(age_ms) = frame_age_ms(display_time) {
                             stats.capture_age_ms.store(age_ms, Ordering::Relaxed);
                             if let Some(diag) = crate::stats::diagnostics() {
                                 diag.capture_age_window.record(age_ms);
