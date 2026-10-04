@@ -153,8 +153,14 @@ Builds + signs + installs to `~/.local/bin/macrdp`, stores your Mac password in 
 ```bash
 launchctl print gui/$UID/com.user.macrdp | head    # status
 launchctl kickstart -k gui/$UID/com.user.macrdp    # restart
-launchctl bootout gui/$UID/com.user.macrdp         # stop / uninstall
+launchctl bootout gui/$UID/com.user.macrdp         # stop
+dist/uninstall.sh                                  # remove agent + plist + binary
 ```
+
+Two things to know about this path:
+
+- **Signing identity matters.** The script signs with the local self-signed `macrdp Local Code Signing` certificate (created on first run) rather than ad-hoc, because macOS ties Screen Recording / Accessibility to the signer — an ad-hoc signature is keyed to the binary's cdhash and is **revoked by every rebuild**. Override with `CODESIGN_IDENTITY=…` / `AUTO_CREATE_LOCAL_CERT=0`. When the identity changes, macOS drops the existing grants: re-grant both in System Settings → Privacy & Security, then `launchctl kickstart -k`. Until you do, a launchd agent (no GUI to prompt in) exits 1 and is respawned every few seconds — see [docs/known-quirks.md](docs/known-quirks.md).
+- **The template passes no `--bind`, so the agent listens on `127.0.0.1` only** and LAN clients cannot reach it. To expose the server, add `--bind 0.0.0.0:3390` to `ProgramArguments` in the plist and `launchctl kickstart -k`.
 
 > ⚠️ **Pick ONE auto-start path — they collide on `:3390`.** `dist/install.sh` (label `com.user.macrdp`, bare binary in `~/.local/bin`) and `packaging/install-launchagent.sh` (label `com.clintcan.macrdp`, signed `macrdp.app` + `--config config.env`) are **mutually exclusive**: whichever loads first takes the port, and the second crash-loops under `KeepAlive` with `Address already in use (os error 48)`. Starting the binary by hand on top of that is worse than a clean failure — macOS lets a flagless instance bind `127.0.0.1:3390` alongside `0.0.0.0:3390`, so it silently serves loopback clients with defaults (password prompt, legacy bitmaps, 15 fps, `config.env` ignored). Check with `lsof -nP -iTCP:3390 -sTCP:LISTEN` (expect **one** row) and `pgrep -fl macrdp`. Full symptoms and recovery commands: [docs/known-quirks.md](docs/known-quirks.md).
 
