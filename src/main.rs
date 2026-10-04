@@ -1029,11 +1029,6 @@ struct Args {
     check_permissions: bool,
 }
 
-/// Prevent macOS from going to sleep, dimming/sleeping the display, idle-
-/// locking, or spinning down disks while macrdp is running. `caffeinate
-/// -w PID` exits automatically when the supplied PID exits, so there's
-/// nothing to clean up on shutdown.
-#[cfg(target_os = "macos")]
 /// Which way the Mac is currently powered. Drives the sleep assertion: on AC
 /// the display and the system are held awake (a sleeping Mac means the RDP
 /// client is looking at a dead session), on battery the normal power policy is
@@ -1064,6 +1059,7 @@ fn parse_power_source(pmset_out: &str) -> PowerSource {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn current_power_source() -> PowerSource {
     match std::process::Command::new("pmset")
         .args(["-g", "batt"])
@@ -1091,6 +1087,7 @@ fn current_power_source() -> PowerSource {
 /// user active, `-w` tie the assertion's lifetime to this process (so a crash or
 /// an exit cannot leave the Mac permanently awake). Killing the child releases
 /// every assertion it holds.
+#[cfg(target_os = "macos")]
 fn watch_power_source_for_sleep(interval_secs: u64) {
     let pid = std::process::id().to_string();
     tokio::spawn(async move {
@@ -1144,9 +1141,9 @@ fn watch_power_source_for_sleep(interval_secs: u64) {
     });
 }
 
-/// Legacy one-shot helper kept for the "prevent unconditionally" case and for
-/// callers that want the old behaviour. Kept next to the watcher so the two
-/// stay in sync.
+/// One-shot "hold the Mac awake" helper, kept for the unconditional case.
+/// Superseded by [`watch_power_source_for_sleep`], which only holds on AC.
+#[cfg(target_os = "macos")]
 #[allow(dead_code)]
 fn prevent_sleep() {
     let pid = std::process::id().to_string();
