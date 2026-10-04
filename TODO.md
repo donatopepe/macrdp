@@ -15,6 +15,86 @@ linked docs / vendored `CLAUDE.md`s / commit history — this is just the index 
 "what's currently to be made." Keep it pruned: move items to *Done* only briefly,
 then delete; promote a parked item to *In flight* when work actually starts.
 
+## In flight — menu-bar controller: quit/update/uninstall + config test coverage (2026-10-04)
+
+Piano staccato su richiesta. Ordine = dipendenze, non preferenze.
+
+### Fase 0 — difetti da correggere (trovati pianificando)
+
+- [ ] **D1 — `Quit Controller` è inefficace.** Il login item registrato ieri ha `KeepAlive=true`,
+      quindi `NSApp.terminate` viene **rispawnato da launchd subito**: l'icona sparisce e torna.
+      Fix: il quit deve fare `bootout` del proprio login item (il plist resta → torna al login
+      successivo, che è la semantica giusta) invece di fidarsi di `terminate`.
+- [ ] **D2 — Quit non ferma il server** (richiesta esplicita): deve fare `bootout` dell'agente
+      `com.clintcan.macrdp` e poi chiudere l'icona.
+- [ ] **D3 — warning `Combine` in `SettingsWindow.swift`** (`Timer.publish(...).autoconnect()` senza
+      `import Combine`): innocuo ma rumorioso, e sparisce la prima volta che qualcuno compila
+      con `-warnings-as-errors`.
+- [ ] **D4 — nessun target di test Swift** in `gui/Package.swift`: le chiavi, il confronto di versione
+      e la costruzione del piano di disinstallazione non hanno nessuna copertura.
+- [ ] **D5 — un aggiornamento revoca i grant TCC.** Sostituire `macrdp.app` ne cambia l'identità di
+      codice (è la lezione di v0.9.8: `certificate leaf` stabile *finché non cambi firma/identità*).
+      L'update deve ri-firmare col certificato locale quando c'è, e se la designated requirement
+      cambia deve **dire** che vanno ri-grantate Screen Recording + Accessibility.
+
+### Fase 1 — Quit che chiude tutto
+
+- [ ] `quit()` → `launchctl bootout gui/$UID/com.clintcan.macrdp` (server fermo) +
+      `bootout` del proprio login item + terminate. Etichetta menu esplicita:
+      "Quit (server fermo fino al prossimo login)".
+- [ ] Accettazione: dopo il quit `pgrep` = 0 processi, `launchctl print` = assente per entrambi i
+      label, `lsof -iTCP:3390` = 0 listener; `open ~/Applications/macrdpController.app` fa tornare
+      l'icona con Start/Stop funzionanti; al login successivo entrambi i job tornano.
+
+### Fase 2 — menu: sleep, aggiornamento, disinstallazione
+
+- [ ] **Sleep nel menu** (oltre che in Settings): sottovoce con checkmark sullo stato corrente,
+      scrive `ALLOW_SLEEP` in config.env + un solo kickstart. Due stati: "Prevent sleep on AC" (default)
+      / "Allow normal sleep". Il default attuale è AC-only (v0.9.9) e va riflesso nella label.
+- [ ] **Aggiornamento da GitHub**: `Check for updates…` → `releases/latest` (repo `donatopepe/macrdp`),
+      confronto versione contro `CFBundleShortVersionString` dell'app installata; se nuova, mostra
+      versione + asset + checksum e chiede conferma. Install: download in `$TMPDIR`, verifica
+      `SHA256SUMS`, sostituisce `~/Applications/macrdp.app`, ri-firma col certificato locale se
+      presente, confronta la DR prima/dopo (→ messaggio TCC se cambiata), kickstart.
+      **Nota da mettere nelle release notes:** gli asset pubblicati contengono solo il server; il
+      controller si ricostruisce con `gui/make-tray-app.sh`.
+- [ ] **Disinstallazione**: `Uninstall…` → dialog con checklist esplicita (agente server, bundle,
+      controller + login item, `config.env`, Keychain) e default **conservativi**; l'esecuzione
+      riusa gli script già esistenti (`packaging/uninstall-launchagent.sh`, `dist/uninstall.sh`)
+      invece di reimplementarli, così un solo comportamento; poi quit. Keychain e config.env mai
+      cancellati senza spunta esplicita.
+
+### Fase 3 — test di ogni configurazione visibile dall'app
+
+- [ ] Harness `scripts/test-config-keys.sh` sulle **20 chiavi** che la UI scrive
+      (`ADAPTIVE_BITRATE, ALT_TAB_SWITCH, APP_SWITCHER_HUD, ENABLE_AAC, ENABLE_CAMERA_REDIRECTION,
+      ENABLE_DRIVE_REDIRECTION, ENABLE_LOSSY_AUDIO, ENABLE_SMARTCARD_REDIRECTION,
+      ENABLE_UDP_MULTITRANSPORT, ENABLE_USB_REDIRECTION, EXTRA_FLAGS, HIDPI, KEYBOARD_LAYOUT,
+      MAP_CTRL_TO_CMD, STATS_ENDPOINT, UDP_MIGRATE_EGFX, UNMINIMIZE, USB_STREAM_STALL_MS,
+      VIRTUAL_DISPLAY`): per ognuna — snapshot di `config.env` → scrive il valore →
+      `launchctl kickstart -k` → aspetta `listening` → asserisce
+      (a) chiavi bridate a flag: il flag compare in `ps -o command=`,
+      (b) chiavi env-only: la `MACRDP_*` compare in `ps eww`,
+      (c) comportamento dove è osservabile: H.264 → riga `EGFX/H.264 pipeline configured`;
+          `STATS_ENDPOINT` → porta in ascolto; `BIND` → indirizzo/porta; `ALLOW_SLEEP` →
+          caffeinate presente/assente; `USB_STREAM_STALL_MS` → env.
+      Ripristina `config.env` e riavvia alla fine. Fallisce se una chiave è no-op (il guasto
+      silenzioso tipo `ALLOW_SLEEP`).
+- [ ] Target `macrdptrayTests` in `gui/Package.swift` (Swift puro, niente SwiftUI → gira su CLT):
+      enumerazione completa delle chiavi senza duplicati, chiave invertita `ALLOW_SLEEP`, confronto
+      di versione semver, nome asset per tag, piano di disinstallazione. `swift test` deve passare qui.
+- [ ] Le **9 azioni imperative** (`setPassword, hasKeychainPassword, permissionStatus,
+      openScreenRecording, openAccessibility, openLogs, editConfig, installSmartcardHandler,
+      enableCameraRedirection`) non sono automatizzabili (GUI/admin): checklist manuale con criterio
+      di accettazione per ognuna.
+
+### Fase 4 — documentazione e release
+
+- [ ] `docs/known-quirks.md` (identità che cambia dopo un update → grant persi), `docs/cli.md`,
+      `packaging/README.md` (menu: cosa fa ogni voce), `docs/release-history.md`.
+- [ ] Release: il quit e l'update cambiano il comportamento del menu → **v0.9.10** (patch) se si
+      taglia; `ALLOW_SLEEP` e la guardia di porta sono già in v0.9.9.
+
 ## In flight (needs an action)
 
 - [ ] **Open PRs from @antonmos — review state (as of 2026-09-17).**

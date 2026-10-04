@@ -1,5 +1,6 @@
 import AppKit
 import UniformTypeIdentifiers
+import MacRDPUpdateCore
 
 // macrdp Controller: a menu-bar app that controls the macrdp LaunchAgent
 // (label com.clintcan.macrdp, installed by packaging/install-launchagent.sh)
@@ -178,8 +179,48 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // first run, so it's always actionable (no Terminal step needed).
             menu.addItem(item(st.loaded ? "Start" : "Start (first run sets up)", #selector(start)))
         }
+        // Sleep policy as a submenu: it is a two-state switch, and it is the
+        // setting people flip most often (a docked vs. an unplugged laptop).
+        // The server holds the display awake ONLY on AC power, so the checkmark
+        // means "hold on AC", not "hold always".
+        let allowSleep = readConfig()["ALLOW_SLEEP"] == "1"
+        let sleepItem = NSMenuItem(title: "Sleep", action: nil, keyEquivalent: "")
+        let sleepMenu = NSMenu(title: "Sleep")
+        sleepMenu.addItem(checkable("Prevent sleep while on AC power", state: !allowSleep,
+                                    #selector(setPreventSleepOnAC(_:)), tag: 0))
+        sleepMenu.addItem(checkable("Allow the Mac to sleep normally", state: allowSleep,
+                                    #selector(setPreventSleepOnAC(_:)), tag: 1))
+        sleepItem.submenu = sleepMenu
+        menu.addItem(sleepItem)
+
+        let upd = NSMenuItem(title: "Check for updates…", action: #selector(checkForUpdates),
+                             keyEquivalent: "")
+        upd.target = self
+        menu.addItem(upd)
+        menu.addItem(item("Uninstall…", #selector(uninstall)))
         menu.addItem(.separator())
-        menu.addItem(item("Quit Controller", #selector(quit)))
+        // Quit stops the server too, so the label says so: after it nothing is
+        // listening until Start or the next login. The icon comes back through
+        // "Show Controller", which reloads the login item when it is still there.
+        menu.addItem(item("Quit (stops the server)", #selector(quit)))
+        // Any live instance counts, not just the login item: opened from Finder
+        // the app runs under a LaunchServices `application.*` job, so asking
+        // launchd about our own label would offer "Show Controller" while the
+        // icon is already on screen.
+        if !controllerRunning() {
+            menu.addItem(item("Show Controller", #selector(showController)))
+        }
+    }
+
+    /// Is a launchd job currently loaded? (For the controller's own login item,
+    /// so the menu can offer to bring the icon back after a Quit.)
+    /// Is a copy of this controller alive? Bundle-id based, so it catches both
+    /// the login-item launch and a Finder `open`.
+    func controllerRunning() -> Bool {
+        guard let bid = Bundle.main.bundleIdentifier else { return true }
+        let me = getpid()
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bid)
+            .contains { $0.processIdentifier != me }
     }
 
     func item(_ title: String, _ sel: Selector) -> NSMenuItem {
@@ -237,6 +278,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// free; `--install-agent` locates the server, writes + loads the agent
     /// (assumes the Keychain password is set separately for unattended deploys).
     func runHeadless(_ args: [String]) -> Int32 {
+        // Quit from a script / MDM: stop the server agent AND unload the
+        // controller's login item, so nothing comes back until Start or the next
+        // login. Same code path as the menu's Quit, so it cannot drift.
+        if args.contains("--stop-all") {
+            let r = stopEverything(terminate: false)
+            print("server agent: \(r.serverStopped ? "stopped" : "was not running")")
+            print("controller:   \(r.selfStopped ? "login item unloaded" : "no login item")")
+            print("both return at the next login, or via Start / --install-agent")
+            return 0
+        }
         if args.contains("--print-paths") {
             print("label:      \(label)")
             print("bind:       \(readConfig()["BIND"] ?? "127.0.0.1:3390")")
@@ -541,6 +592,316 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    func checkable(_ title: String, state: Bool, _ sel: Selector, tag: Int) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+        i.target = self
+        i.state = state ? .on : .off
+        i.tag = tag
+        return i
+    }
+
+    /// tag 0 = prevent on AC (default), tag 1 = allow normal sleep. Writes the
+    /// INVERTED key and applies with a single kickstart, so one click is one
+    /// restart — the old menu wrote + kickstarted per toggle.
+    @objc func setPreventSleepOnAC(_ sender: NSMenuItem) {
+        // tag 1 = "allow normal sleep", i.e. the toggle is OFF. The inversion
+        // itself lives in ConfigKeys so the UI and the tests cannot disagree.
+        let prevent = sender.tag == 0
+        let key = ConfigKeys.key("ALLOW_SLEEP") ?? ConfigKey("ALLOW_SLEEP", inverted: true)
+        writeConfig(key: key.name, value: ConfigKeys.value(for: key, toggleOn: prevent))
+        applyIfRunning()
+    }
+
+    // MARK: - Update from GitHub
+
+    /// Latest published release. Any failure (offline, rate-limited, malformed
+    /// JSON) is reported rather than guessed: an updater that invents a version
+    /// is worse than one that says "could not check".
+    struct UpdateFailure: Error { let message: String }
+
+    func latestRelease() -> Result<(tag: String, version: String, assets: [URL]), UpdateFailure> {
+        // Fixed to this fork's repo — the same one install-remote.sh uses.
+        let api = "https://api.github.com/repos/donatopepe/macrdp/releases/latest"
+        let r = run("/usr/bin/curl", ["-fsSL", "-H", "Accept: application/vnd.github+json", api])
+        guard r.code == 0,
+              let data = r.stdout.data(using: .utf8),
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let tag = json["tag_name"] as? String
+        else {
+            return .failure(UpdateFailure(
+                message: "could not read the release list from GitHub (curl exit \(r.code))"))
+        }
+        let version = String(tag.drop(while: { $0 == "v" || $0 == "V" }))
+        var assets: [URL] = []
+        for a in (json["assets"] as? [[String: Any]]) ?? [] {
+            if let b = a["browser_download_url"] as? String, let u = URL(string: b) {
+                assets.append(u)
+            }
+        }
+        return .success((tag: tag, version: version, assets: assets))
+    }
+
+    /// The installed server app's own version, from its Info.plist.
+    func installedServerVersion() -> String? {
+        guard let app = locateServerApp(),
+              let info = Bundle(url: app)?.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+                      as? String
+        else { return nil }
+        return info
+    }
+
+    /// Thin wrappers over MacRDPUpdateCore so the logic lives in one place and
+    /// is unit-tested without a GUI (see Sources/MacRDPUpdateCore).
+    func isNewer(_ candidate: String, than current: String) -> Bool {
+        Version.isNewer(candidate, than: current)
+    }
+
+    func assetURL(assets: [URL], suffix: String) -> URL? {
+        guard let name = Assets.url(in: assets.map(\.lastPathComponent), endingWith: suffix)
+        else { return nil }
+        return assets.first { $0.lastPathComponent == name }
+    }
+
+    @objc func checkForUpdates() {
+        guard let installed = installedServerVersion() else {
+            alert(style: .warning, "Can't tell which version is installed",
+                  "macrdp.app was not found next to the Controller or in /Applications.")
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        switch latestRelease() {
+        case .failure(let why):
+            alert(style: .warning, "Update check failed",
+                  why.message + "\n\nThe installed version is \(installed).")
+        case .success(let rel):
+            guard isNewer(rel.version, than: installed) else {
+                alert(style: .informational, "macrdp is up to date",
+                      "Installed \(installed), latest release is \(rel.tag).")
+                return
+            }
+            guard let zip = assetURL(assets: rel.assets, suffix: "-app.zip"),
+                  let sums = assetURL(assets: rel.assets, suffix: "SHA256SUMS")
+            else {
+                alert(style: .warning, "Release \(rel.tag) has no app archive",
+                      "Expected an asset ending in -app.zip plus SHA256SUMS.")
+                return
+            }
+            confirmInstall(version: rel.version, tag: rel.tag, installed: installed,
+                           zip: zip, sums: sums)
+        }
+    }
+
+    /// Fetch, verify, replace — with the TCC-identity check this whole session
+    /// has been about: the published bundle is ad-hoc signed, so replacing it
+    /// changes the code identity and macOS drops the Screen Recording /
+    /// Accessibility grants. Re-signing locally with the `macrdp Local Code
+    /// Signing` certificate keeps the identity stable; if it still changed, say
+    /// so loudly rather than letting the user find a dead input path later.
+    func confirmInstall(version: String, tag: String, installed: String,
+                        zip: URL, sums: URL) {
+        let a = NSAlert()
+        a.alertStyle = .informational
+        a.messageText = "Update macrdp \(installed) → \(version)?"
+        a.informativeText = """
+            Downloads \(zip.lastPathComponent) from the \(tag) release, verifies its SHA-256, \
+            then replaces ~/Applications/macrdp.app (rolling back if the new bundle does not \
+            verify).
+
+            macOS keys your Screen Recording and Accessibility grants to the app's code \
+            identity, so replacing it can drop them. The updater re-signs with the local \
+            "macrdp Local Code Signing" certificate to keep the identity stable, and warns \
+            you if that was not possible.
+
+            This updates the SERVER only. The Controller is not part of the release assets — \
+            it is rebuilt from the repository with gui/make-tray-app.sh.
+            """
+        a.addButton(withTitle: "Download and install")
+        a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macrdp-update-\(ProcessInfo.processInfo.processIdentifier)")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+
+        let sumsPath = tmp.appendingPathComponent("SHA256SUMS")
+        let zipPath = tmp.appendingPathComponent(zip.lastPathComponent)
+        guard download(sums, to: sumsPath), download(zip, to: zipPath) else {
+            alert(style: .warning, "Download failed", "Could not fetch the release assets.")
+            return
+        }
+        guard verifyChecksum(zipPath, against: sumsPath) else {
+            alert(style: .critical, "Checksum mismatch",
+                  "\(zip.lastPathComponent) does not match SHA256SUMS. Nothing was changed.")
+            return
+        }
+        let staging = tmp.appendingPathComponent("staged")
+        let un = run("/usr/bin/ditto", ["-x", "-k", zipPath.path, staging.path])
+        let stagedApp = staging.appendingPathComponent("macrdp.app")
+        guard un.code == 0, FileManager.default.fileExists(atPath: stagedApp.path) else {
+            alert(style: .warning, "Could not unpack the archive", "ditto exit \(un.code).")
+            return
+        }
+        guard let current = locateServerApp() else {
+            alert(style: .warning, "Installed app not found", "Nothing to replace.")
+            return
+        }
+        let drBefore = designatedRequirement(of: current)
+        // Keep the old bundle until the new one verifies: a failed install must
+        // not leave the user with no server at all.
+        let backup = tmp.appendingPathComponent("macrdp.app.old")
+        try? FileManager.default.moveItem(at: current, to: backup)
+        do {
+            try FileManager.default.moveItem(at: stagedApp, to: current)
+        } catch {
+            try? FileManager.default.moveItem(at: backup, to: current)
+            alert(style: .critical, "Install failed", "Rolled back: \(error.localizedDescription)")
+            return
+        }
+        resignInPlace(current)
+        guard codesignValid(current) else {
+            try? FileManager.default.moveItem(at: current, to: tmp.appendingPathComponent("bad.app"))
+            try? FileManager.default.moveItem(at: backup, to: current)
+            alert(style: .critical, "The new app does not verify",
+                  "Rolled back to the previous version.")
+            return
+        }
+        let drAfter = designatedRequirement(of: current)
+        applyIfRunning()
+        if let before = drBefore, let after = drAfter, before != after {
+            alert(style: .warning, "Installed \(version) — re-grant the permissions",
+                  "The code identity changed, so macOS dropped the Screen Recording and "
+                  + "Accessibility grants. Re-grant BOTH in System Settings → Privacy & "
+                  + "Security, then restart macrdp.\n\nbefore: \(before)\nafter:  \(after)")
+        } else {
+            alert(style: .informational, "Installed \(version)",
+                  "The code identity is unchanged, so your permissions still apply. "
+                  + "The server has been restarted.")
+        }
+    }
+
+    func download(_ url: URL, to path: URL) -> Bool {
+        let r = run("/usr/bin/curl", ["-fsSL", "-o", path.path, url.absoluteString])
+        return r.code == 0 && FileManager.default.fileExists(atPath: path.path)
+    }
+
+    /// Compare the downloaded file against its SHA256SUMS line.
+    func verifyChecksum(_ file: URL, against sums: URL) -> Bool {
+        guard let text = try? String(contentsOf: sums, encoding: .utf8) else { return false }
+        guard let want = Checksums.expected(inManifest: text, for: file.lastPathComponent)
+        else { return false }
+        return run("/usr/bin/shasum", ["-a", "256", file.path])
+            .stdout.split(separator: " ").first.map(String.init) == want
+    }
+
+    /// Re-sign in place with the local certificate when it exists, so an update
+    /// does not silently change the identity macOS keyed the grants to.
+    func resignInPlace(_ app: URL) {
+        let kc = home.appendingPathComponent("Library/Keychains/login.keychain-db").path
+        let has = run("/usr/bin/security", ["find-identity", "-v", "-p", "codesigning", kc])
+            .stdout.contains("macrdp Local Code Signing")
+        guard has else { return } // no certificate available: ad-hoc identity stands
+        _ = run("/usr/bin/codesign",
+                ["--force", "-s", "macrdp Local Code Signing", app.path])
+    }
+
+    func codesignValid(_ app: URL) -> Bool {
+        run("/usr/bin/codesign", ["--verify", "--strict", app.path]).code == 0
+    }
+
+    func designatedRequirement(of app: URL) -> String? {
+        // codesign writes this line to stdout with the `# ` prefix when the
+        // signature is ad-hoc, so match loosely and trim.
+        let r = run("/usr/bin/codesign", ["-d", "-r-", app.path])
+        guard let line = r.stdout
+            .split(separator: "\n")
+            .first(where: { $0.contains("designated") })
+        else { return nil }
+        let cleaned = line
+            .replacingOccurrences(of: "designated => ", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    // MARK: - Uninstall
+
+    /// Destructive and partly irreversible, so it is an explicit checklist with
+    /// conservative defaults: the server, the agent and the bundles go;
+    /// config.env and the Keychain entry (a real account password) stay unless
+    /// explicitly ticked.
+    @objc func uninstall() {
+        // NSAlert carries at most three buttons, so the two genuinely optional
+        // and irreversible things (config.env, the Keychain password) are
+        // checkboxes in the accessory view, unticked by default. The three
+        // buttons are the real choice: stop, uninstall, cancel.
+        let purgeConfig = NSButton(checkboxWithTitle: "Also delete config.env", target: nil, action: nil)
+        let purgeKeychain = NSButton(checkboxWithTitle: "Also delete the Keychain password",
+                                     target: nil, action: nil)
+        let accessory = NSStackView(views: [purgeConfig, purgeKeychain])
+        accessory.orientation = .vertical
+        accessory.alignment = .leading
+        accessory.spacing = 6
+
+        let a = NSAlert()
+        a.alertStyle = .warning
+        a.messageText = "Uninstall macrdp?"
+        a.informativeText = """
+            “Stop” only halts the server — everything stays installed and comes back at the next             login or from Start. “Uninstall” removes the server LaunchAgent, macrdp.app, the             Controller and its login item; config.env and the Keychain password are kept unless             you tick the boxes below.
+            """
+        a.accessoryView = accessory
+        let stop = a.addButton(withTitle: "Stop the server")
+        let uninstall = a.addButton(withTitle: "Uninstall")
+        let cancel = a.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        let choice = a.runModal()
+        if choice == .alertThirdButtonReturn { return } // Cancel
+
+        var log: [String] = []
+        if agentState().pid != nil || agentState().loaded {
+            _ = run("/bin/launchctl", ["bootout", service])
+        }
+        log.append("server agent: \(agentState().loaded ? "still loaded" : "stopped")")
+
+        if choice == .alertSecondButtonReturn {
+            // Reuse the shell uninstaller rather than reimplementing it: it
+            // encodes the safe order (unload, remove the plist, keep config.env
+            // unless asked) and is what the README documents.
+            let script = home.appendingPathComponent("macrdp/packaging/uninstall-launchagent.sh")
+            var args = [script.path, "--yes"]
+            if purgeConfig.state == .on { args.append("--purge-config") }
+            if purgeKeychain.state == .on { args.append("--purge-keychain") }
+            if FileManager.default.isExecutableFile(atPath: script.path) {
+                log.append("uninstall-launchagent.sh: exit \(run("/bin/bash", args).code)")
+            } else {
+                try? FileManager.default.removeItem(at: plistURL)
+                log.append("removed the plist directly (script missing at \(script.path))")
+            }
+            if let app = locateServerApp() {
+                try? FileManager.default.removeItem(at: app)
+                log.append("removed \(app.lastPathComponent)")
+            }
+            if let c = locateControllerApp(), c != locateServerApp() {
+                try? FileManager.default.removeItem(at: c)
+                log.append("removed \(c.lastPathComponent)")
+            }
+            _ = run("/bin/launchctl", ["bootout", selfService])
+            try? FileManager.default.removeItem(at: selfPlistURL)
+            log.append("removed the Controller login item")
+        }
+        if purgeConfig.state == .on {
+            try? FileManager.default.removeItem(at: configURL)
+            log.append("deleted config.env")
+        }
+        if purgeKeychain.state == .on {
+            _ = run("/usr/bin/security",
+                    ["delete-generic-password", "-s", "macrdp", "-a", NSUserName()])
+            log.append("deleted the Keychain entry")
+        }
+        print("uninstall:\n" + log.map { "  - \($0)" }.joined(separator: "\n"))
+        NSApp.terminate(nil)
+    }
+
     @objc func editConfig() { ensureConfigExists(); NSWorkspace.shared.open(configURL) }
     @objc func openLogs() {
         if !FileManager.default.fileExists(atPath: logURL.path) {
@@ -554,7 +915,74 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openAccessibility() {
         openURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
     }
-    @objc func quit() { NSApp.terminate(nil) }
+    /// The controller's OWN login item, registered by `gui/make-tray-app.sh`.
+    /// Separate from `plistURL`, which is the server agent's plist.
+    var selfLabel: String { "\(Bundle.main.bundleIdentifier ?? "com.clintcan.macrdp.controller")" }
+    var selfService: String { "gui/\(uid)/\(selfLabel)" }
+    var selfPlistURL: URL { home.appendingPathComponent("Library/LaunchAgents/\(selfLabel).plist") }
+
+    /// Quit = stop the server AND take the icon away.
+    ///
+    /// Two subtleties, both learned the hard way:
+    /// 1. The login item runs with `KeepAlive`, so `NSApp.terminate` alone is
+    ///    undone by launchd within a second — the icon would pop straight back.
+    ///    Booting the job *out* is what actually makes it stay gone; the plist
+    ///    is deliberately LEFT in place, so the next login brings the icon back
+    ///    (that is what a per-user login item is for).
+    /// 2. Stopping the server is a `bootout` of its agent, not a kill: the plist
+    ///    stays, so "Start" (or the next login) brings it back without
+    ///    reinstalling anything.
+    /// The one implementation of "stop everything": the server agent and this
+    /// controller's own login item. Shared by the menu item and `--stop-all`
+    /// (scripted/MDM use, and the only way to exercise the path without a
+    /// human clicking the menu).
+    @discardableResult
+    func stopEverything(terminate: Bool) -> (serverStopped: Bool, selfStopped: Bool) {
+        let st = agentState()
+        var serverStopped = false
+        if st.pid != nil || st.loaded {
+            serverStopped = run("/bin/launchctl", ["bootout", service]).code == 0 || st.pid == nil
+        }
+        var selfStopped = false
+        if FileManager.default.fileExists(atPath: selfPlistURL.path) {
+            selfStopped = run("/bin/launchctl", ["bootout", selfService]).code == 0
+        }
+        // Do NOT delete selfPlistURL: keeping it is what makes the icon return at
+        // the next login. Removing it would be "uninstall", which has its own
+        // menu item and its own confirmation.
+        if terminate { NSApp.terminate(nil) }
+        return (serverStopped, selfStopped)
+    }
+
+    @objc func quit() { _ = stopEverything(terminate: true) }
+
+    /// Bring the icon back after a Quit (the login item is still on disk).
+    @objc func showController() {
+        if FileManager.default.fileExists(atPath: selfPlistURL.path) {
+            _ = run("/bin/launchctl", ["bootstrap", domain, selfPlistURL.path])
+            return
+        }
+        // No login item (removed, or never installed): just open the app.
+        if let app = locateControllerApp() {
+            NSWorkspace.shared.open(app)
+        } else {
+            alert(style: .warning, "Can't find macrdp Controller",
+                  "Reinstall it with: APP_DIR=$HOME/Applications gui/make-tray-app.sh")
+        }
+    }
+
+    /// The installed controller bundle, if we can find one.
+    func locateControllerApp() -> URL? {
+        var candidates: [URL] = []
+        if let appPath = Bundle.main.bundlePath as String? {
+            candidates.append(URL(fileURLWithPath: appPath))
+        }
+        for dir in [home.appendingPathComponent("Applications"), URL(fileURLWithPath: "/Applications")] {
+            let app = dir.appendingPathComponent("macrdpController.app")
+            if FileManager.default.fileExists(atPath: app.path) { candidates.append(app) }
+        }
+        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
+    }
 
     func openURL(_ s: String) { if let u = URL(string: s) { NSWorkspace.shared.open(u) } }
 
@@ -647,7 +1075,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 // Headless entry for scripted/MDM deploy + testing (no GUI, no status bar).
 let cliArgs = CommandLine.arguments
-if cliArgs.contains("--install-agent") || cliArgs.contains("--print-paths") {
+if cliArgs.contains("--install-agent") || cliArgs.contains("--print-paths")
+    || cliArgs.contains("--stop-all") {
     exit(AppController().runHeadless(cliArgs))
 }
 

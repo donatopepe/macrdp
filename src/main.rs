@@ -1097,6 +1097,24 @@ fn watch_power_source_for_sleep(interval_secs: u64) {
             let src = tokio::task::spawn_blocking(current_power_source)
                 .await
                 .unwrap_or(PowerSource::Unknown);
+            // Re-spawn if the child died while we were on AC. Spawning only on
+            // a TRANSITION left a hole: `pkill caffeinate` (or a crash) left the
+            // server believing sleep was prevented while nothing held the
+            // assertion — and then the display would sleep and the next restart
+            // would crash-loop on "no displays available". Verified by doing
+            // exactly that by hand.
+            if applied == Some(PowerSource::Ac) {
+                let dead = match child.as_mut() {
+                    Some(c) => matches!(c.try_wait(), Ok(Some(_))),
+                    None => true,
+                };
+                if dead {
+                    warn!(
+                        "caffeinate is gone but we are on AC power — re-asserting the sleep hold"
+                    );
+                    applied = None; // fall through to the Ac branch this tick
+                }
+            }
             // `Unknown` never changes state: it is the debounce. Reading the
             // source twice before flipping would also work, but ignoring
             // unparseable output is simpler and has the same effect.
@@ -2771,7 +2789,38 @@ async fn async_main() -> Result<()> {
         );
         (w, h, Some(vd.display_id()), size)
     } else {
-        let detected = primary_display_size().await?;
+        // ScreenCaptureKit reports "no displays available" while the display is
+        // asleep, and it exits non-zero — which under a launchd agent means
+        // exit 1 and an immediate KeepAlive respawn that fails identically:
+        // a permanent crash-loop that only a human touching the screen could
+        // clear (36 respawns measured). Retry instead: the display comes back
+        // on input, and a server that is merely waiting is far better than one
+        // that dies and cannot restart. Bounded, and it says what it is doing.
+        let detected = match primary_display_size().await {
+            Ok(d) => d,
+            Err(first) => {
+                warn!(
+                    error = %first,
+                    "no display available yet (the display is probably asleep) \
+                     — waiting up to ~2 min for it instead of exiting into a \
+                     KeepAlive crash-loop. Touch the screen or move the mouse to \
+                     wake it."
+                );
+                let mut found = None;
+                for _ in 0..12 {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    match primary_display_size().await {
+                        Ok(d) => {
+                            info!("display available again after waiting");
+                            found = Some(d);
+                            break;
+                        }
+                        Err(_) => {}
+                    }
+                }
+                found.ok_or(first)?
+            }
+        };
         let mut w = args
             .width
             .or(detected.map(|(w, _)| w))
@@ -3615,6 +3664,26 @@ mod config_tests {
             "USB_STREAM_STALL_MS must reach the server as MACRDP_USB_STREAM_STALL_MS"
         );
         std::env::remove_var("MACRDP_USB_STREAM_STALL_MS");
+        fs::remove_file(&p).ok();
+    }
+
+    /// The harness round-trips every UI key against the RUNNING binary, so a
+    /// key that the bridge silently drops shows up there. Pin the two that a
+    /// dependency makes conditional — AAC is meaningless without H.264, so the
+    /// harness must set both — plus the plain one, to prove the bridge emits it.
+    #[test]
+    fn aac_bridge_needs_h264() {
+        let p = write_temp("aac1", "ENABLE_AAC=1\n");
+        let a = args_from_config(&p).unwrap();
+        assert!(
+            a.enable_aac,
+            "ENABLE_AAC=1 must map to --enable-aac on its own"
+        );
+        fs::remove_file(&p).ok();
+
+        let p = write_temp("aac2", "ENABLE_H264=1\nENABLE_AAC=1\n");
+        let a = args_from_config(&p).unwrap();
+        assert!(a.enable_h264 && a.enable_aac);
         fs::remove_file(&p).ok();
     }
 

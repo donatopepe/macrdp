@@ -22,8 +22,18 @@ let package = Package(
     name: "macrdptray",
     platforms: [.macOS(.v13)],
     targets: [
+        // Foundation-only, so `swift test` runs it anywhere — including a machine
+        // with only the Command Line Tools, where the SwiftUI parts of the app
+        // cannot compile at all.
+        .target(name: "MacRDPUpdateCore", path: "Sources/MacRDPUpdateCore"),
+        .testTarget(
+            name: "MacRDPUpdateCoreTests",
+            dependencies: ["MacRDPUpdateCore"],
+            path: "Tests/MacRDPUpdateCoreTests"
+        ),
         .executableTarget(
             name: "macrdptray",
+            dependencies: ["MacRDPUpdateCore"],
             path: "Sources/macrdptray",
             linkerSettings: [.linkedFramework("SystemExtensions")]
         ),
