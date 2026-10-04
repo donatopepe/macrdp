@@ -4,6 +4,13 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## Unreleased (main) — port preflight + the missing uninstaller
+
+Two follow-ups to v0.9.8, both closing items that release explicitly left open.
+
+- **macrdp now refuses to start when another listener owns the port.** It could not detect this before, and the ordinary `bind()` structurally cannot: tokio binds with `SO_REUSEADDR` (mio sets it on every socket), and on Darwin a wildcard+REUSEADDR holder lets `127.0.0.1:P` bind *successfully* alongside it — the silent shadowing from v0.9.8. `wildcard_listener_present()` probe-binds the wildcard address and refuses, **before** the TCC check (so a misconfigured second instance cannot raise a prompt storm on its way out), before `caffeinate`, and before the virtual display exists. The two conflict shapes get different explanations — requesting the wildcard port is the `KeepAlive` crash-loop; requesting a specific address is "this would silently serve only your loopback clients, with this process's flags instead of the configured ones". A specific-address holder is deliberately not reported: it cannot shadow anything. Measured matrix, two unit tests, both shapes verified live.
+- **`packaging/uninstall-launchagent.sh`**, the counterpart to `dist/install.sh` that did not exist: unloads the label, removes the plist (otherwise it is back at the next login), clears the recorded identity file, and keeps the app bundle, `config.env` and the Keychain entry unless `--remove-app` / `--purge-config` / `--purge-keychain` are passed. The bundle is opt-*out* on purpose: the Screen Recording / Accessibility grants hang off its code identity, so deleting it silently invalidates them.
+
 ## v0.9.8 — the TCC prompt storm, an explicit code identity, and two red CI gates
 
 A patch over v0.9.7 that kills the "macOS asks for Screen Recording over and over even though I already granted it" class of failure, fixes two defects in the bare-binary install path, and closes two CI gates that had been red since v0.9.6. **The default runtime path is unchanged** — capture, encode and the RDP path are untouched, and the new flag does nothing unless asked for. Everything here was found and verified live on a Mac that had run both install paths.
