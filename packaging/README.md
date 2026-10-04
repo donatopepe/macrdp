@@ -31,6 +31,14 @@ still available with `CODESIGN_IDENTITY=-` or
 `AUTO_CREATE_LOCAL_CERT=0`, but each rebuilt binary gets a new code hash and
 macOS may ask for Screen Recording / Accessibility again.
 
+`make-app.sh` prints the resulting **designated requirement** — the thing
+macOS keys those grants to — and warns when it differs from the bundle being
+replaced, because that is precisely when a re-grant becomes due. A certificate
+gives `identifier "com.clintcan.macrdp" and certificate leaf = H"…"` (stable
+across rebuilds); ad-hoc gives `cdhash H"…"` (re-keyed every build). Rebuilding
+with the same certificate reproduces the same requirement, so the grant survives
+— verified with `codesign -d -r- ~/Applications/macrdp.app`.
+
 If Keychain asks for approval, allow `/usr/bin/codesign` to use the private key
 (or unlock the login Keychain and rerun the command). Verify identity:
 

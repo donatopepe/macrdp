@@ -232,6 +232,35 @@ codesign --force --options runtime $TS $ENT_ARG "${CODESIGN_KEYCHAIN_ARGS[@]}" -
 codesign --force --options runtime $TS $ENT_ARG "${CODESIGN_KEYCHAIN_ARGS[@]}" -s "$IDENTITY" "$STAGE"
 codesign --verify --deep --strict "$STAGE"
 
+# 3a. TCC identity guard. macOS keys Screen Recording / Accessibility to the
+#     designated requirement, so an identity change (a new certificate, or a
+#     fall back to ad-hoc because no identity was found) silently revokes the
+#     user's grants and the next launch prompts again. Compare against the
+#     bundle being replaced and say so out loud.
+PREV_DR=""
+if [ -d "$APP_DIR/macrdp.app" ]; then
+    # NB: codesign prefixes the line with "# " for an ad-hoc signature, hence
+    # `^#*` — without it an ad-hoc previous bundle reads as "no requirement"
+    # and the identity-change warning below would never fire.
+    PREV_DR="$(codesign -d -r- "$APP_DIR/macrdp.app" 2>&1 | sed -n 's/^#* *designated => //p')"
+fi
+NEW_DR="$(codesign -d -r- "$STAGE" 2>&1 | sed -n 's/^#* *designated => //p')"
+echo "==> designated requirement: ${NEW_DR:-<none>}"
+case "$NEW_DR" in
+    *cdhash*) echo "    WARNING: ad-hoc signature — this requirement is re-keyed on"
+              echo "    every rebuild, so Screen Recording / Accessibility are"
+              echo "    revoked each time. Install a signing identity (see the local"
+              echo "    certificate section of packaging/README.md)." ;;
+esac
+if [ -n "$PREV_DR" ] && [ -n "$NEW_DR" ] && [ "$PREV_DR" != "$NEW_DR" ]; then
+    echo "==> WARNING: code identity CHANGED"
+    echo "      was: $PREV_DR"
+    echo "      now: $NEW_DR"
+    echo "    macOS ties Screen Recording / Accessibility to it, so re-grant BOTH"
+    echo "    in System Settings → Privacy & Security after this build, then"
+    echo "    launchctl kickstart -k gui/\$(id -u)/$BUNDLE_PREFIX.macrdp"
+fi
+
 # 3b. Optional notarization (NOTARIZE=1, real Developer ID + NOTARY_PROFILE).
 #     Done on the staged app so the stapled ticket travels with the install copy.
 if [ "${NOTARIZE:-0}" = "1" ]; then

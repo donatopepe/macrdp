@@ -163,13 +163,53 @@ fn ensure_screen_recording_access() {
         info!("Screen Recording permission already granted");
         return;
     }
+    // Which binary macOS will key the grant to. The prompt and the row in
+    // System Settings name the *code identity*, not the project, so a machine
+    // that has run two installs (bundle + bare binary, ad-hoc + certificate)
+    // collects several rows all called "macrdp" — granting one does not grant
+    // the others. Print the exact path so the operator can tell them apart.
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "<unknown path>".to_string());
+    let in_bundle = exe.contains(".app/");
     warn!(
-        "Screen Recording permission NOT granted. macrdp will appear in \
-         System Settings → Privacy & Security → Screen Recording. Enable it, \
-         then RESTART macrdp (TCC grants only take effect on next launch)."
+        "Screen Recording permission NOT granted. Grant it in System Settings \
+         → Privacy & Security → Screen Recording, then RESTART macrdp (TCC \
+         grants only take effect on next launch). Executable: {exe} \
+         ({}). If the row is missing, add it with +; if this Mac has several \
+         'macrdp' rows, only the one matching this executable counts. \
+         Repeated prompts for the same app mean the code identity changed: \
+         check `codesign -d -r- {exe:?}` — a `cdhash H\"…\"` requirement is \
+         re-keyed on every rebuild, so re-sign with a stable identity \
+         (`macrdp Local Code Signing`) instead of ad-hoc.",
+        if in_bundle { "app bundle" } else { "bare binary, no .app bundle" }
     );
+    // request() opens the macOS prompt. Under a launchd agent there is no GUI
+    // session to show it in, and KeepAlive respawns the process every few
+    // seconds — so calling it there produced a PROMPT STORM: one prompt per
+    // respawn, forever, until the user noticed. launchd exports
+    // XPC_SERVICE_NAME into the job's environment; that plus an explicit
+    // opt-out is enough to detect "no one is there to click Allow".
+    if std::env::var_os("XPC_SERVICE_NAME").is_some()
+        || std::env::var_os("MACRDP_NO_TCC_PROMPT").is_some()
+    {
+        warn!(
+            "running under a launchd agent (XPC_SERVICE_NAME set) — exiting \
+             instead of starting capture. Without Screen Recording there is \
+             nothing to serve, and merely ATTEMPTING capture makes macOS raise \
+             the prompt (via replayd) on every start: with KeepAlive that is \
+             one dialog per respawn, forever. Grant it manually, then: \
+             launchctl kickstart -k gui/$UID/{}",
+            std::env::var("XPC_SERVICE_NAME").unwrap_or_default(),
+        );
+        // Fail fast, before caffeinate / the virtual display / any ScreenCaptureKit
+        // call — the respawn loop is launchd's business, the prompt storm is ours.
+        std::process::exit(1);
+    }
     // request() registers the binary with TCC and opens the prompt; the
     // returned bool reflects current state, which is still false on first run.
+    // Only reached in an interactive session, where a person can actually click
+    // Allow; the return is ignored because the grant takes effect on next start.
     let _ = tcc.request();
 }
 
@@ -2057,10 +2097,13 @@ async fn async_main() -> Result<()> {
 
     #[cfg(target_os = "macos")]
     {
+        // TCC first: without Screen Recording the server has nothing to serve,
+        // and this check is what stops an ungranted launchd agent from raising
+        // a prompt on every KeepAlive respawn (see ensure_screen_recording_access).
+        ensure_screen_recording_access();
         if !args.allow_sleep {
             prevent_sleep();
         }
-        ensure_screen_recording_access();
         if !ensure_accessibility_access() {
             warn!(
                 "Accessibility permission NOT granted. macrdp will appear in \

@@ -31,14 +31,21 @@ echo "==> Building release binary"
 # a local self-signed certificate — keep the two paths consistent.
 # Override with CODESIGN_IDENTITY="-", or set LOCAL_CERT_NAME to your own cert.
 LOCAL_CERT_NAME="${LOCAL_CERT_NAME:-macrdp Local Code Signing}"
+# Stable signing identifier. codesign otherwise derives it from the file name
+# (fine), but pinning it keeps the designated requirement — and therefore the
+# TCC grant — identical even if the binary is ever installed under another name.
+SIGN_ID="${MACRDP_SIGN_ID:-macrdp}"
+IDENTITY_EXPLICIT=0
 if [ -n "${CODESIGN_IDENTITY:-}" ]; then
     IDENTITY="$CODESIGN_IDENTITY"
+    IDENTITY_EXPLICIT=1        # an explicit "-", or a named identity, is the
+                               # operator's choice — never override it below
 elif security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null | grep -Fq "\"$LOCAL_CERT_NAME\""; then
     IDENTITY="$LOCAL_CERT_NAME"
 else
     IDENTITY="-"
 fi
-if [ "$IDENTITY" = "-" ] && [ "${AUTO_CREATE_LOCAL_CERT:-1}" = "1" ] && [ -x "$REPO_ROOT/packaging/create-local-signing-cert.sh" ]; then
+if [ "$IDENTITY" = "-" ] && [ "$IDENTITY_EXPLICIT" -eq 0 ] && [ "${AUTO_CREATE_LOCAL_CERT:-1}" = "1" ] && [ -x "$REPO_ROOT/packaging/create-local-signing-cert.sh" ]; then
     echo "==> local signing identity not found; creating $LOCAL_CERT_NAME"
     "$REPO_ROOT/packaging/create-local-signing-cert.sh" "$LOCAL_CERT_NAME"
     IDENTITY="$LOCAL_CERT_NAME"
@@ -56,8 +63,24 @@ if [ -f "$BIN_PATH" ]; then
     fi
 fi
 
-echo "==> Signing (identity: $IDENTITY)"
-codesign -s "$IDENTITY" --force "$REPO_ROOT/target/release/macrdp"
+echo "==> Signing (identity: $IDENTITY, identifier: $SIGN_ID)"
+codesign -s "$IDENTITY" --identifier "$SIGN_ID" --force "$REPO_ROOT/target/release/macrdp"
+
+# The designated requirement is what macOS keys the Screen Recording /
+# Accessibility grants to. `cdhash H"…"` means ad-hoc: it is re-keyed on every
+# rebuild, so macOS asks again every time — the "it keeps asking even though I
+# granted it" report. A certificate identity yields a stable
+# `identifier … and certificate leaf = H"…"` instead.
+DR="$(codesign -d -r- "$REPO_ROOT/target/release/macrdp" 2>&1 | sed -n 's/^#* *designated => //p')"
+case "$DR" in
+    *cdhash*)
+        echo "==> WARNING: ad-hoc signature — designated requirement is '$DR'."
+        echo "    Screen Recording / Accessibility will be revoked by the NEXT"
+        echo "    rebuild. Set AUTO_CREATE_LOCAL_CERT=1 (default) and let the"
+        echo "    script create the 'macrdp Local Code Signing' certificate."
+        ;;
+    *)  echo "==> Designated requirement: $DR" ;;
+esac
 
 echo "==> Installing to $BIN_PATH"
 mkdir -p "$BIN_DIR"
