@@ -308,6 +308,94 @@ fn report_permissions() -> i32 {
     0
 }
 
+/// Is another process already listening on the **wildcard** address for this
+/// port? Returns a short description of the conflict when so.
+///
+/// WHY THIS NEEDS TO EXIST — the silent-shadowing trap. macrdp binds through
+/// tokio, and mio sets `SO_REUSEADDR` on every socket it opens
+/// (`mio-1.2 sys/unix/tcp.rs`). On Darwin that combination lets a
+/// *specific*-address listener and a *wildcard* listener coexist on the same
+/// port, so the ordinary `bind()` of a second instance **succeeds** and the
+/// server looks healthy. Measured on this Mac (A = already bound, B = tries,
+/// both with `SO_REUSEADDR`, which is what mio does):
+///
+/// ```text
+/// A 0.0.0.0:P   -> B 127.0.0.1:P   BOTH BOUND   <-- the trap
+/// A 0.0.0.0:P   -> B 0.0.0.0:P     B EADDRINUSE
+/// A 127.0.0.1:P -> B 0.0.0.0:P     BOTH BOUND
+/// A 127.0.0.1:P -> B 127.0.0.1:P   B EADDRINUSE
+/// ```
+///
+/// A wildcard listener wins every non-loopback client, while the specific
+/// listener wins the loopback ones — so the second instance silently serves
+/// *only* clients that reach its own address, with its own defaults. That is
+/// exactly how a flagless `macrdp` run by hand ended up answering on
+/// `127.0.0.1:3390` with legacy codecs and a 15 fps cap while a fully
+/// configured agent held `0.0.0.0:3390` (see docs/known-quirks.md).
+///
+/// The detector falls out of row 2: probe-binding the **wildcard** address
+/// with `SO_REUSEADDR` fails with `EADDRINUSE` exactly when a wildcard
+/// listener exists, regardless of whether that holder set `SO_REUSEADDR`
+/// itself (verified). Row 3 is why a specific-address holder is *not*
+/// reported: it cannot shadow us. Any other errno is ignored — the real bind
+/// will surface it with better context.
+#[cfg(target_os = "macos")]
+fn wildcard_listener_present(addr: std::net::SocketAddr) -> Option<String> {
+    use std::mem::size_of;
+
+    // SAFETY: plain POSIX socket calls. `fd` is closed by FdGuard on every
+    // path, `sa` is a fully-initialised sockaddr_in, and the pointer/length
+    // pair matches its type.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return None;
+    }
+    struct FdGuard(std::ffi::c_int);
+    impl Drop for FdGuard {
+        fn drop(&mut self) {
+            unsafe { libc::close(self.0) };
+        }
+    }
+    let _guard = FdGuard(fd);
+
+    let on: libc::c_int = 1;
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            &on as *const libc::c_int as *const libc::c_void,
+            size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+
+    let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    sa.sin_family = libc::AF_INET as libc::sa_family_t;
+    // Network byte order for both fields — the port is the only one that
+    // varies, and INADDR_ANY is all-zeroes for "0.0.0.0".
+    sa.sin_port = addr.port().to_be();
+    sa.sin_addr = libc::in_addr {
+        s_addr: libc::INADDR_ANY,
+    };
+
+    let rc = unsafe {
+        libc::bind(
+            fd,
+            &sa as *const libc::sockaddr_in as *const libc::sockaddr,
+            size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        )
+    };
+    if rc == 0 {
+        return None;
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EADDRINUSE) {
+        Some(format!("TCP 0.0.0.0:{}", addr.port()))
+    } else {
+        None
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn ensure_screen_recording_access() {
     use core_graphics::access::ScreenCaptureAccess;
@@ -2064,6 +2152,57 @@ async fn async_main() -> Result<()> {
         std::process::exit(usb_redirect::run_spike());
     }
 
+    // Refuse to start shadowed by another listener on the same port, BEFORE the
+    // TCC check (so a misconfigured second instance cannot raise a Screen
+    // Recording prompt storm either), before caffeinate and before the virtual
+    // display exists. See `wildcard_listener_present` for why the ordinary bind
+    // cannot catch this.
+    #[cfg(target_os = "macos")]
+    if let Some(holder) = wildcard_listener_present(args.bind) {
+        // Two different failure shapes, and the operator needs the right one:
+        // asking for the wildcard port means the ordinary bind would fail
+        // loudly anyway (the KeepAlive crash-loop); asking for a specific
+        // address is the dangerous one, because the bind would SUCCEED and
+        // this instance would silently serve only the clients that reach it.
+        let why = if args.bind.ip().is_unspecified() {
+            format!(
+                "refusing to start: the requested bind {} is already owned by \
+                 another listener ({holder}). Under a launchd agent this is the \
+                 crash-loop shape — exit 1 plus 'Address already in use (os \
+                 error 48)' in the agent's stderr, respawned every few seconds \
+                 forever.",
+                args.bind
+            )
+        } else {
+            format!(
+                "refusing to start: {holder} already owns the wildcard address \
+                 for this port, and on macOS this instance would STILL BIND \
+                 {} successfully — quietly serving only the clients that reach \
+                 that exact address, with this process's flags instead of the \
+                 configured ones. That is the silent half of the bug \
+                 (password prompt, legacy codecs, 15 fps, config.env ignored).",
+                args.bind
+            )
+        };
+        return Err(anyhow!(
+            "{why}\n\
+             \n\
+             The usual cause is two macrdp LaunchAgents — the bare-binary \
+             dist/install.sh agent (com.user.macrdp) and the signed macrdp.app \
+             agent (com.clintcan.macrdp) — or a macrdp started by hand next to \
+             the agent. Keep exactly ONE:\n\
+             \x20 launchctl list | grep macrdp\n\
+             \x20 pgrep -fl macrdp\n\
+             \x20 lsof -nP -iTCP:{port} -sTCP:LISTEN\n\
+             \x20 launchctl bootout gui/{uid}/<the-label-you-do-not-want>\n\
+             \n\
+             Or give this instance its own port/address with --bind. \
+             Details: docs/known-quirks.md",
+            port = args.bind.port(),
+            // SAFETY: getuid() is always safe and cannot fail.
+            uid = unsafe { libc::getuid() },
+        ));
+    }
     // RUST_LOG (if set) always wins. Otherwise: --verbose turns on debug
     // everywhere; without it we apply a targeted filter that quiets known
     // noisy modules:
@@ -3373,6 +3512,42 @@ mod config_tests {
         fs::remove_file(&path).ok();
         assert_eq!(args.cert.as_deref(), Some(Path::new("/etc/ssl/macrdp.pem")));
         assert_eq!(args.key.as_deref(), Some(Path::new("/etc/ssl/macrdp.key")));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+/// The port preflight exists because of one measured kernel behaviour, so it
+/// gets measured too: a wildcard listener must be DETECTED (that is the
+/// shadowing case), and a specific-address listener must NOT be (it cannot
+/// shadow us, and blocking on it would break a legitimate second stack).
+mod port_guard_tests {
+    use super::wildcard_listener_present;
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener};
+
+    /// An ephemeral port held by a wildcard listener: the probe must report it.
+    /// `std::net::TcpListener::bind` does not set SO_REUSEADDR, which makes this
+    /// the stricter of the two holder shapes (the detector is verified to work
+    /// with and without it).
+    #[test]
+    fn detects_a_wildcard_listener_on_the_port() {
+        let holder = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let port = holder.local_addr().unwrap().port();
+        assert_eq!(
+            wildcard_listener_present(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))),
+            Some(format!("TCP 0.0.0.0:{port}")),
+            "a wildcard listener on {port} must be reported as a shadowing conflict"
+        );
+    }
+
+    #[test]
+    fn ignores_a_specific_address_listener() {
+        let holder = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = holder.local_addr().unwrap().port();
+        assert_eq!(
+            wildcard_listener_present(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))),
+            None,
+            "a loopback-only listener cannot shadow us, so it must not block startup"
+        );
     }
 }
 

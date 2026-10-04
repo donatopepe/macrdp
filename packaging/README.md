@@ -125,6 +125,9 @@ launchctl print gui/$(id -u)/com.clintcan.macrdp        # status (state/pid)
 $EDITOR "$HOME/Library/Application Support/macrdp/config.env"
 launchctl kickstart -k gui/$(id -u)/com.clintcan.macrdp # apply config change
 launchctl bootout    gui/$(id -u)/com.clintcan.macrdp   # stop entirely
+packaging/uninstall-launchagent.sh                        # full removal (agent + plist,
+                                                          #   + identity file; --remove-app
+                                                          #   also drops the bundle)
 
 # "why is macOS asking for Screen Recording again?" — one command, no side
 # effects. Exits non-zero if a permission is missing or the identity is ad-hoc.
@@ -145,6 +148,11 @@ tries to mint a certificate in a runner's keychain). That is fine for an
 immutable artifact, but it means every fresh install of a release is a *new*
 code identity to macOS — `make-app.sh` locally is what gives you an identity
 that survives rebuilds.
+
+Since v0.9.8 a second listener on the same port is caught before startup: a
+bare-binary agent and this one cannot both run, and macrdp says so with the
+commands to fix it rather than binding anyway (see
+[../docs/known-quirks.md](../docs/known-quirks.md)).
 
 Edit feature toggles (H.264, AAC, HiDPI, un-minimize-on-Cmd+Tab), the headless virtual display
 (`VIRTUAL_DISPLAY`/`PRIMARY_MODE`/`VD_WIDTH`/`VD_HEIGHT`), bind address, and
