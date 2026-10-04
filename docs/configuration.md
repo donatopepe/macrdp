@@ -4,6 +4,18 @@ Every flag macrdp accepts, the auth-hardening environment variables, headless
 mode, and a set of ready-to-run examples. For the LaunchAgent / `config.env`
 packaging side, see [../packaging/README.md](../packaging/README.md).
 
+`config.env` is read **only** when `--config <file>` is passed on the command
+line — that is exactly what the LaunchAgent does, and it is the sole source of
+truth for that invocation (`src/main.rs`: `Args` is rebuilt from the file). A
+bare `macrdp` does **not** auto-discover
+`~/Library/Application Support/macrdp/config.env`; it runs pure flag defaults
+(loopback bind, interactive password prompt, legacy codecs, 15 fps,
+client-resolution auto-adopt). If you want the configured behaviour in a
+foreground shell, run
+`macrdp --config ~/Library/Application\ Support/macrdp/config.env` — and make
+sure no LaunchAgent is already holding the port, or you get a second listener
+(see [known-quirks.md](known-quirks.md)).
+
 ## Full flag reference
 
 ```

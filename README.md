@@ -156,6 +156,8 @@ launchctl kickstart -k gui/$UID/com.user.macrdp    # restart
 launchctl bootout gui/$UID/com.user.macrdp         # stop / uninstall
 ```
 
+> ⚠️ **Pick ONE auto-start path — they collide on `:3390`.** `dist/install.sh` (label `com.user.macrdp`, bare binary in `~/.local/bin`) and `packaging/install-launchagent.sh` (label `com.clintcan.macrdp`, signed `macrdp.app` + `--config config.env`) are **mutually exclusive**: whichever loads first takes the port, and the second crash-loops under `KeepAlive` with `Address already in use (os error 48)`. Starting the binary by hand on top of that is worse than a clean failure — macOS lets a flagless instance bind `127.0.0.1:3390` alongside `0.0.0.0:3390`, so it silently serves loopback clients with defaults (password prompt, legacy bitmaps, 15 fps, `config.env` ignored). Check with `lsof -nP -iTCP:3390 -sTCP:LISTEN` (expect **one** row) and `pgrep -fl macrdp`. Full symptoms and recovery commands: [docs/known-quirks.md](docs/known-quirks.md).
+
 ## Building the full app
 
 `dist/install.sh` installs a bare binary. For a proper **signed `macrdp.app`** — stable bundle identity (TCC grants survive rebuilds), background-agent behavior, the embedded smart-card IFD handler, optional notarization, the menu-bar controller app, and a distributable DMG:
@@ -166,7 +168,7 @@ security add-generic-password -s macrdp -a "$(id -un)" -w 'YOUR_PASSWORD'
 packaging/install-launchagent.sh                      # load LaunchAgent (label com.clintcan.macrdp)
 ```
 
-Feature toggles, bind address, and extra flags live in `~/Library/Application Support/macrdp/config.env` — outside the bundle, so edits never disturb the signature or TCC grants. The full packaging guide (Developer-ID signing, notarization, the DMG, the controller app, icons, TCC notes): **[packaging/README.md](packaging/README.md)**.
+Feature toggles, bind address, and extra flags live in `~/Library/Application Support/macrdp/config.env` — outside the bundle, so edits never disturb the signature or TCC grants. The file is read **only** when the agent passes `--config <file>`: a bare `macrdp` ignores it and runs pure flag defaults (loopback bind, password prompt, legacy codecs), so run the agent (or pass `--config` yourself) rather than typing `macrdp` in a terminal. The full packaging guide (Developer-ID signing, notarization, the DMG, the controller app, icons, TCC notes): **[packaging/README.md](packaging/README.md)**.
 
 ## Release artifacts
 

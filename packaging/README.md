@@ -57,7 +57,11 @@ LaunchAgent and edits the same `config.env` — no re-permissioning.
 > `:3390`, so they're **mutually exclusive** — pick one. Use `dist/install.sh`
 > for the lightweight binary; use `packaging/` when you want a stable bundle
 > identity and a path a future GUI can build on. The build is staged in
-> `target/macrdp.app` (gitignored) before install.
+> `target/macrdp.app` (gitignored) before install. What a duplicate looks like
+> at runtime — the second agent crash-loops on the bind, and a hand-started
+> `macrdp` can still take `127.0.0.1:3390` and shadow the survivor for loopback
+> clients — is written up in
+> [../docs/known-quirks.md](../docs/known-quirks.md).
 
 ## Files
 
