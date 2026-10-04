@@ -324,6 +324,10 @@ private struct AudioTab: View {
                 Text("Compresses forwarded audio as AAC-LC (~11× less bandwidth than PCM). Clients "
                     + "without AAC fall back to PCM. Adds ~40–50 ms latency, so it's off by default.")
                     .font(.caption).foregroundColor(.secondary)
+                Toggle("Lossy audio", isOn: model.boolBinding("ENABLE_LOSSY_AUDIO"))
+                Text("Switches the audio stream to a lossy codec when the client offers one. "
+                    + "LAN/Wi-Fi only — it is not safe on a lossy or high-latency link.")
+                    .font(.caption).foregroundColor(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -448,6 +452,15 @@ private struct RedirectionTab: View {
                     + "FaceTime. The system extension must be enabled once.")
                     .font(.caption).foregroundColor(.secondary)
             }
+            Section("USB") {
+                Toggle("USB redirection", isOn: model.boolBinding("ENABLE_USB_REDIRECTION"))
+                TextField("Stream stall timeout (ms)", text: model.stringBinding("USB_STREAM_STALL_MS"),
+                          prompt: Text("3000 — 0 disables"))
+                Text("If a redirected webcam or gamepad delivers nothing for this long, macrdp "
+                    + "completes the pending read with zero bytes so macOS re-commits the stream, "
+                    + "instead of freezing until the device is re-attached. 0 disables the watchdog.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
         }
         .formStyle(.grouped)
     }
@@ -470,6 +483,15 @@ private struct AdvancedTab: View {
                 Toggle("Live statistics endpoint", isOn: model.boolBinding("STATS_ENDPOINT"))
                 Text("Lets the Status tab show live video bitrate, link RTT and frame-rate. "
                     + "Loopback-only (127.0.0.1), read-only, no disk writes. Takes effect after Apply.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            Section("Host power") {
+                Toggle("Prevent sleep and auto-lock", isOn: model.preventSleepBinding)
+                Text("On, macrdp holds the display and the system awake while the Mac is on AC "
+                    + "power, and releases the hold on battery — an unplugged laptop is not drained "
+                    + "by being an always-on server. Off, the Mac sleeps normally at all times: "
+                    + "after a couple of idle minutes the client sees a frozen or black session "
+                    + "until the mouse wakes the display, and auto-lock may engage.")
                     .font(.caption).foregroundColor(.secondary)
             }
             Section("Extra flags") {

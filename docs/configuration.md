@@ -28,9 +28,12 @@ macrdp --check-permissions   Print the macOS permission + code-identity report
 --skip-auth               Bypass PAM (testing only)
 --keychain                Read password from macOS Keychain (service=macrdp)
 -v, --verbose             Show all the noisy logs the default filter hides
---allow-sleep             Let the Mac sleep / auto-lock normally (default
-                          is to spawn `caffeinate` so an idle Mac doesn't
-                          drop the connection mid-session)
+--allow-sleep             Never hold the Mac awake (default: hold it while on
+                          AC power, release on battery, so an idle Mac on a
+                          charger doesn't drop the connection mid-session
+                          while an unplugged laptop is not drained by being an
+                          always-on server). config.env: ALLOW_SLEEP=1
+                          (the key is inverted — the default is prevention ON)
 --width / --height        Override autodetected display size
 --hidpi                   Capture the primary display at backing (Retina) pixel
                           resolution instead of logical points (e.g. 3024×1964

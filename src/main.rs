@@ -1034,6 +1034,120 @@ struct Args {
 /// -w PID` exits automatically when the supplied PID exits, so there's
 /// nothing to clean up on shutdown.
 #[cfg(target_os = "macos")]
+/// Which way the Mac is currently powered. Drives the sleep assertion: on AC
+/// the display and the system are held awake (a sleeping Mac means the RDP
+/// client is looking at a dead session), on battery the normal power policy is
+/// left alone so a portable Mac is not drained by being an always-on server.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PowerSource {
+    Ac,
+    Battery,
+    /// `pmset` output we do not recognise — treated as "no opinion", so a
+    /// transient/odd response never flips the assertion on or off.
+    Unknown,
+}
+
+/// Classify `pmset -g batt` output.
+///
+/// Real outputs (macOS 14-27), first line is the authoritative one:
+/// `Now drawing from 'AC Power'` / `Now drawing from 'Battery Power'`. A Mac
+/// without a battery reports AC Power too. We deliberately key off the quoted
+/// phrase rather than "discharging"/"charged": a full-but-unplugged battery
+/// must still read as Battery.
+fn parse_power_source(pmset_out: &str) -> PowerSource {
+    if pmset_out.contains("'AC Power'") {
+        PowerSource::Ac
+    } else if pmset_out.contains("'Battery Power'") {
+        PowerSource::Battery
+    } else {
+        PowerSource::Unknown
+    }
+}
+
+fn current_power_source() -> PowerSource {
+    match std::process::Command::new("pmset")
+        .args(["-g", "batt"])
+        .stdin(std::process::Stdio::null())
+        .output()
+    {
+        Ok(out) => parse_power_source(&String::from_utf8_lossy(&out.stdout)),
+        Err(_) => PowerSource::Unknown,
+    }
+}
+
+/// Hold the system awake **while on AC power**, and stop holding as soon as the
+/// Mac goes to battery — re-evaluated continuously, because a server that only
+/// checked at startup would keep a portable Mac awake for the whole session
+/// after one unplug.
+///
+/// Why the conditional policy at all: the assertion costs nothing on AC (0% CPU
+/// while idle), but on battery the display is the expensive part and
+/// `caffeinate -d` pins it lit. `-s` alone would only cover *system* sleep and
+/// only on AC — it does not cover display sleep or idle sleep, and neither of
+/// those has an AC-only form — so the assertion has to be managed by hand.
+///
+/// Spawning is `-dimsu -w <macrdp pid>`: `-d` display sleep, `-i` idle system
+/// sleep, `-m` disk idle sleep, `-s` system sleep (AC only), `-u` declare the
+/// user active, `-w` tie the assertion's lifetime to this process (so a crash or
+/// an exit cannot leave the Mac permanently awake). Killing the child releases
+/// every assertion it holds.
+fn watch_power_source_for_sleep(interval_secs: u64) {
+    let pid = std::process::id().to_string();
+    tokio::spawn(async move {
+        let mut child: Option<std::process::Child> = None;
+        let mut applied: Option<PowerSource> = None;
+        loop {
+            let src = tokio::task::spawn_blocking(current_power_source)
+                .await
+                .unwrap_or(PowerSource::Unknown);
+            // `Unknown` never changes state: it is the debounce. Reading the
+            // source twice before flipping would also work, but ignoring
+            // unparseable output is simpler and has the same effect.
+            if src != PowerSource::Unknown && applied != Some(src) {
+                match src {
+                    PowerSource::Ac => {
+                        let res = std::process::Command::new("caffeinate")
+                            .args(["-dimsu", "-w", &pid])
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                        match res {
+                            Ok(c) => {
+                                let cid = c.id();
+                                child = Some(c);
+                                info!(
+                                    caffeinate_pid = cid,
+                                    "on AC power — preventing sleep / auto-lock"
+                                );
+                            }
+                            Err(e) => {
+                                warn!("could not spawn caffeinate to prevent sleep: {e}");
+                            }
+                        }
+                    }
+                    PowerSource::Battery => {
+                        if let Some(mut c) = child.take() {
+                            let _ = c.kill();
+                            let _ = c.wait();
+                            info!("on battery power — releasing the sleep assertion, normal power policy");
+                        } else {
+                            info!("on battery power — normal power policy (nothing to release)");
+                        }
+                    }
+                    PowerSource::Unknown => unreachable!("filtered above"),
+                }
+                applied = Some(src);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+        }
+    });
+}
+
+/// Legacy one-shot helper kept for the "prevent unconditionally" case and for
+/// callers that want the old behaviour. Kept next to the watcher so the two
+/// stay in sync.
+#[allow(dead_code)]
 fn prevent_sleep() {
     let pid = std::process::id().to_string();
     let res = std::process::Command::new("caffeinate")
@@ -1885,6 +1999,13 @@ fn args_from_config(path: &Path) -> Result<Args> {
     if on("ALT_TAB_SWITCH", false) {
         argv.push("--alt-tab-switch".into());
     }
+    // `--allow-sleep` is a NEGATIVE flag, so the config key is a positive:
+    // ALLOW_SLEEP=1 means "let the Mac sleep normally". It used to be silently
+    // ignored (no bridge key existed at all), which reads as "configured" and
+    // does nothing — the same class of trap the TCC work removed elsewhere.
+    if on("ALLOW_SLEEP", false) {
+        argv.push("--allow-sleep".into());
+    }
     if on("ALT_BACKTICK_SWITCH", false) {
         argv.push("--alt-backtick-switch".into());
     }
@@ -2416,7 +2537,10 @@ async fn async_main() -> Result<()> {
         // a prompt on every KeepAlive respawn (see ensure_screen_recording_access).
         ensure_screen_recording_access();
         if !args.allow_sleep {
-            prevent_sleep();
+            // AC power → hold the display and system awake; battery → let the
+            // Mac sleep normally. Re-checked continuously, so unplugging the
+            // server takes effect immediately instead of at the next restart.
+            watch_power_source_for_sleep(8);
         }
         if !ensure_accessibility_access() {
             warn!(
@@ -3431,6 +3555,29 @@ mod config_tests {
         assert_eq!(args.fps, Some(30));
     }
 
+    /// `ALLOW_SLEEP=1` used to be silently dropped by the config bridge — the
+    /// key did not exist at all, so it read as configured while doing nothing.
+    /// Pinned because that failure mode is invisible: nothing errors, the Mac
+    /// just still never sleeps.
+    #[test]
+    fn allow_sleep_config_bridge() {
+        let p = write_temp("sleep1", "ALLOW_SLEEP=1\n");
+        assert!(
+            args_from_config(&p).unwrap().allow_sleep,
+            "ALLOW_SLEEP=1 must reach the server as --allow-sleep"
+        );
+        fs::remove_file(&p).ok();
+
+        let p = write_temp("sleep2", "ALLOW_SLEEP=0\n");
+        assert!(!args_from_config(&p).unwrap().allow_sleep);
+        fs::remove_file(&p).ok();
+
+        // Unset → the server default (prevent sleep while on AC).
+        let p = write_temp("sleep3", "ENABLE_H264=1\n");
+        assert!(!args_from_config(&p).unwrap().allow_sleep);
+        fs::remove_file(&p).ok();
+    }
+
     #[test]
     fn bitrate_config_bridge() {
         // BITRATE alone maps to --bitrate.
@@ -3512,6 +3659,53 @@ mod config_tests {
         fs::remove_file(&path).ok();
         assert_eq!(args.cert.as_deref(), Some(Path::new("/etc/ssl/macrdp.pem")));
         assert_eq!(args.key.as_deref(), Some(Path::new("/etc/ssl/macrdp.key")));
+    }
+}
+
+#[cfg(test)]
+mod power_source_tests {
+    use super::{parse_power_source, PowerSource};
+
+    // Real `pmset -g batt` output, macOS 14-27.
+    #[test]
+    fn reads_ac_power() {
+        let out = "Now drawing from 'AC Power'\n \
+                   -InternalBattery-0 (id:23658595)\t100%; charged; 0:00 remaining present: true";
+        assert_eq!(parse_power_source(out), PowerSource::Ac);
+    }
+
+    #[test]
+    fn reads_battery_power() {
+        let out = "Now drawing from 'Battery Power'\n \
+                   -InternalBattery-0 (id:23658595)\t95%; discharging; 4:32 remaining";
+        assert_eq!(parse_power_source(out), PowerSource::Battery);
+    }
+
+    /// A desktop Mac has no battery and still reports AC — the case that must
+    /// NOT degrade to "no opinion", or a desktop would never hold an assertion.
+    #[test]
+    fn ac_power_without_a_battery_line() {
+        assert_eq!(
+            parse_power_source("Now drawing from 'AC Power'\n"),
+            PowerSource::Ac
+        );
+    }
+
+    /// Keyed off the quoted phrase, not "charged"/"discharging": a full but
+    /// unplugged battery must read as Battery, or a drained-but-full Mac keeps
+    /// its display pinned lit.
+    #[test]
+    fn full_battery_is_still_battery() {
+        let out = "Now drawing from 'Battery Power'\n \
+                   -InternalBattery-0 (id:23658595)\t100%; charged; 0:00 remaining present: true";
+        assert_eq!(parse_power_source(out), PowerSource::Battery);
+    }
+
+    #[test]
+    fn unrecognised_output_is_unknown() {
+        for out in ["", "pmset: no battery", "Now drawing from 'Solar'"] {
+            assert_eq!(parse_power_source(out), PowerSource::Unknown, "{out:?}");
+        }
     }
 }
 

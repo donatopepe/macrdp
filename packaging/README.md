@@ -117,6 +117,32 @@ packaging/install-launchagent.sh
 #    then: launchctl kickstart -k gui/$(id -u)/com.clintcan.macrdp
 ```
 
+## Building the menu-bar controller — needs full Xcode
+
+`gui/make-tray-app.sh` builds `macrdpController.app` (the menu-bar icon that
+drives the agent and edits `config.env`). It uses SwiftUI, and on macOS 26/27
+the SwiftUI property wrappers (`@State`, …) are **macros** — so it needs the
+SwiftUI macro plugin from a **full Xcode install**. The Command Line Tools alone
+are not enough, and the failure is not obvious:
+
+```
+error: external macro implementation type 'SwiftUIMacros.StateMacro' could not be
+found for macro 'State()': plugin for module 'SwiftUIMacros' not found
+```
+
+(`/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/` has no
+`libSwiftUIMacros.dylib`.) Everything else in this repo builds with the CLT —
+`macrdp` itself, and the `macrdphud` / `macrdpshield` helpers — so a green
+local build is not evidence the controller builds. Check with
+`ls "$(xcode-select -p)/usr/lib/swift/host/plugins" | grep SwiftUIMacros`, or
+install Xcode and point `DEVELOPER_DIR` at it.
+
+The script also registers the controller as a **login item** (a LaunchAgent with
+RunAtLoad + KeepAlive) so the icon is there at every login instead of only while
+the app happens to be running — pass `SETUP_LOGIN_ITEM=0` to skip. The app steps
+aside if another copy is already running, since the login item execs the binary
+directly and bypasses LaunchServices' one-instance handling.
+
 ## Day to day
 
 ```bash

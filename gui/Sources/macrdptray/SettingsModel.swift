@@ -88,6 +88,19 @@ final class SettingsModel: ObservableObject {
         Binding(get: { self.string(key, default: def) }, set: { self.setString(key, $0) })
     }
 
+    /// The one inverted key in config.env: the user-facing question is "should
+    /// macrdp keep the Mac awake?", the config key is `ALLOW_SLEEP=1` (keep normal
+    /// power policy). Exposing that inversion as one accessor keeps the rest of
+    /// the UI on plain `boolBinding(_:)`, so nobody has to remember which keys
+    /// are "negated" — and the default here is prevention ON, matching the
+    /// server's own default (no key written => caffeinate while on AC).
+    var preventSleepBinding: Binding<Bool> {
+        Binding(
+            get: { !self.bool("ALLOW_SLEEP", default: false) },
+            set: { self.setBool("ALLOW_SLEEP", !$0) }
+        )
+    }
+
     // MARK: - Dependent-key constraints (mirror the old menu auto-enable logic)
 
     // Turning a PARENT off is always authoritative — it resets its dependent

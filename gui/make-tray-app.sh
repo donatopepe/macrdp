@@ -152,6 +152,50 @@ codesign --verify --strict "$APP_DIR/$APP_NAME"
 
 echo
 echo "Done. Installed: $APP_DIR/$APP_NAME"
-echo "Launch it:  open \"$APP_DIR/$APP_NAME\"   (a display icon appears in the menu bar)"
 echo "Note: it controls the LaunchAgent from packaging/ — run make-app.sh +"
 echo "      install-launchagent.sh first if you haven't."
+
+# 5. Register it as a login item, so the icon is there at every login instead of
+#    only while the app happens to be running. A LaunchAgent (RunAtLoad +
+#    KeepAlive) rather than SMAppService: that API wants the app in
+#    /Applications and gives no "hide" affordance, and we already ship
+#    LaunchAgents for everything else here. SETUP_LOGIN_ITEM=0 to skip.
+if [ "${SETUP_LOGIN_ITEM:-1}" = "1" ]; then
+    PLIST="$HOME/Library/LaunchAgents/$CONTROLLER_ID.plist"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    echo "==> registering a login item at $PLIST"
+    cat > "$PLIST" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$CONTROLLER_ID</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$APP_DIR/$APP_NAME/Contents/MacOS/macrdptray</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>StandardOutPath</key>
+    <string>$HOME/Library/Logs/macrdpController.log</string>
+    <key>StandardErrorPath</key>
+    <string>$HOME/Library/Logs/macrdpController.err.log</string>
+</dict>
+</plist>
+PLIST_EOF
+    launchctl bootout "gui/$(id -u)/$CONTROLLER_ID" 2>/dev/null || true
+    if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
+        echo "    loaded — the menu-bar icon is now persistent (quit it from the menu to hide)"
+    else
+        echo "    WARNING: could not load $CONTROLLER_ID; the icon appears only while the app runs." >&2
+        echo "    Check: launchctl print gui/\$(id -u)/$CONTROLLER_ID" >&2
+    fi
+    echo "    Remove it again with: launchctl bootout gui/\$(id -u)/$CONTROLLER_ID && rm $PLIST"
+fi
+echo
+echo "Launch it now:  open \"$APP_DIR/$APP_NAME\""

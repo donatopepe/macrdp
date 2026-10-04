@@ -42,6 +42,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var settingsWindowController: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Single instance. The login item (a LaunchAgent) execs the binary
+        // directly, which bypasses LaunchServices' own one-instance-per-bundle
+        // handling — so opening the app from Finder while the login item is
+        // loaded used to leave TWO icons in the menu bar, each with its own
+        // state. The newcomer steps aside.
+        if let bid = Bundle.main.bundleIdentifier {
+            let myPID = getpid()
+            let others = NSRunningApplication
+                .runningApplications(withBundleIdentifier: bid)
+                .filter { $0.processIdentifier != myPID }
+            if !others.isEmpty {
+                NSApp.terminate(nil)
+                return
+            }
+        }
         NSApp.setActivationPolicy(.accessory) // menu-bar only, no Dock icon
         installMainMenu() // so the Settings window's text fields get edit shortcuts
         if let button = statusItem.button {
