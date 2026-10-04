@@ -203,7 +203,11 @@ fn report_permissions() -> i32 {
     println!("executable:           {exe}");
     println!(
         "bundle:               {}",
-        if exe.contains(".app/") { "yes (.app)" } else { "no (bare binary)" }
+        if exe.contains(".app/") {
+            "yes (.app)"
+        } else {
+            "no (bare binary)"
+        }
     );
 
     let mut ok = true;
@@ -219,8 +223,7 @@ fn report_permissions() -> i32 {
                 if SecRequirementCopyString(req, K_SEC_CS_DEFAULT_FLAGS, &mut text) == 0
                     && !text.is_null()
                 {
-                    requirement =
-                        CFString::wrap_under_get_rule(text as *const _).to_string();
+                    requirement = CFString::wrap_under_get_rule(text as *const _).to_string();
                     CFRelease(text);
                 }
                 CFRelease(req);
@@ -332,7 +335,11 @@ fn ensure_screen_recording_access() {
          check `codesign -d -r- {exe:?}` — a `cdhash H\"…\"` requirement is \
          re-keyed on every rebuild, so re-sign with a stable identity \
          (`macrdp Local Code Signing`) instead of ad-hoc.",
-        if in_bundle { "app bundle" } else { "bare binary, no .app bundle" }
+        if in_bundle {
+            "app bundle"
+        } else {
+            "bare binary, no .app bundle"
+        }
     );
     // request() opens the macOS prompt. Under a launchd agent there is no GUI
     // session to show it in, and KeepAlive respawns the process every few
@@ -3400,7 +3407,9 @@ mod designated_requirement_tests {
     fn ad_hoc_requirement_has_no_identifier() {
         // `cdhash H"…"` is the whole DR — the caller reports that as ad-hoc.
         assert_eq!(
-            designated_requirement_identifier(r#"cdhash H"a45294b2029482a75d7aa94d472d889e6221499c""#),
+            designated_requirement_identifier(
+                r#"cdhash H"a45294b2029482a75d7aa94d472d889e6221499c""#
+            ),
             None
         );
     }

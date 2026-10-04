@@ -7,8 +7,8 @@
 //! ship via `RdpsndServerMessage::Wave`.
 
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex,
 };
 use std::time::Instant;
 
@@ -333,7 +333,7 @@ async fn capture_loop(
     aac_bitrate: u32,
     target_display_id: Option<u32>,
 ) -> anyhow::Result<()> {
-    use anyhow::{Context, anyhow};
+    use anyhow::{anyhow, Context};
     use rubato::Resampler;
     use screencapturekit::async_api::{AsyncSCShareableContent, AsyncSCStream};
     use screencapturekit::prelude::{SCContentFilter, SCStreamConfiguration, SCStreamOutputType};
@@ -741,7 +741,9 @@ async fn capture_loop(
                     bytes_emitted += data.len() as u64;
                     if let Some(stats) = crate::stats::global() {
                         stats.audio_waves_emitted.fetch_add(1, Ordering::Relaxed);
-                        stats.audio_bytes_emitted.fetch_add(data.len() as u64, Ordering::Relaxed);
+                        stats
+                            .audio_bytes_emitted
+                            .fetch_add(data.len() as u64, Ordering::Relaxed);
                     }
                     let ts_ms = start_instant.elapsed().as_millis() as u32;
 

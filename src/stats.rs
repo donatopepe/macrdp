@@ -21,7 +21,7 @@
 //! model as the other helper channels (see docs/macos-gotchas.md).
 
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicBool, AtomicI8, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicI8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// The live snapshot. Every field is an atomic so the encode path can update it
