@@ -49,24 +49,47 @@ subjectKeyIdentifier = hash
 EOF
 
 umask 077
-openssl genrsa -out "$KEY" 2048 >/dev/null 2>&1
-openssl req -new -key "$KEY" -subj "/CN=$NAME" -out "$TMP_DIR/identity.csr.pem" >/dev/null 2>&1
-openssl x509 -req \
+# openssl has its stderr suppressed so a successful run stays quiet, but a
+# BARE `exit 1` with no output is how this script failed on a CI runner and
+# cost a release cycle: capture stderr and dump it only on failure.
+openssl_run() {
+    if ! openssl "$@" 2>"$TMP_DIR/openssl.err"; then
+        echo "openssl $* failed:" >&2
+        cat "$TMP_DIR/openssl.err" >&2
+        exit 1
+    fi
+}
+openssl_run genrsa -out "$KEY" 2048
+openssl_run req -new -key "$KEY" -subj "/CN=$NAME" -out "$TMP_DIR/identity.csr.pem"
+openssl_run x509 -req \
     -in "$TMP_DIR/identity.csr.pem" \
     -signkey "$KEY" \
     -days "$DAYS" \
     -sha256 \
     -extfile "$CONFIG" \
     -extensions codesign \
-    -out "$CERT" >/dev/null 2>&1
+    -out "$CERT"
 # OpenSSL 3 defaults to PBES2 algorithms that older macOS security builds may
-# reject. -legacy keeps the PKCS#12 portable across macOS releases.
-openssl pkcs12 -legacy -export \
-    -out "$P12" \
-    -inkey "$KEY" \
-    -in "$CERT" \
-    -passout pass:macrdp-local-import \
-    -name "$NAME" >/dev/null 2>&1
+# reject; `-legacy` exports the legacy algorithms instead. LibreSSL (what
+# /usr/bin/openssl is on stock macOS, and what a CI runner often resolves
+# first) has no `-legacy` option at all and does not need it — probing is
+# cheaper than a release failing on `unknown option '-legacy'`.
+if openssl pkcs12 -export -help 2>&1 | grep -q -- '-legacy'; then
+    openssl_run pkcs12 -legacy -export \
+        -out "$P12" \
+        -inkey "$KEY" \
+        -in "$CERT" \
+        -passout pass:macrdp-local-import \
+        -name "$NAME"
+else
+    echo "==> openssl has no -legacy (LibreSSL); exporting with its defaults"
+    openssl_run pkcs12 -export \
+        -out "$P12" \
+        -inkey "$KEY" \
+        -in "$CERT" \
+        -passout pass:macrdp-local-import \
+        -name "$NAME"
+fi
 
 # Import certificate + private key as one identity. Temporary files, including
 # the private key, are deleted by trap and never enter this repository.

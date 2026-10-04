@@ -184,12 +184,24 @@ jobs:
         # (CODESIGN_IDENTITY unset). APP_DIR is a throwaway dir so its final
         # "install" copy lands somewhere writable; the canonical staged bundle is
         # target/macrdp.app, which is what we package.
+        #
+        # CODESIGN_IDENTITY=- + AUTO_CREATE_LOCAL_CERT=0 are load-bearing: this
+        # job's artifacts are ad-hoc by design, so make-app.sh must NOT try to
+        # mint a local self-signed certificate in the runner's keychain. It did,
+        # and create-local-signing-cert.sh died on the runner with a bare
+        # `exit 1` and no output (the openssl pipeline has its stderr
+        # suppressed), failing the whole release. There is nothing for a
+        # certificate to buy here anyway — a published artifact is immutable,
+        # and TCC grants are keyed to the identity of whatever the user
+        # REBUILDS locally, which is where make-app.sh's stable certificate
+        # matters.
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p target/release
           cp "target/${{ matrix.target }}/release/macrdp" target/release/macrdp
-          SKIP_BUILD=1 APP_DIR="$RUNNER_TEMP/appout" packaging/make-app.sh
+          CODESIGN_IDENTITY=- AUTO_CREATE_LOCAL_CERT=0 \
+            SKIP_BUILD=1 APP_DIR="$RUNNER_TEMP/appout" packaging/make-app.sh
           test -f "target/macrdp.app/Contents/Resources/ifd-macrdp.bundle/Contents/MacOS/libifd_macrdp.dylib" \
             || { echo "IFD handler not embedded in the app"; exit 1; }
           test -f "target/macrdp.app/Contents/Resources/macrdphud" \
