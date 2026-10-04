@@ -20,6 +20,33 @@ UID_NUM="$(id -u)"
 APP="$APP_DIR/macrdp.app"
 [ -d "$APP" ] || { echo "macrdp.app not found at $APP — run packaging/make-app.sh first" >&2; exit 1; }
 
+# 1b. TCC identity guard. macOS keys the Screen Recording / Accessibility grants
+#     to the app's designated requirement, so an identity change (a rebuilt
+#     bundle signed with a different certificate, or a fallback to ad-hoc)
+#     silently revokes the user's grants and macOS starts asking again. Record
+#     the requirement at install time and shout if it ever moves.
+check_identity() {
+    local cur_dr prev_dr ident_file="$SUPPORT/installed-identity.txt"
+    cur_dr="$(codesign -d -r- "$APP" 2>&1 | sed -n 's/^#* *designated => //p')"
+    [ -n "$cur_dr" ] || return 0
+    prev_dr=""
+    [ -f "$ident_file" ] && prev_dr="$(cat "$ident_file")"
+    echo "==> designated requirement: $cur_dr"
+    case "$cur_dr" in
+        *cdhash*) echo "    WARNING: $APP is ad-hoc signed. Its identity is keyed to"
+                  echo "    this exact cdhash, so Screen Recording / Accessibility are"
+                  echo "    revoked on every rebuild. Rebuild with make-app.sh." ;;
+    esac
+    if [ -n "$prev_dr" ] && [ "$prev_dr" != "$cur_dr" ]; then
+        echo "==> WARNING: code identity CHANGED since the last install"
+        echo "      was: $prev_dr"
+        echo "      now: $cur_dr"
+        echo "    Re-grant Screen Recording AND Accessibility in System Settings"
+        echo "    -> Privacy & Security, then: launchctl kickstart -k gui/$UID_NUM/$LABEL"
+    fi
+    printf '%s\n' "$cur_dr" > "$ident_file"
+}
+
 # 1. Seed config.env if absent.
 SUPPORT="$HOME/Library/Application Support/macrdp"
 mkdir -p "$SUPPORT" "$HOME/Library/Logs" "$HOME/Library/LaunchAgents"
@@ -30,6 +57,9 @@ if [ ! -f "$CONFIG" ]; then
 else
     echo "==> keeping existing $CONFIG"
 fi
+
+# 1b. Identity guard — after SUPPORT exists, so it can record the requirement.
+check_identity
 
 # 2. Render the LaunchAgent plist from the template.
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"

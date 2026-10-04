@@ -19,6 +19,9 @@ sure no LaunchAgent is already holding the port, or you get a second listener
 ## Full flag reference
 
 ```
+macrdp --check-permissions   Print the macOS permission + code-identity report
+                             and exit (no port, no capture). Non-zero exit if
+                             Screen Recording or Accessibility is missing.
 --bind 0.0.0.0:3390       Listen address (3390 by default; 3389 needs root)
 --username NAME           Defaults to $USER
 --password PASS           Skip the interactive prompt

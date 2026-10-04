@@ -3563,6 +3563,24 @@ mod macos {
     }
 }
 
+#[cfg(target_os = "macos")]
+/// Non-prompting Accessibility probe. `ensure_accessibility_access` deliberately
+/// raises the "allow X to control this computer" dialog, which is right at
+/// startup and wrong for a diagnostic: `--check-permissions` must be runnable
+/// (and scriptable) without a human clicking anything.
+pub fn accessibility_granted() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+    unsafe { AXIsProcessTrusted() }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn accessibility_granted() -> bool {
+    true
+}
+
 /// Probe whether this process has Accessibility (AX) permission, prompting if
 /// not. Without it, posted CGEvents are silently dropped by the WindowServer.
 #[cfg(target_os = "macos")]

@@ -156,6 +156,156 @@ fn primary_screen_geometry() -> ((f64, f64), (f64, f64)) {
 }
 
 #[cfg(target_os = "macos")]
+/// Everything an operator needs to answer "why is macOS asking for Screen
+/// Recording again?" — in one command, with no side effects.
+///
+/// macOS keys a TCC grant to the *code identity* of the client, and the row in
+/// System Settings is named after that identity, not after the path or the
+/// project. So the useful diagnosis is not "is the permission on?" but "which
+/// identity is macOS being asked about, and will it be the same one after the
+/// next rebuild?". A designated requirement mentioning `certificate leaf` (or
+/// `anchor`) is stable and the grant survives rebuilds; one mentioning `cdhash`
+/// is ad-hoc signing, re-keyed on every build, and is the usual cause of a
+/// re-prompt (see docs/known-quirks.md).
+///
+/// Prints the executable, the code identifier, the designated requirement, and
+/// the live permission state. Exit code: 0 all good, 1 something is missing.
+fn report_permissions() -> i32 {
+    use core_foundation::base::{CFRelease, TCFType};
+    use core_foundation::string::CFString;
+    use core_graphics::access::ScreenCaptureAccess;
+    use std::os::raw::c_void;
+
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        fn SecCodeCopySelf(flags: u32, sec_code: *mut *mut c_void) -> i32;
+        // documented way to read the DR. SecCodeCopySigningInformation needs a
+        // (format, mask) pair whose constants are not spelled out in this SDK's
+        // headers, and guessing them fails with errSecCSInvalidFlags (-67070) —
+        // which is exactly the sort of thing a diagnostic must not do.
+        fn SecCodeCopyDesignatedRequirement(
+            code: *mut c_void,
+            flags: u32,
+            requirement: *mut *mut c_void,
+        ) -> i32;
+        fn SecRequirementCopyString(
+            requirement: *mut c_void,
+            flags: u32,
+            text: *mut *mut c_void,
+        ) -> i32;
+    }
+
+    const K_SEC_CS_DEFAULT_FLAGS: u32 = 0;
+
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "<unknown>".into());
+    println!("executable:           {exe}");
+    println!(
+        "bundle:               {}",
+        if exe.contains(".app/") { "yes (.app)" } else { "no (bare binary)" }
+    );
+
+    let mut ok = true;
+    let mut requirement = String::from("<none reported — unsigned binary>");
+    unsafe {
+        let mut code: *mut c_void = std::ptr::null_mut();
+        if SecCodeCopySelf(K_SEC_CS_DEFAULT_FLAGS, &mut code) == 0 && !code.is_null() {
+            let mut req: *mut c_void = std::ptr::null_mut();
+            if SecCodeCopyDesignatedRequirement(code, K_SEC_CS_DEFAULT_FLAGS, &mut req) == 0
+                && !req.is_null()
+            {
+                let mut text: *mut c_void = std::ptr::null_mut();
+                if SecRequirementCopyString(req, K_SEC_CS_DEFAULT_FLAGS, &mut text) == 0
+                    && !text.is_null()
+                {
+                    requirement =
+                        CFString::wrap_under_get_rule(text as *const _).to_string();
+                    CFRelease(text);
+                }
+                CFRelease(req);
+            }
+            CFRelease(code);
+        }
+    }
+    // The DR of a signed binary always opens with `identifier …`, which is the
+    // same string the System Settings row is keyed by. Bundles get it quoted
+    // (`identifier "com.clintcan.macrdp"`), a bare Mach-O does not
+    // (`identifier macrdp`) — codesign only quotes when the identifier needs it.
+    let identifier = designated_requirement_identifier(&requirement)
+        .unwrap_or("<unavailable>")
+        .to_string();
+    println!("code identifier:      {identifier}");
+    if requirement.starts_with('<') {
+        println!("designated requirement: {requirement}");
+        ok = false;
+    } else {
+        let stable = !requirement.contains("cdhash");
+        println!("designated requirement: {requirement}");
+        println!(
+            "  -> {}",
+            if stable {
+                "STABLE across rebuilds (TCC grants survive)"
+            } else {
+                "AD-HOC: keyed to this exact cdhash, so macOS re-asks on every \
+                 rebuild — sign with the 'macrdp Local Code Signing' certificate"
+            }
+        );
+        if !stable {
+            ok = false;
+        }
+    }
+
+    let screen = ScreenCaptureAccess.preflight();
+    let ax = crate::input::accessibility_granted();
+    println!(
+        "Screen Recording:     {}",
+        if screen { "granted" } else { "NOT GRANTED" }
+    );
+    println!(
+        "Accessibility:        {}",
+        if ax { "granted" } else { "NOT GRANTED" }
+    );
+    if !screen || !ax {
+        println!();
+        println!("Grant BOTH in System Settings → Privacy & Security:");
+        println!("  Screen Recording and Accessibility  ->  +  ->  {exe}");
+        println!("TCC grants take effect on the NEXT launch of the app.");
+    }
+    if ok {
+        println!();
+        println!("All good.");
+    }
+    i32::from(!ok)
+}
+
+/// Extract the `identifier …` clause from a designated-requirement string.
+/// Handles both shapes codesign emits: quoted (`identifier "com.acme.macrdp"`)
+/// and bare (`identifier macrdp`). An ad-hoc DR has no identifier clause at
+/// all (it is just `cdhash H"…"`), so this returns `None` for it — which is
+/// itself the signal the caller reports as "ad-hoc".
+fn designated_requirement_identifier(dr: &str) -> Option<&str> {
+    let rest = dr.trim().strip_prefix("identifier ")?.trim_start();
+    let id = match rest.strip_prefix('"') {
+        // Quoted form: everything up to the closing quote is the identifier.
+        Some(inner) => inner.split('"').next().unwrap_or(""),
+        // Bare form: the token ends at the first space.
+        None => rest.split_whitespace().next().unwrap_or(""),
+    };
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn report_permissions() -> i32 {
+    eprintln!("--check-permissions is macOS-only; nothing to report.");
+    0
+}
+
+#[cfg(target_os = "macos")]
 fn ensure_screen_recording_access() {
     use core_graphics::access::ScreenCaptureAccess;
     let tcc = ScreenCaptureAccess;
@@ -771,6 +921,17 @@ struct Args {
     /// interface entitlement (packaging/make-app.sh PROVISION_PROFILE=...). macOS-only.
     #[arg(long = "usb-spike")]
     usb_spike: bool,
+
+    /// Print the macOS permission + code-identity report and exit, without
+    /// binding a port, creating a virtual display or touching the screen.
+    /// This is the one command that answers "why is macOS asking again?": it
+    /// shows the executable macOS keys the TCC grants to, its designated
+    /// requirement (a `cdhash …` one is re-keyed on every rebuild and is the
+    /// usual cause of a re-prompt), and the live Screen Recording /
+    /// Accessibility status. Exits non-zero if either permission is missing,
+    /// so it doubles as a health probe. macOS-only.
+    #[arg(long = "check-permissions")]
+    check_permissions: bool,
 }
 
 /// Prevent macOS from going to sleep, dimming/sleeping the display, idle-
@@ -1503,6 +1664,13 @@ fn boost_thread_qos() {
 }
 
 fn main() -> Result<()> {
+    // Diagnostics run before anything else: no runtime, no port, no capture.
+    // `--check-permissions` must be answerable on a machine where the server
+    // cannot run at all (that's precisely when the operator needs it), so it
+    // cannot live behind the tokio runtime or the capture setup.
+    if std::env::args_os().any(|a| a == "--check-permissions") {
+        std::process::exit(report_permissions());
+    }
     // Build the tokio runtime explicitly so every worker thread starts
     // at boosted QoS (see `boost_thread_qos`). `#[tokio::main]`'s
     // generated runtime gives us no hook for this. Crucially: the main
@@ -3198,6 +3366,53 @@ mod config_tests {
         fs::remove_file(&path).ok();
         assert_eq!(args.cert.as_deref(), Some(Path::new("/etc/ssl/macrdp.pem")));
         assert_eq!(args.key.as_deref(), Some(Path::new("/etc/ssl/macrdp.key")));
+    }
+}
+
+#[cfg(test)]
+/// Pins the two DR shapes codesign emits, because the `--check-permissions`
+/// report is what an operator uses to tell a stable identity from an ad-hoc
+/// one — and getting it subtly wrong here would print a confident wrong answer.
+mod designated_requirement_tests {
+    use super::designated_requirement_identifier;
+
+    #[test]
+    fn quoted_bundle_identifier() {
+        assert_eq!(
+            designated_requirement_identifier(
+                r#"identifier "com.clintcan.macrdp" and certificate leaf = H"da9d""#,
+            ),
+            Some("com.clintcan.macrdp")
+        );
+    }
+
+    #[test]
+    fn bare_macho_identifier_is_not_quoted() {
+        assert_eq!(
+            designated_requirement_identifier(
+                r#"identifier macrdp and certificate leaf = H"da9d""#,
+            ),
+            Some("macrdp")
+        );
+    }
+
+    #[test]
+    fn ad_hoc_requirement_has_no_identifier() {
+        // `cdhash H"…"` is the whole DR — the caller reports that as ad-hoc.
+        assert_eq!(
+            designated_requirement_identifier(r#"cdhash H"a45294b2029482a75d7aa94d472d889e6221499c""#),
+            None
+        );
+    }
+
+    #[test]
+    fn anchor_form_still_parses() {
+        assert_eq!(
+            designated_requirement_identifier(
+                r#"identifier "com.acme.macrdp" and anchor apple generic and certificate leaf[subject.OU] = "TEAMID""#,
+            ),
+            Some("com.acme.macrdp")
+        );
     }
 }
 

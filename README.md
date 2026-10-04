@@ -142,6 +142,27 @@ Optional flags: `--alt-tab-switch` / `--alt-backtick-switch` accept **Option+Tab
 
 > **mstsc tip:** if **Cmd+Tab** seems ignored, set **Local Resources → Keyboard → "Apply Windows key combinations"** to **"On the remote computer"** (or go full-screen) — the windowed default eats **Win+Tab** locally as Task View.
 
+## Diagnosing macOS permissions
+
+If macOS keeps asking for Screen Recording, or input from RDP clients is silently dropped, ask the binary itself:
+
+```bash
+/Users/donato/Applications/macrdp.app/Contents/MacOS/macrdp --check-permissions
+```
+
+```
+executable:           /Users/donato/Applications/macrdp.app/Contents/MacOS/macrdp
+bundle:               yes (.app)
+code identifier:      com.clintcan.macrdp
+designated requirement: identifier "com.clintcan.macrdp" and certificate leaf = H"da9d…"
+  -> STABLE across rebuilds (TCC grants survive)
+Screen Recording:     granted
+Accessibility:        granted
+All good.
+```
+
+macOS keys the Screen Recording / Accessibility grants to the **code identity**, not to the project, and the System Settings row is named after that identity — so the useful question is never just "is the permission on?" but "which identity is macOS being asked about, and will it be the same one after the next rebuild?". `cdhash H"…"` in the requirement means ad-hoc signing, which is re-keyed on every build and is the usual cause of a re-prompt. The command exits non-zero when a permission is missing or the identity is ad-hoc, so it also works as a health probe. Both `packaging/make-app.sh` and `packaging/install-launchagent.sh` print the same requirement at build/install time and warn when it changes, since that is exactly when a re-grant becomes due.
+
 ## Auto-start at login (launchd)
 
 ```bash
