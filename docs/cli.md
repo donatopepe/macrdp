@@ -159,6 +159,14 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   --enable-h264). With --adaptive-bitrate it's the
                           #   ceiling the encoder backs off from under congestion;
                           #   otherwise a fixed target. Config key: BITRATE.
+                          #   With --adaptive-bitrate the server ALSO keeps an
+                          #   EFFECTIVE ceiling below it: after 3 congested control
+                          #   intervals it steps down (at most once per 5 s, never
+                          #   below half --bitrate, never above it) and does not
+                          #   climb back within a session. So an unreachable
+                          #   --bitrate degrades to a stable, bounded stream
+                          #   instead of a limit cycle; `effective_ceiling_bps` in
+                          #   the stats payload shows where it settled.
 --keyframe-interval SECS  # periodic IDR safety net (default 2; only with --enable-h264)
 --flush-frames N          # trailing skip-P-frames re-sent after each change to drain
                           #   mstsc's presentation buffer (default 4; 0 disables; --enable-h264)

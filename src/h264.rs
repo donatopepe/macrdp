@@ -304,12 +304,11 @@ struct ConnectionContext {
     /// ceiling converges: down fast under sustained congestion, up slowly when
     /// the link stays clear, never above the operator's value.
     adaptive_ceiling_bps: u32,
-    /// Consecutive control intervals spent congested / clear — the hysteresis
-    /// that keeps the ceiling from tracking every spike (down needs a short
-    /// hold, up a much longer one, so a ceiling never ratchets up on a lucky
-    /// streak and drops on a single burst).
+    /// Consecutive congested control intervals — the hysteresis that keeps the
+    /// ceiling from tracking every spike (a bound must not move on one burst).
     adaptive_congested_intervals: u32,
-    adaptive_clear_intervals: u32,
+    /// When the ceiling last stepped, for [`CEILING_STEP_MIN_INTERVAL`].
+    adaptive_last_ceiling_change: Instant,
     adaptive_last_control: Instant,
     adaptive_last_retransmits: u64,
     /// P2a IDR-backoff state: true while the periodic keyframe is suppressed
@@ -1150,55 +1149,63 @@ struct AdaptiveActions {
 enum CeilingAction {
     Hold,
     Lower(u32),
-    Raise(u32),
 }
 
-/// Converge the effective ceiling toward what the link can actually sustain.
+/// Converge the effective ceiling DOWN toward what the link sustains.
 ///
-/// Parameters, all already read by the caller: `current` (the effective ceiling),
-/// `operator_ceiling` (the `--bitrate` upper bound), `floor_bps`, `decrease`
-/// (fraction, e.g. 0.2), `increase_bps` (absolute step up), `congested`
-/// (this interval), `congested_holds` / `clear_holds` (persistence counters).
+/// The ceiling never climbs back within a session. That asymmetry is not
+/// timidity, it is the measurement: two climbing versions were shipped to this
+/// Mac and both failed the same way, oscillating (6000k → 750k → 6000k →
+/// 5250k with 50 convergence events in 90 s). The reason is that "congestion
+/// cleared" is not evidence that capacity rose — it clears because the AIMD
+/// dropped the target, which drains the pipe, which then reads as headroom.
+/// Nothing in a link's behaviour distinguishes "the drain emptied it" from "the
+/// link got faster", so any climb rule guesses. Since the ceiling resets per
+/// connection and starts at the operator's `--bitrate` again, a link that was
+/// merely busy gets re-evaluated on the next session, while a link that really
+/// is faster converges there and then.
 ///
-/// Deliberately asymmetric: three consecutive congested intervals drop it by
-/// `decrease`, thirty clear ones raise it by `increase_bps`. That asymmetry is
-/// the whole point — an AIMD that climbs as fast as it falls keeps hunting, and
-/// what we measured was exactly that hunt.
+/// Rate limiting lives in the caller (this function is pure): 3 congested
+/// intervals to act, then at most one step per `CEILING_STEP_MIN_INTERVAL`, so
+/// the bound walks down over tens of seconds instead of slamming into the floor
+/// within one.
 fn ceiling_step(
     current: u32,
     operator_ceiling: u32,
-    bounds: (u32, f64, u32),
+    floor_bps: u32,
+    decrease: f64,
     congested: bool,
-    holds: (u32, u32),
+    congested_holds: u32,
 ) -> CeilingAction {
-    let (floor_bps, decrease, increase_bps) = bounds;
-    let (congested_holds, clear_holds) = holds;
-    let top = operator_ceiling.max(floor_bps).max(1);
-    let cur = current.clamp(floor_bps.max(1), top);
-    if congested {
-        if congested_holds < 3 {
-            return CeilingAction::Hold;
-        }
-        if cur <= floor_bps.max(1) {
-            return CeilingAction::Hold;
-        }
-        let next = ((cur as f64) * (1.0 - decrease.clamp(0.05, 0.9))).round() as u32;
-        let next = next.clamp(floor_bps.max(1), top);
-        if next == cur {
-            CeilingAction::Hold
-        } else {
-            CeilingAction::Lower(next)
-        }
+    // The ceiling's own floor is HALF the operator maximum, never the encoder's
+    // adaptive floor. Measured reason: with a floor at the adaptive floor the
+    // walk-down ran straight past the achievable band and parked there — 6000k →
+    // 1800k → 750k on a link that sustains ~4 Mbit, i.e. it fixed the oscillation
+    // by trading it for permanently wasted detail. Halving is a bounded claim:
+    // "never send more than half of what you asked for", which rescues the case
+    // we actually measured (a ceiling far above capacity) without punishing a
+    // merely bursty link.
+    let ceil_floor = (operator_ceiling / 2).max(floor_bps).max(1);
+    let top = operator_ceiling.max(ceil_floor).max(1);
+    let cur = current.clamp(ceil_floor, top);
+    if !congested || congested_holds < 3 {
+        return CeilingAction::Hold;
+    }
+    if cur <= ceil_floor {
+        return CeilingAction::Hold;
+    }
+    let next = ((cur as f64) * (1.0 - decrease.clamp(0.05, 0.9))).round() as u32;
+    let next = next.clamp(ceil_floor, top);
+    if next == cur {
+        CeilingAction::Hold
     } else {
-        if clear_holds < 30 {
-            return CeilingAction::Hold;
-        }
-        if cur >= top {
-            return CeilingAction::Hold;
-        }
-        CeilingAction::Raise(cur.saturating_add(increase_bps.max(1)).min(top))
+        CeilingAction::Lower(next)
     }
 }
+
+/// Minimum wall-clock gap between two ceiling steps, so the walk-down is over
+/// tens of seconds rather than one control interval.
+const CEILING_STEP_MIN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Read the ack-recovery config from the environment once. Returns
 /// `(enabled, params)`; disabled (default) keeps the feature off and the path
@@ -2300,50 +2307,45 @@ impl Gfx {
         // several intervals overshooting it.
         if congested {
             ctx.adaptive_congested_intervals += 1;
-            ctx.adaptive_clear_intervals = 0;
         } else {
-            ctx.adaptive_clear_intervals += 1;
             ctx.adaptive_congested_intervals = 0;
         }
         let eff_ceiling = match ceiling_step(
             ctx.adaptive_ceiling_bps,
             ceiling,
-            (
-                self.adaptive_floor_bps,
-                self.adaptive_decrease as f64,
-                self.adaptive_increase_bps,
-            ),
+            self.adaptive_floor_bps,
+            self.adaptive_decrease as f64,
             congested,
-            (
-                ctx.adaptive_congested_intervals,
-                ctx.adaptive_clear_intervals,
-            ),
+            ctx.adaptive_congested_intervals,
         ) {
             CeilingAction::Hold => ctx.adaptive_ceiling_bps,
-            CeilingAction::Lower(next) | CeilingAction::Raise(next) => {
-                let prev = ctx.adaptive_ceiling_bps;
-                ctx.adaptive_ceiling_bps = next;
-                // info, not debug: this is the number an operator compares against
-                // --bitrate, and the one that explains a session that "got slower
-                // on its own". It moves at most every 3 congested / 30 clear
-                // intervals, so it cannot spam.
-                info!(
-                    prev_ceiling_bps = prev,
-                    effective_ceiling_bps = next,
-                    operator_ceiling_bps = ceiling,
-                    congested,
-                    "EGFX effective ceiling converged (--bitrate stays the maximum)"
-                );
-                next
+            CeilingAction::Lower(next) => {
+                if now.duration_since(ctx.adaptive_last_ceiling_change) < CEILING_STEP_MIN_INTERVAL
+                {
+                    ctx.adaptive_ceiling_bps
+                } else {
+                    let prev = ctx.adaptive_ceiling_bps;
+                    ctx.adaptive_ceiling_bps = next;
+                    ctx.adaptive_last_ceiling_change = now;
+                    // info, not debug: the number an operator compares against
+                    // --bitrate, and the one that explains a session that "got
+                    // slower on its own". Rate-limited, so it cannot spam.
+                    info!(
+                        prev_ceiling_bps = prev,
+                        effective_ceiling_bps = next,
+                        operator_ceiling_bps = ceiling,
+                        "EGFX effective ceiling stepped down (--bitrate stays the maximum; \
+                         it is re-evaluated per connection)"
+                    );
+                    next
+                }
             }
         };
-        // 3-zone action: decrease above the high mark, hold while the EWMA decays
-        // through the band (so a single spike doesn't crater the bitrate), increase
-        // once cleared. aimd_bitrate does the decrease/increase math (1 = decrease,
-        // 0 = increase); Hold leaves the target untouched.
+        // The AIMD's own action for this interval, unchanged: the effective
+        // ceiling only replaces the constant it used to read.
         let action = rate_action(
             ctx.adaptive_delay_ewma,
-            high,
+            self.adaptive_queue_high_ms,
             retransmit_lossy,
             signal_usable,
             congested,
@@ -3072,7 +3074,7 @@ impl GfxServerFactory for Gfx {
             // must not then hand the AIMD back the unreachable operator value.
             adaptive_ceiling_bps: initial_target_bps.max(self.adaptive_floor_bps).max(1),
             adaptive_congested_intervals: 0,
-            adaptive_clear_intervals: 0,
+            adaptive_last_ceiling_change: Instant::now(),
             adaptive_target_bps: initial_target_bps,
             adaptive_last_control: Instant::now(),
             adaptive_last_retransmits: self.congestion_retransmits.load(Ordering::Relaxed),
@@ -3436,120 +3438,125 @@ mod ceiling_tests {
 
     const FLOOR: u32 = 1_000_000;
     const TOP: u32 = 6_000_000;
+    /// The ceiling's own floor: half the operator maximum, never below the
+    /// encoder's adaptive floor.
+    const CEIL_FLOOR: u32 = TOP / 2;
 
     /// The limit cycle we measured: with a fixed 6 Mbit ceiling the AIMD hunted
-    /// 6000k ↔ 1440k. A ceiling that only moves on sustained congestion is what
-    /// breaks it, so this is the regression that matters.
+    /// 6000k ↔ 1440k. The ceiling only moves on sustained congestion, so this is
+    /// the regression that matters.
     #[test]
     fn three_congested_intervals_lower_the_ceiling() {
-        // Holds 1 and 2 must not move it — a single burst is not capacity.
         for holds in [1, 2] {
             assert_eq!(
-                ceiling_step(6_000_000, TOP, (FLOOR, 0.2, 500_000), true, (holds, 0)),
+                ceiling_step(6_000_000, TOP, FLOOR, 0.2, true, holds),
                 CeilingAction::Hold,
-                "hold={holds} must wait"
+                "hold={holds} must wait: a single burst is not capacity"
             );
         }
         assert_eq!(
-            ceiling_step(6_000_000, TOP, (FLOOR, 0.2, 500_000), true, (3, 0)),
+            ceiling_step(6_000_000, TOP, FLOOR, 0.2, true, 3),
             CeilingAction::Lower(4_800_000)
         );
     }
 
+    /// There is no climb, deliberately: two climbing versions failed their
+    /// measurement by oscillating, because "congestion cleared" cannot be told
+    /// apart from "the AIMD drained the pipe". The ceiling resets per connection.
     #[test]
-    fn clearing_takes_thirty_intervals_and_stops_at_the_operator_maximum() {
-        assert_eq!(
-            ceiling_step(4_800_000, TOP, (FLOOR, 0.2, 500_000), false, (0, 29)),
-            CeilingAction::Hold,
-            "climbing must be much slower than dropping"
-        );
-        assert_eq!(
-            ceiling_step(4_800_000, TOP, (FLOOR, 0.2, 500_000), false, (0, 30)),
-            CeilingAction::Raise(5_300_000)
-        );
-        // Already at the operator's --bitrate: never exceed it, whatever the link
-        // looks like.
-        assert_eq!(
-            ceiling_step(TOP, TOP, (FLOOR, 0.2, 500_000), false, (0, 300)),
-            CeilingAction::Hold
-        );
+    fn a_clear_link_never_raises_the_ceiling() {
+        for holds in [0, 1, 5, 100, 100_000] {
+            assert_eq!(
+                ceiling_step(4_800_000, TOP, FLOOR, 0.2, false, holds),
+                CeilingAction::Hold,
+                "holds={holds}: the ceiling must not climb within a session"
+            );
+        }
     }
 
     #[test]
     fn the_ceiling_never_leaves_its_bounds() {
-        // Floor is respected even after repeated drops.
+        // Already at its own floor: nowhere left to go.
         assert_eq!(
-            ceiling_step(FLOOR, TOP, (FLOOR, 0.2, 500_000), true, (9, 0)),
-            CeilingAction::Hold,
-            "at the floor there is nowhere left to go"
+            ceiling_step(CEIL_FLOOR, TOP, FLOOR, 0.2, true, 9),
+            CeilingAction::Hold
         );
-        // The raise step is clamped to the operator ceiling, not overshot.
+        // A decrease that would cross the floor clamps instead of wrapping.
         assert_eq!(
-            ceiling_step(5_900_000, TOP, (FLOOR, 0.2, 500_000), false, (0, 30)),
-            CeilingAction::Raise(TOP)
+            ceiling_step(3_400_000, TOP, FLOOR, 0.9, true, 3),
+            CeilingAction::Lower(CEIL_FLOOR)
         );
-        // A decrease big enough to cross the floor clamps instead of wrapping.
+        // A zero-valued field clamps to the floor and stops there — never a zero
+        // bitrate, which would stop the stream entirely.
         assert_eq!(
-            ceiling_step(1_100_000, TOP, (FLOOR, 0.9, 500_000), true, (3, 0)),
-            CeilingAction::Lower(FLOOR)
+            ceiling_step(0, TOP, FLOOR, 0.2, true, 3),
+            CeilingAction::Hold
         );
-        // Out-of-range arguments are clamped rather than trusted.
+        // A current ABOVE the operator maximum (a mis-seeded field) is pulled to
+        // the maximum FIRST and only then stepped, so the result can never exceed
+        // `--bitrate` — clamping before the arithmetic, not after.
         assert_eq!(
-            ceiling_step(0, TOP, (FLOOR, 0.2, 500_000), false, (0, 30)),
-            CeilingAction::Raise(1_500_000),
-            "a zero current (unset field) must not become zero bitrate"
+            ceiling_step(9_000_000, TOP, FLOOR, 0.2, true, 3),
+            CeilingAction::Lower(4_800_000)
+        );
+        // When the adaptive floor exceeds half the maximum (a small --bitrate),
+        // the encoder floor is the harder bound: a walk-down from 1000 must end
+        // at 800, not at 500.
+        let mut small = 1_000u32;
+        for _ in 0..50 {
+            if let CeilingAction::Lower(n) = ceiling_step(small, 1_000, 800, 0.2, true, 3) {
+                small = n;
+            }
+        }
+        assert_eq!(small, 800, "the encoder floor wins over half --bitrate");
+    }
+
+    /// Sustained congestion walks the bound down and stops at HALF the operator
+    /// maximum: the measured fix (no oscillation) without the second measured
+    /// failure (parking at the encoder floor and throwing away detail).
+    #[test]
+    fn a_walk_down_ends_at_half_the_operator_maximum() {
+        let mut eff = TOP;
+        let mut steps = 0;
+        for _ in 0..200 {
+            match ceiling_step(eff, TOP, FLOOR, 0.2, true, 3) {
+                CeilingAction::Hold => {}
+                CeilingAction::Lower(n) => {
+                    assert!(n < eff, "sustained congestion must only go down");
+                    assert!(n >= CEIL_FLOOR, "and never below half --bitrate");
+                    eff = n;
+                    steps += 1;
+                }
+            }
+        }
+        assert_eq!(eff, CEIL_FLOOR, "settles exactly on half --bitrate");
+        assert!(
+            steps > 2,
+            "and it takes several steps to get there, not one"
         );
     }
 
-    /// The whole point, tested against the real counter semantics (each signal
-    /// RESETS the opposite counter, as `adaptive_bitrate_step` does): a perfect
-    /// alternation — the shape of the measured hunt — never moves the ceiling,
-    /// because neither side ever reaches its persistence threshold.
+    /// The alternating shape of the measured hunt must never move the bound,
+    /// modelled with the real counter semantics (a clear signal resets the
+    /// congestion run, exactly as the controller does).
     #[test]
     fn alternating_signals_do_not_chase() {
-        let mut eff = 4_800_000;
-        let (mut cong, mut clear) = (0u32, 0u32);
+        let mut eff = TOP;
+        let mut cong = 0u32;
         for i in 0..400 {
             let congested = i % 2 == 0;
             if congested {
                 cong += 1;
-                clear = 0;
             } else {
-                clear += 1;
                 cong = 0;
             }
-            match ceiling_step(eff, TOP, (FLOOR, 0.2, 500_000), congested, (cong, clear)) {
-                CeilingAction::Hold => {}
-                CeilingAction::Lower(n) | CeilingAction::Raise(n) => eff = n,
+            if let CeilingAction::Lower(n) = ceiling_step(eff, TOP, FLOOR, 0.2, congested, cong) {
+                eff = n;
             }
         }
         assert_eq!(
-            eff, 4_800_000,
-            "an alternating signal must not move the bound"
-        );
-    }
-
-    /// Sustained congestion — what a link that genuinely cannot carry the
-    /// ceiling produces — walks it down to the floor and stops there, rather
-    /// than oscillating or wrapping.
-    #[test]
-    fn sustained_congestion_settles_on_the_floor() {
-        let mut eff = 6_000_000;
-        let mut seen_lower = 0;
-        for _ in 0..200 {
-            match ceiling_step(eff, TOP, (FLOOR, 0.2, 500_000), true, (3, 0)) {
-                CeilingAction::Hold => {}
-                CeilingAction::Lower(n) | CeilingAction::Raise(n) => {
-                    assert!(n < eff, "sustained congestion must only go down");
-                    eff = n;
-                    seen_lower += 1;
-                }
-            }
-        }
-        assert_eq!(eff, FLOOR, "settles exactly on the floor, no wrap-around");
-        assert!(
-            seen_lower > 2,
-            "and it actually took several steps to get there"
+            eff, TOP,
+            "an alternating signal must not move the bound at all"
         );
     }
 }
