@@ -97,7 +97,20 @@ Piano staccato su richiesta. Ordine = dipendenze, non preferenze.
 
 ## In flight — open follow-ups from the 2026-10-04/05 session
 
-- [ ] **Adaptive ceiling, not just an adaptive target** (see the "measure before you change" rule in `docs/conventions.md` — baseline numbers first, one variable per change). `--adaptive-bitrate` moves the *target* between the floor and a **fixed** `--bitrate` ceiling; the ceiling itself never adapts, so on a marginal link the controller oscillates (congested → back off → climb back to the ceiling → congested), and the IDR backoff it triggers withholds exactly the keyframes that would heal a client that stopped presenting. Wanted by the operator: a slow, hysteretic adaptation of the ceiling itself from the standing queue delay. **Deliberately not done yet** — the video path destabilised for 40 min from a much smaller change the same day (see the UDP-multitransport entry in docs/known-quirks.md), so this wants its own branch and tests.
+- [ ] **Adaptive ceiling, not just an adaptive target** (see the "measure before you change" rule in `docs/conventions.md` — baseline numbers first, one variable per change). `--adaptive-bitrate` moves the *target* between the floor and a **fixed** `--bitrate` ceiling; the ceiling itself never adapts.
+
+  **Measured 2026-10-05 (ZeroTier link, ~24 ms RTT, YouTube playing) — this is the design input.** With a ceiling of 6 Mbit the link could not sustain it, and the controller entered a **limit cycle**: bitrate oscillating 6000k→1440k→2359k→3059k every few seconds, standing queue delay spiking to 101-180 ms, **89 IDR-backoff suppressions in one session (and exactly 89 recoveries)** — the backoff firing every control interval — plus `socket_write_stalls` 1237 and `audio_drops` 91 (video and audio share one socket, so the video saturations starved audio). Dropping the ceiling to **4 Mbit**, i.e. *inside* the achievable band, collapsed all of it in one change:
+
+  | video playing | ceiling 6 Mbit | ceiling 4 Mbit |
+  |---|---|---|
+  | bitrate samples | 6000k, 6000k, 6000k, 6000k, 4200k, **2190k** | 4000k × 6 (stable, at ceiling) |
+  | queue delay samples | 18, 13, 42, 17, **154**, 9 ms | 35, 4, 13, 42, 30, 14 ms |
+  | IDR backoff (one session) | 89 suppress / 89 recover | **1 / 1** |
+  | socket_write_stalls | 1237 | **50** |
+  | audio_drops | 91 | **1** |
+  | fps / RTT / CPU | 60 / 28 ms / 31 % | 60 / 24 ms / 30 % |
+
+  So the ceiling has to converge toward the *measured* capacity, or the AIMD will keep hunting: a ceiling above capacity is not "more headroom", it is a limit cycle whose side effects (starved keyframes, starved audio) are worse than a lower ceiling. Wanted: a slow, hysteretic adaptation of the ceiling itself from the standing queue delay, seeded from the same baseline numbers used here. **Deliberately not done yet** — the video path destabilised for 40 min from a much smaller change the same day (see the UDP-multitransport entry in docs/known-quirks.md), so this wants its own branch and tests.
 - [ ] **Client graphics-update PDUs are decoded and ignored.** The vendored acceptor's share-data loop handles Input / Shutdown / SuppressOutput / RefreshRectangle and drops everything else into `warn!("Unexpected share data pdu")`; client graphics updates arrive raw inside `ShareDataPdu::Update(Vec<u8>)` and this ironrdp version does not model them, so a client **RefreshRect**, **Set Keyframe** or **FutureFrames** request gets no answer. Not the cause of the observed blanks (the forced recovery IDR *was* shipped and ignored), but it is a real gap and the reason that WARN is worth keeping on at `warn` level.
 - [ ] **White screen after an automatic reconnect, for clients that cache the EGFX surface.** The server creates and maps a fresh `surface_id` every connection and the client re-presents on its stale one; our own log says so ("it re-lands on its stale surface every time"). Bare core reactivation heals in place but cannot invalidate the client's cache, and forcing a new surface (`BLANK_RECOVERY_REACTIVATE=0`) is worse — a 4-second accept/drop loop. Unfixable server-side without a client-fatal action, so the guidance is: close the whole RDP window, not just the connection. Note the drop-recovery fix above removes most of the *exposure*, since the drops were what triggered the auto-reconnects.
 
