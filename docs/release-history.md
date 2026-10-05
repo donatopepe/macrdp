@@ -4,6 +4,21 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.13 — the ceiling converges, and three open items close
+
+Two changes and three closures. The feature was **built three times and measured twice before a version was kept**, and the two discarded designs are recorded here because they are the reason the shipped one looks the way it does.
+
+- **An effective ceiling that only ever steps DOWN.** `--bitrate` stays what an operator means by it — the maximum — and the server keeps an effective ceiling below it: after 3 congested control intervals it steps down (×(1−decrease), at most one step per 5 s) and does **not** climb back within a session, clamped to [half of `--bitrate`, `--bitrate`]. Published as `effective_ceiling_bps`, logged at info when it moves.
+  - *Discarded 1 — symmetric AIMD on the ceiling:* with an unreachable 6 Mbit ceiling it oscillated 6000k → 750k → 6000k → 5250k, 50 convergence events in 90 s.
+  - *Discarded 2 — climb gated on "we are pushing the bound":* failed identically, because the premise is unverifiable. **"Congestion cleared" cannot be told apart from "the AIMD dropped the target and drained the pipe"**, so any climb rule guesses and the hunt comes back. Since the ceiling resets per connection and starts from `--bitrate` again, a link that was merely busy is re-evaluated next session, and a link that really is faster converges there and then.
+  - *The floor at half `--bitrate` is the other measured lesson:* with the floor at the encoder's adaptive floor, the walk-down overshot the achievable band and parked at 750k on a link that sustains ~4 Mbit — it fixed the oscillation by throwing away detail.
+  - *Verified on this host*, unreachable 6 Mbit operator ceiling, video playing: **one** step (6000k → 3000k), stable across 120 s, queue delay 13–27 ms against the 101–180 ms of the original limit cycle, one log line instead of 50.
+  - This is a **safety net for a badly chosen ceiling, not a substitute for measuring one** — `--bitrate 4` remains the measured answer, and the default is unchanged.
+- **The queue-delay reading carries its age.** `queue_delay_ms` is "last measured", so on a static desktop it sat at whatever it last was (308 ms in one case) while everything else correctly froze, and the Status pane showed a congestion number that was really history. The payload gains `queue_delay_age_ms` and the Controller labels a reading older than ~2 s. Deliberately **not** decayed: a client that stopped consuming leaves exactly that standing backlog, and it is the signal the blank-recovery detector reads.
+- **Closed with evidence rather than code:** *client graphics-update PDUs* stay unimplemented — with `ironrdp_server::server=warn` visible there are **zero** `Unexpected share data pdu` across the sessions that mattered, so no observed client behaviour depends on it, and a hand-written parser would break the "ironrdp owns the wire format" convention to serve a case nothing demonstrates (if it ever becomes real, the fix belongs upstream). *The white screen after an automatic reconnect* is closed as a documented limit: the server creates and maps a fresh `surface_id` every connection and the client re-presents on its stale one, and both server-side levers were measured to be worse (the reactivation cannot invalidate the client's cache; forcing a new surface is a 4-second accept/drop loop). Operator guidance stands: close the whole RDP window, not just the connection.
+
+233 Rust + 13 Swift tests; fmt and clippy `-D warnings` clean.
+
 ## v0.9.12 — the tuned deployment becomes the default for everyone
 
 A patch whose substance is a **set of defaults**, each promoted only after it was measured on a real deployment (macOS, H.264 + video playback, ~24 ms ZeroTier path). A new install is now seeded with a configuration that was converged by measurement instead of by taste. **Behaviour change for existing installs: none** — `config.env` is yours, and nothing here rewrites an existing one.
