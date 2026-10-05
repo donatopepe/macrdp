@@ -587,6 +587,10 @@ struct LiveStats {
     let ceilingBps: Int
     let rttMs: Int
     let queueMs: Int
+    /// Age of the queue-delay reading. The server reports "last measured", not
+    /// a decayed value, so on a static desktop the number is history — this is
+    /// how a consumer can say so instead of showing a stale congestion figure.
+    let queueAgeMs: Int
     let fps: Int
     let frames: Int
     let adaptive: Bool
@@ -650,7 +654,14 @@ private struct StatusView: View {
                         row("Bitrate", bitrateText(l))
                         row("Frame rate", "\(l.fps) fps")
                         if l.rttMs > 0 { row("Link RTT", "\(l.rttMs) ms") }
-                        if l.adaptive { row("Standing queue", "\(l.queueMs) ms") }
+                        if l.adaptive {
+                            // Over ~2 s old the reading describes a backlog that
+                            // may no longer exist (nothing captured, nothing
+                            // acked), so label it rather than assert it.
+                            row("Standing queue", l.queueAgeMs > 2000
+                                ? "\(l.queueMs) ms (last measured \(l.queueAgeMs / 1000) s ago)"
+                                : "\(l.queueMs) ms")
+                        }
                         row("Frames sent", "\(l.frames)")
                     } else if live != nil {
                         Text("Bitrate, frame-rate and link RTT are H.264 telemetry: "
@@ -773,6 +784,7 @@ extension AppController {
             videoPath: (o["video_path"] as? String) ?? "unknown",
             bitrateBps: int("bitrate_bps"), ceilingBps: int("ceiling_bps"),
             rttMs: int("rtt_ms"), queueMs: int("queue_delay_ms"),
+            queueAgeMs: int("queue_delay_age_ms"),
             fps: int("fps"), frames: int("frames_sent"), adaptive: bool("adaptive"))
     }
 

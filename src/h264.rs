@@ -2302,6 +2302,10 @@ impl Gfx {
                 .store(ctx.adaptive_target_bps, Ordering::Relaxed);
             s.queue_delay_ms
                 .store(sample_ms.round() as u32, Ordering::Relaxed);
+            // Same instant, so the published age describes this reading and no
+            // other. Without it the reading looks current forever once the
+            // desktop goes static and nothing is acked.
+            crate::stats::mark_queue_delay_measured(s);
             s.rtt_ms
                 .store(self.link_rtt_ms.load(Ordering::Relaxed), Ordering::Relaxed);
             s.fps.store(self.fps, Ordering::Relaxed);

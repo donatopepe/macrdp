@@ -157,6 +157,14 @@ pub struct SessionStats {
     pub av_drift_zone: AtomicI8,
     /// Offset/zone samples accepted by drift hysteresis; increments each PTS interval.
     pub av_hysteresis_samples: AtomicU64,
+    /// Wall-clock millis at which `queue_delay_ms` was last refreshed from a
+    /// client FrameAcknowledge. Published so a consumer can tell a LIVE
+    /// congestion number from a historical one: on a static desktop nothing is
+    /// captured, nothing is acked, and the last measured value would otherwise
+    /// sit there looking current. Deliberately NOT decayed — the standing
+    /// backlog of a client that stopped consuming is the signal the
+    /// blank-recovery detector reads, so inventing a decay would weaken it.
+    queue_delay_measured_at_ms: AtomicU64,
     pub aac: AtomicBool,
     /// Which video path this process was started with. Every numeric field in
     /// this struct is maintained by the H.264/EGFX path ONLY (see
@@ -166,6 +174,39 @@ pub struct SessionStats {
     /// unreadable. This makes "not applicable" distinguishable from "broken".
     video_path_h264: AtomicBool,
     av_clock: AvClockTracker,
+}
+
+/// Process-relative monotonic clock, so timestamps in the payload cannot jump
+/// with a wall-clock adjustment and the age arithmetic stays consistent.
+fn epoch_ms() -> u64 {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    EPOCH
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis() as u64
+}
+
+/// Stamp the moment `queue_delay_ms` was refreshed. Call it from exactly where
+/// the value is stored, so the published age can never disagree with the number
+/// it describes.
+pub fn mark_queue_delay_measured(stats: &SessionStats) {
+    // +1 so the sentinel `0` can only ever mean "never measured": the first
+    // stamp can legitimately land in the same millisecond the epoch starts, and
+    // storing a literal 0 there made the reading permanently look like it had
+    // never happened.
+    stats
+        .queue_delay_measured_at_ms
+        .store(epoch_ms().wrapping_add(1), Ordering::Relaxed);
+}
+
+/// Age of the current `queue_delay_ms` reading, in milliseconds. 0 means "no
+/// reading yet".
+pub fn queue_delay_age_ms(stats: &SessionStats) -> u64 {
+    let at = stats.queue_delay_measured_at_ms.load(Ordering::Relaxed);
+    if at == 0 {
+        return 0;
+    }
+    epoch_ms().saturating_sub(at)
 }
 
 /// Record the video path once, at startup (before any client connects).
@@ -333,7 +374,8 @@ impl SessionStats {
                 "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
                 "\"av_offset_ewma_ms\":{},\"av_offset_ewma_samples\":{},",
                 "\"av_drift_ppm\":{},\"av_drift_samples\":{},\"av_drift_zone\":{},\"av_hysteresis_samples\":{},\"av_offset_abs_max_ms\":{},\"av_offset_last_sample_ms\":{},",
-                "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{},\"video_path\":\"{}\"}}"
+                "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{},\"video_path\":\"{}\",",
+                "\"queue_delay_age_ms\":{} }}"
             ),
             self.connected.load(Ordering::Relaxed),
             self.width.load(Ordering::Relaxed),
@@ -411,6 +453,7 @@ impl SessionStats {
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
             if self.video_path_h264.load(Ordering::Relaxed) { "egfx-h264" } else { "legacy-bitmap" },
+            queue_delay_age_ms(self),
         )
     }
 }
@@ -657,6 +700,31 @@ mod tests {
 
     /// The legacy bitmap path must be self-describing: every H.264 counter reads 0
     /// there, and a reader must not mistake that for a dead session.
+    /// The queue reading is "last measured", not decayed — a consumer needs the
+    /// age to tell a live congestion number from history, which is exactly what
+    /// a static desktop used to disguise.
+    #[test]
+    fn queue_delay_reading_carries_its_age() {
+        let s = SessionStats::default();
+        assert_eq!(queue_delay_age_ms(&s), 0, "no reading yet -> age 0");
+        s.queue_delay_ms.store(308, Ordering::Relaxed);
+        assert!(
+            s.to_json().contains("\"queue_delay_age_ms\":0"),
+            "an unstamped reading reports age 0, never a made-up one"
+        );
+        mark_queue_delay_measured(&s);
+        let j = s.to_json();
+        assert!(
+            j.contains("\"queue_delay_ms\":308"),
+            "the value itself: {j}"
+        );
+        assert!(j.contains("\"queue_delay_age_ms\":"), "and its age: {j}");
+        // Generous margin: a 5 ms sleep can elapse as 4.99 ms and the clock
+        // truncates to millis, so the equality would flake.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(queue_delay_age_ms(&s) >= 10, "age grows with wall time");
+    }
+
     #[test]
     fn video_path_is_reported_explicitly() {
         let s = SessionStats::default();
