@@ -65,6 +65,14 @@ echo "==> staging $STAGE"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 
+# Stamp the build revision into the bundle, like packaging/make-app.sh does for
+# the server. It answers "is the installed copy current?" with one command:
+#   defaults read macrdp.app/Contents/Resources/build-revision vs `git rev-parse HEAD`.
+REV="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || printf 'unknown')"
+[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ] && REV="$REV-dirty"
+echo "==> build revision $REV"
+printf '%s' "$REV" > "$STAGE/Contents/Resources/build-revision"
+
 cat > "$STAGE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

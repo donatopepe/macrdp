@@ -448,6 +448,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             print("plist:      \(plistURL.path)")
             print("config:     \(configURL.path)")
             print("log:        \(logURL.path)")
+            // The build stamp, so "is the installed copy current?" is one command:
+            // compare this with `git rev-parse HEAD` in the repository.
+            let revURL = Bundle.main.bundleURL
+                .appendingPathComponent("Contents/Resources/build-revision")
+            let rev = (try? String(contentsOf: revURL, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "(no stamp)"
+            print("revision:   \(rev)  (controller v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"))")
             print("password:   \(hasKeychainPassword() ? "set" : "MISSING")")
             return 0
         }

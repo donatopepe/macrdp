@@ -875,8 +875,11 @@ struct Args {
     /// EGFX-over-UDP: when the reliable UDP tunnel shows packet loss (retransmits),
     /// lower the VideoToolbox bitrate toward a floor (AIMD multiplicative-decrease),
     /// and climb back toward the --bitrate ceiling when the link clears — so video
-    /// degrades to "choppy but alive" under loss instead of wedging. Only acts while
-    /// EGFX is on a UDP tunnel (no-op on TCP). Tunables: MACRDP_UDP_ADAPTIVE_FLOOR_BPS,
+    /// degrades to "choppy but alive" under loss instead of wedging. Works on BOTH
+    /// transports: the control path reads the standing queue delay through
+    /// `effective_queue_delay` and is transport-agnostic, with extra handling for
+    /// the UDP→TCP edge (restores the full ceiling immediately, since TCP just
+    /// slows rather than HOL-freezes). Tunables: MACRDP_UDP_ADAPTIVE_FLOOR_BPS,
     /// _INCREASE_BPS, _DECREASE, _INTERVAL_MS. macOS-only build.
     #[arg(long)]
     adaptive_bitrate: bool,
