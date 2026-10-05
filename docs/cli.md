@@ -152,7 +152,7 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   Reuses the Ctrl+Alt+G gather machinery. Config:
                           #   RESTORE_WINDOWS_ON_DISCONNECT. macOS-only.
 --enable-h264             # stream H.264 over EGFX (AVC420) instead of legacy bitmaps
---bitrate N               # H.264 bitrate ceiling in Mbps (default 6; only with
+--bitrate N               # H.264 bitrate CEILING in Mbps (default 4; only with
                           #   --enable-h264). With --adaptive-bitrate it's the
                           #   ceiling the encoder backs off from under congestion;
                           #   otherwise a fixed target. Config key: BITRATE.
@@ -260,7 +260,8 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   was always on TCP). Promoted 2026-06-28 from the
                           #   MACRDP_UDP_MIGRATE_EGFX env var (still works as a
                           #   fallback). macOS-built; protocol layer cross-platform.
---adaptive-bitrate        # Opt-in (default OFF; ADAPTIVE_BITRATE=1 in config.env).
+--adaptive-bitrate        # Off in the binary, ON in the seeded config.env baseline
+                          #   (ADAPTIVE_BITRATE=1): it is what keeps --bitrate honest.
                           #   Congestion-responsive H.264 rate control on BOTH the UDP
                           #   tunnel AND the TCP path (only with --enable-h264): an
                           #   AIMD controller reads the STANDING QUEUE DELAY — each

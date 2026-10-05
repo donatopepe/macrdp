@@ -675,11 +675,24 @@ struct Args {
     #[arg(long)]
     enable_h264: bool,
 
-    /// Target H.264 bitrate in megabits/sec (only with --enable-h264).
-    /// Default 6. Raising it sharpens detail at the cost of bigger per-frame
-    /// writes, which can fill the socket buffer and delay audio on a
-    /// constrained link (e.g. Wi-Fi); try 8–12 if you have headroom.
-    #[arg(long, default_value_t = 6)]
+    /// Target H.264 bitrate ceiling in megabits/sec (only with --enable-h264).
+    ///
+    /// **This is a CEILING, not a target**, and setting it above what the link
+    /// can sustain is worse than setting it low. Measured 2026-10-05 over a
+    /// ~24 ms ZeroTier path with video playing: a 6 Mbit ceiling was unreachable,
+    /// so the rate controller entered a limit cycle — bitrate swinging
+    /// 6000k→1440k→2359k→3059k every few seconds, standing queue delay spiking
+    /// to 101–180 ms, **89 IDR-backoff suppressions against 89 recoveries**
+    /// (each one withholds a keyframe the picture needs, and audio and video
+    /// share the socket, so 1237 write stalls and 91 audio drops followed).
+    /// Dropping the ceiling to 4 — inside the achievable band — collapsed all of
+    /// it in one change: bitrate stable at the ceiling, **1** backoff, 50 write
+    /// stalls, 1 audio drop, at the same 60 fps. Hence the default.
+    ///
+    /// Raise it if you measure headroom (see docs/conventions.md: baseline
+    /// first). On a fast LAN 8–12 is fine; if the queue delay in the stats
+    /// endpoint climbs, the ceiling is above the link, not below it.
+    #[arg(long, default_value_t = 4)]
     bitrate: u32,
 
     /// H.264 periodic keyframe (IDR) interval in seconds (only with
@@ -3721,12 +3734,12 @@ mod config_tests {
 
         // Unset → the server default (6).
         let p = write_temp("br3", "ENABLE_H264=1\n");
-        assert_eq!(args_from_config(&p).unwrap().bitrate, 6);
+        assert_eq!(args_from_config(&p).unwrap().bitrate, 4);
         fs::remove_file(&p).ok();
 
         // Empty BITRATE is ignored (no arg pushed) → default, not an error.
         let p = write_temp("br4", "BITRATE=\n");
-        assert_eq!(args_from_config(&p).unwrap().bitrate, 6);
+        assert_eq!(args_from_config(&p).unwrap().bitrate, 4);
         fs::remove_file(&p).ok();
     }
 

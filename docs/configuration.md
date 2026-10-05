@@ -114,9 +114,14 @@ macrdp --check-permissions   Print the macOS permission + code-identity report
                           hardware-encoded via VideoToolbox, instead of legacy
                           bitmaps. Falls back to legacy automatically for
                           clients that don't negotiate H.264. See [video.md](video.md).
---bitrate N               Target H.264 bitrate in Mbps (default 6; only with
-                          --enable-h264). Raise it (8–12) for sharper detail if
-                          you have bandwidth headroom. With --adaptive-bitrate it
+--bitrate N               H.264 bitrate CEILING in Mbps (default 4; only with
+                          --enable-h264). It is a CEILING, not a target: a value
+                          the link cannot sustain is worse than a low one
+                          (measured: 6 → rate-controller limit cycle, queue to
+                          180 ms, 89 keyframe backoffs, 91 audio drops; 4 → stable
+                          at the ceiling, 1 backoff, 1 audio drop). Raise it
+                          (8–12) only after measuring headroom — docs/conventions.md.
+                          With --adaptive-bitrate it
                           is the ceiling, not a fixed target. Config key: BITRATE
                           (the menu-bar controller's Video tab sets it).
 --keyframe-interval SECS  H.264 periodic keyframe (IDR) interval in seconds
