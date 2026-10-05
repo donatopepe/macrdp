@@ -96,6 +96,8 @@ Piano staccato su richiesta. Ordine = dipendenze, non preferenze.
       taglia; `ALLOW_SLEEP` e la guardia di porta sono già in v0.9.9.
 
 ## In flight — open follow-ups from the 2026-10-04/05 session
+- [ ] **The stats endpoint's queue delay is stale, not decaying, when the desktop goes idle.** A snapshot reading taken while the screen was still moving (308 ms after a burst) stays at 308 ms forever once nothing is captured, because `queue_delay_ms` is "last measured" and no new frame means no new measurement. It reads like a live congestion number in the Status pane when it is really history. Either decay it toward 0 when no frame has shipped for N seconds, or have the payload carry the age of the reading so a consumer can label it stale. Small, but it is exactly the kind of thing that sends the next person hunting.
+
 
 - [ ] **Adaptive ceiling, not just an adaptive target** (see the "measure before you change" rule in `docs/conventions.md` — baseline numbers first, one variable per change). `--adaptive-bitrate` moves the *target* between the floor and a **fixed** `--bitrate` ceiling; the ceiling itself never adapts.
 
