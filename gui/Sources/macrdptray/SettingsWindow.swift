@@ -585,6 +585,10 @@ struct LiveStats {
     let videoPath: String
     let bitrateBps: Int
     let ceilingBps: Int
+    /// The ceiling the rate controller converged to, vs the operator's maximum.
+    /// The gap between them is the explanation for a session that slowed down on
+    /// its own, so it is shown rather than inferred.
+    let effectiveCeilingBps: Int
     let rttMs: Int
     let queueMs: Int
     /// Age of the queue-delay reading. The server reports "last measured", not
@@ -655,6 +659,10 @@ private struct StatusView: View {
                         row("Frame rate", "\(l.fps) fps")
                         if l.rttMs > 0 { row("Link RTT", "\(l.rttMs) ms") }
                         if l.adaptive {
+                            if l.effectiveCeilingBps > 0, l.effectiveCeilingBps < l.ceilingBps {
+                                row("Effective ceiling",
+                                    "\(l.effectiveCeilingBps / 1000) k (converged from \(l.ceilingBps / 1000) k)")
+                            }
                             // Over ~2 s old the reading describes a backlog that
                             // may no longer exist (nothing captured, nothing
                             // acked), so label it rather than assert it.
@@ -783,6 +791,7 @@ extension AppController {
         return LiveStats(
             videoPath: (o["video_path"] as? String) ?? "unknown",
             bitrateBps: int("bitrate_bps"), ceilingBps: int("ceiling_bps"),
+            effectiveCeilingBps: int("effective_ceiling_bps"),
             rttMs: int("rtt_ms"), queueMs: int("queue_delay_ms"),
             queueAgeMs: int("queue_delay_age_ms"),
             fps: int("fps"), frames: int("frames_sent"), adaptive: bool("adaptive"))

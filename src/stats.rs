@@ -48,6 +48,11 @@ pub struct SessionStats {
     /// Standing queue delay (ms above the windowed-min RTT) — the adaptive
     /// controller's congestion signal. Meaningful only with acks flowing.
     pub queue_delay_ms: AtomicU32,
+    /// The ceiling the rate controller has CONVERGED to, as opposed to
+    /// `ceiling_bps` (the operator's `--bitrate`, which stays the maximum). The
+    /// gap between the two is the whole story of a session that "got slower on
+    /// its own": published so that gap is a number rather than an inference.
+    pub effective_ceiling_bps: AtomicU32,
     /// Effective frame rate (capped by the adaptive floor under congestion).
     pub fps: AtomicU32,
     pub frames_sent: AtomicU64,
@@ -358,7 +363,8 @@ impl SessionStats {
         format!(
             concat!(
                 "{{\"connected\":{},\"width\":{},\"height\":{},\"bitrate_bps\":{},",
-                "\"ceiling_bps\":{},\"rtt_ms\":{},\"queue_delay_ms\":{},\"fps\":{},",
+                "\"ceiling_bps\":{},\"effective_ceiling_bps\":{},",
+                "\"rtt_ms\":{},\"queue_delay_ms\":{},\"fps\":{},",
                 "\"frames_sent\":{},\"capture_drops\":{},\"capture_sample_drops\":{},",
                 "\"capture_superseded\":{},\"capture_buffered\":{},\"display_pending\":{},\"outbound_queued_packets\":{},\"outbound_queued_bytes\":{},\"outbound_enqueued_packets\":{},\"outbound_rejected_packets\":{},\"outbound_sent_packets\":{},\"outbound_sent_bytes\":{},\"display_overflow_resyncs\":{},\"capture_age_ms\":{},",
                 "\"encode_latency_ms\":{},\"ship_latency_ms\":{},\"encoded_pending\":{},",
@@ -382,6 +388,7 @@ impl SessionStats {
             self.height.load(Ordering::Relaxed),
             self.bitrate_bps.load(Ordering::Relaxed),
             self.ceiling_bps.load(Ordering::Relaxed),
+            self.effective_ceiling_bps.load(Ordering::Relaxed),
             self.rtt_ms.load(Ordering::Relaxed),
             self.queue_delay_ms.load(Ordering::Relaxed),
             self.fps.load(Ordering::Relaxed),
