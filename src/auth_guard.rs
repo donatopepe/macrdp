@@ -46,6 +46,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
 /// Hard cap on distinct tracked IPs, to bound memory under a spoofed-source-IP
 /// flood. When exceeded, the entries with the oldest `last_touch` are evicted.
@@ -604,6 +605,14 @@ pub struct AuthGuardHandler {
     /// because the single-process accept loop is serial — `on_accept` always runs
     /// immediately before the connection it belongs to.
     last_peer: Option<std::net::SocketAddr>,
+    /// A session we have authenticated and not yet seen disconnect, and when it
+    /// arrived. Used purely to LABEL a connection: "this one is preempting a
+    /// live session" and "this one is a reconnect N s after the last one from
+    /// this IP ended" are the two shapes that matter when a client comes back
+    /// to a white screen, and until now nothing in the log could tell them
+    /// apart from an ordinary first connect. No behaviour depends on this.
+    live_session: Option<(std::net::IpAddr, Instant)>,
+    last_end_by_ip: std::collections::HashMap<std::net::IpAddr, Instant>,
 }
 
 impl AuthGuardHandler {
@@ -614,6 +623,8 @@ impl AuthGuardHandler {
             Box::new(Self {
                 core,
                 last_peer: None,
+                live_session: None,
+                last_end_by_ip: std::collections::HashMap::new(),
             }) as Box<dyn ironrdp_server::ConnectionHandler>
         })
     }
@@ -622,6 +633,35 @@ impl AuthGuardHandler {
 impl ironrdp_server::ConnectionHandler for AuthGuardHandler {
     fn on_accept(&mut self, peer: std::net::SocketAddr) -> bool {
         self.last_peer = Some(peer);
+        // Label the connection shape (see `live_session`).
+        let now = Instant::now();
+        if let Some((live_ip, _)) = self.live_session {
+            if live_ip == peer.ip() {
+                warn!(
+                    ip = %peer.ip(),
+                    "connection arrives while a session from the SAME IP is still live \
+                     — this will PREEMPT it (a returning client that reconnects before \
+                     the server noticed the drop lands here)"
+                );
+            } else {
+                info!(
+                    ip = %peer.ip(),
+                    live_ip = %live_ip,
+                    "connection arrives while a session from another IP is still live — \
+                     the second client will preempt"
+                );
+            }
+        } else if let Some(ended) = self.last_end_by_ip.get(&peer.ip()) {
+            let secs = now.saturating_duration_since(*ended).as_secs_f64();
+            if secs < 30.0 {
+                info!(
+                    ip = %peer.ip(),
+                    reconnect_secs = secs,
+                    "reconnect after the previous session from this IP ended — \
+                     auto-reconnect cookie path"
+                );
+            }
+        }
         match self.core.decide(Instant::now(), peer.ip()) {
             Decision::Accept => {
                 audit_accept(peer.ip(), peer.port());
@@ -635,6 +675,11 @@ impl ironrdp_server::ConnectionHandler for AuthGuardHandler {
     }
 
     fn on_authenticated(&mut self, success: bool, reason: Option<&str>) {
+        if success {
+            if let Some(peer) = self.last_peer {
+                self.live_session = Some((peer.ip(), Instant::now()));
+            }
+        }
         // `last_peer` is always set here in single-process operation (on_accept
         // precedes the connection); guard defensively rather than assume it.
         if let Some(peer) = self.last_peer {
@@ -668,6 +713,10 @@ impl ironrdp_server::ConnectionHandler for AuthGuardHandler {
         error: Option<&anyhow::Error>,
     ) -> ironrdp_server::PostConnectionAction {
         let outcome = classify_outcome(error.is_some(), duration, self.core.failfast_window());
+        if self.live_session.map(|(ip, _)| ip) == Some(peer.ip()) {
+            self.live_session = None;
+        }
+        self.last_end_by_ip.insert(peer.ip(), Instant::now());
         self.core.record_outcome(Instant::now(), peer.ip(), outcome);
         audit_disconnect(peer.ip(), peer.port(), duration, outcome);
         // The guard must never halt the server.
@@ -1045,6 +1094,8 @@ mod tests {
             let mut handler = AuthGuardHandler {
                 core: AuthGuardCore::with_config(test_cfg()),
                 last_peer: None,
+                live_session: None,
+                last_end_by_ip: HashMap::new(),
             };
             // on_accept stashes the peer for on_authenticated to correlate.
             assert!(handler.on_accept(peer));
@@ -1078,6 +1129,8 @@ mod tests {
             let mut handler = AuthGuardHandler {
                 core: AuthGuardCore::with_config(test_cfg()),
                 last_peer: None,
+                live_session: None,
+                last_end_by_ip: HashMap::new(),
             };
             assert!(handler.on_accept(peer));
             // A hostile client name with a control char (log-injection attempt)
@@ -1111,6 +1164,8 @@ mod tests {
         let mut handler = AuthGuardHandler {
             core: AuthGuardCore::with_config(test_cfg()),
             last_peer: None,
+            live_session: None,
+            last_end_by_ip: HashMap::new(),
         };
         // No preceding on_accept → last_peer is None; must be a graceful no-op.
         handler.on_authenticated(true, None);
