@@ -95,6 +95,12 @@ Piano staccato su richiesta. Ordine = dipendenze, non preferenze.
 - [ ] Release: il quit e l'update cambiano il comportamento del menu → **v0.9.10** (patch) se si
       taglia; `ALLOW_SLEEP` e la guardia di porta sono già in v0.9.9.
 
+## In flight — open follow-ups from the 2026-10-04/05 session
+
+- [ ] **Adaptive ceiling, not just an adaptive target.** `--adaptive-bitrate` moves the *target* between the floor and a **fixed** `--bitrate` ceiling; the ceiling itself never adapts, so on a marginal link the controller oscillates (congested → back off → climb back to the ceiling → congested), and the IDR backoff it triggers withholds exactly the keyframes that would heal a client that stopped presenting. Wanted by the operator: a slow, hysteretic adaptation of the ceiling itself from the standing queue delay. **Deliberately not done yet** — the video path destabilised for 40 min from a much smaller change the same day (see the UDP-multitransport entry in docs/known-quirks.md), so this wants its own branch and tests.
+- [ ] **Client graphics-update PDUs are decoded and ignored.** The vendored acceptor's share-data loop handles Input / Shutdown / SuppressOutput / RefreshRectangle and drops everything else into `warn!("Unexpected share data pdu")`; client graphics updates arrive raw inside `ShareDataPdu::Update(Vec<u8>)` and this ironrdp version does not model them, so a client **RefreshRect**, **Set Keyframe** or **FutureFrames** request gets no answer. Not the cause of the observed blanks (the forced recovery IDR *was* shipped and ignored), but it is a real gap and the reason that WARN is worth keeping on at `warn` level.
+- [ ] **White screen after an automatic reconnect, for clients that cache the EGFX surface.** The server creates and maps a fresh `surface_id` every connection and the client re-presents on its stale one; our own log says so ("it re-lands on its stale surface every time"). Bare core reactivation heals in place but cannot invalidate the client's cache, and forcing a new surface (`BLANK_RECOVERY_REACTIVATE=0`) is worse — a 4-second accept/drop loop. Unfixable server-side without a client-fatal action, so the guidance is: close the whole RDP window, not just the connection. Note the drop-recovery fix above removes most of the *exposure*, since the drops were what triggered the auto-reconnects.
+
 ## In flight (needs an action)
 
 - [ ] **Open PRs from @antonmos — review state (as of 2026-09-17).**

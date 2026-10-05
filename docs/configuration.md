@@ -295,6 +295,16 @@ macrdp --check-permissions   Print the macOS permission + code-identity report
 
 `RUST_LOG=debug` for verbose logging.
 
+**Keep `ironrdp_server::server=warn` in a per-module filter.** The vendored
+acceptor answers four share-data PDUs (Input, Shutdown, SuppressOutput,
+RefreshRectangle) and reports everything else as
+`warn!("Unexpected share data pdu")` — that line is the *only* visibility into
+what a client asks for and macrdp ignores (client graphics updates arrive raw in
+`ShareDataPdu::Update` and are not modelled by this ironrdp version). A filter of
+`ironrdp_server::server=error` hides all of it, which is how a whole afternoon of
+blank-screen triage ran blind. `macrdp::h264`/`macrdp::input` at `info` are the
+useful ones for session behaviour; everything else can stay at `error`.
+
 ### Auth hardening (environment variables, on by default)
 
 In front of the NLA/CredSSP gate, macrdp rate-limits and (briefly, escalating) locks out
