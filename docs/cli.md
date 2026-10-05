@@ -60,7 +60,10 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   for editors with an embedded terminal that can't be
                           #   auto-detected (e.g. com.microsoft.VSCode). macOS-only.
 --no-client-resolution    # Don't adopt the resolution the client requests at
-                          #   connect (the auto-adopt default). Auto-adopt
+                          #   connect — serve the Mac's native size. The binary
+                          #   default is auto-adopt; the seeded config.env turns
+                          #   this ON so the bitrate is sized against one known
+                          #   resolution. Auto-adopt
                           #   applies on the mirror-primary path when no
                           #   --width/--height/--hidpi is given, AND on
                           #   --virtual-display (the vd is re-moded to the
