@@ -158,7 +158,21 @@ pub struct SessionStats {
     /// Offset/zone samples accepted by drift hysteresis; increments each PTS interval.
     pub av_hysteresis_samples: AtomicU64,
     pub aac: AtomicBool,
+    /// Which video path this process was started with. Every numeric field in
+    /// this struct is maintained by the H.264/EGFX path ONLY (see
+    /// `h264.rs`, the only writer of `connected`), so on the legacy bitmap path
+    /// they read 0/false for a session that may be perfectly healthy — which
+    /// is exactly the blind spot that made the 2026-10-05 legacy-path test
+    /// unreadable. This makes "not applicable" distinguishable from "broken".
+    video_path_h264: AtomicBool,
     av_clock: AvClockTracker,
+}
+
+/// Record the video path once, at startup (before any client connects).
+pub fn set_video_path(h264: bool) {
+    if let Some(s) = global() {
+        s.video_path_h264.store(h264, Ordering::Relaxed);
+    }
 }
 
 #[derive(Default)]
@@ -319,7 +333,7 @@ impl SessionStats {
                 "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
                 "\"av_offset_ewma_ms\":{},\"av_offset_ewma_samples\":{},",
                 "\"av_drift_ppm\":{},\"av_drift_samples\":{},\"av_drift_zone\":{},\"av_hysteresis_samples\":{},\"av_offset_abs_max_ms\":{},\"av_offset_last_sample_ms\":{},",
-                "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{}}}"
+                "\"cpu_percent\":{},\"adaptive\":{},\"aac\":{},\"video_path\":\"{}\"}}"
             ),
             self.connected.load(Ordering::Relaxed),
             self.width.load(Ordering::Relaxed),
@@ -396,6 +410,7 @@ impl SessionStats {
             self.cpu_percent.load(Ordering::Relaxed),
             self.adaptive.load(Ordering::Relaxed),
             self.aac.load(Ordering::Relaxed),
+            if self.video_path_h264.load(Ordering::Relaxed) { "egfx-h264" } else { "legacy-bitmap" },
         )
     }
 }
@@ -640,6 +655,16 @@ pub async fn serve(port: u16, stats: Arc<SessionStats>) {
 mod tests {
     use super::*;
 
+    /// The legacy bitmap path must be self-describing: every H.264 counter reads 0
+    /// there, and a reader must not mistake that for a dead session.
+    #[test]
+    fn video_path_is_reported_explicitly() {
+        let s = SessionStats::default();
+        assert!(s.to_json().contains("\"video_path\":\"legacy-bitmap\""));
+        s.video_path_h264.store(true, Ordering::Relaxed);
+        assert!(s.to_json().contains("\"video_path\":\"egfx-h264\""));
+    }
+
     #[test]
     fn json_shape_is_stable_and_parseable() {
         let s = SessionStats::default();
@@ -648,11 +673,13 @@ mod tests {
         s.height.store(1080, Ordering::Relaxed);
         s.bitrate_bps.store(4_000_000, Ordering::Relaxed);
         s.fps.store(60, Ordering::Relaxed);
+        s.video_path_h264.store(true, Ordering::Relaxed);
         let j = s.to_json();
         // Spot-check a few fields + that it's a single line with the expected keys.
         assert!(j.starts_with('{') && j.ends_with('}'));
         assert!(!j.contains('\n'));
         assert!(j.contains("\"connected\":true"));
+        assert!(j.contains("\"video_path\":\"egfx-h264\""));
         assert!(j.contains("\"width\":1920"));
         assert!(j.contains("\"bitrate_bps\":4000000"));
         assert!(j.contains("\"fps\":60"));

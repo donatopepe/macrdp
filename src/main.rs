@@ -855,7 +855,21 @@ struct Args {
     /// (the proven safe spike) — pass --udp-migrate-egfx to actually move the
     /// H.264 video onto the reliable UDP tunnel. Input, audio (RDPSND), and
     /// clipboard always ride TCP. macOS-only build; see
-    /// docs/rdp-udp-multitransport-feasibility.md.
+    /// EXPERIMENTAL: serve the auxiliary UDP transport (MS-RDPEMT) alongside TCP.
+    /// Carries the EGFX video channel over a reliable UDP tunnel, which is a
+    /// better fit for a lossy or congested link than TCP — the video freezes
+    /// rather than stalling the socket.
+    ///
+    /// **Observed hazard (2026-10-05, Windows client build 22621):** with this
+    /// channel on, that client reset every session at a fixed 65.4 s
+    /// ("client loop failure / Connection reset by peer") and reconnected into
+    /// the same state, on BOTH the H.264 and the legacy bitmap path; with it
+    /// off, zero resets from the same client on the same machine. The
+    /// mechanism was not established — it is a correlation, not a diagnosed
+    /// protocol fault — and `--udp-migrate-egfx` was off throughout, so the
+    /// fault survived de-migration. Treat a FIXED-INTERVAL reset right after
+    /// enabling this as the signature, and watch the first two minutes on an
+    /// unfamiliar client. See docs/known-quirks.md.
     #[arg(long)]
     enable_udp_multitransport: bool,
 
@@ -3011,6 +3025,9 @@ async fn async_main() -> Result<()> {
         outbound_sent_bytes: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     if let Some(stats) = crate::stats::global() {
+        // Which video path we are on, so the endpoint's numbers can be read as
+        // "not applicable" rather than "broken" on the legacy bitmap path.
+        crate::stats::set_video_path(args.enable_h264);
         // Reuse the same atomics exposed by the loopback endpoint.
         // `--stats-endpoint` is required before server assembly below.
         diagnostics.event_queue = stats.server_event_queue.clone();

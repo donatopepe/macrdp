@@ -1,5 +1,12 @@
 # Conventions worth keeping
 
+- **Measure before you change a live behaviour — one variable per change, and leave the system in a measured state.** On this codebase's runtime paths (video, rate control, TCC, reconnects) a plausible-sounding change is usually a guess, and the cost is measured in other people's time. Concretely, in order:
+  1. Get a **baseline number** first, from the live system, before touching anything. During the 2026-10-04/05 session this meant: RTT, standing queue delay, drop counters, frames sent, session duration from the audit log, and the `tccd`/`tccd`-equivalent prompt count from the unified log. A change with no baseline cannot be evaluated afterwards, only argued about.
+  2. Change **one** variable, then re-measure the same numbers. Two at once is indistinguishable from noise.
+  3. When a change looks like a fix, **bisect your own changes** rather than adding another: the actual culprit (a one-line opt-in that was enabled "for fluidity") was found by turning settings off one at a time, with counts (27 resets vs 0), not by reasoning.
+  4. **A correlation is not a mechanism.** Write it down as a correlation, keep looking for the mechanism, and never let a fix ship on the strength of the correlation alone.
+  5. Make the **instrumentation cheap enough that the next person does not have to add it mid-debug**: a per-module log filter that hides the relevant warning, or a metrics block that reports 0 for "not applicable", will cost more than the bug.
+  6. **Reversible beats clever**: a config change that a single line undoes is worth more than a code change that "should" be right.
 - Keep `ironrdp` as the only crate that touches RDP wire format. Wrappers around it are fine; parallel parsing/emitting of PDUs is not.
 - Per-platform code (capture, input, cursor, clipboard) is feature-gated via `#[cfg(target_os = "macos")]` so the protocol layer remains cross-compilable on Linux CI. Each module has a non-macOS stub for that reason.
 - Errors that originate from macOS APIs (`OSStatus`, `CGError`, TCC denials, PAM error codes) should be wrapped with enough context that the user knows *which permission or service* is missing — those are the #1 support question.

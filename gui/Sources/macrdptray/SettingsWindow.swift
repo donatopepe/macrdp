@@ -578,6 +578,11 @@ struct ConnectionInfo {
 
 /// Live H.264 telemetry from the server's opt-in loopback stats endpoint.
 struct LiveStats {
+    /// "egfx-h264" or "legacy-bitmap". Every other field here is written by the
+    /// H.264 path ONLY, so on the legacy path they read 0 for a session that may
+    /// be perfectly healthy — the server says which path it is on so the pane
+    /// does not present that as a dead session.
+    let videoPath: String
     let bitrateBps: Int
     let ceilingBps: Int
     let rttMs: Int
@@ -633,13 +638,25 @@ private struct StatusView: View {
                 }
             }
             if conn.connected {
-                Section("Video (H.264)") {
+                Section("Video") {
+                    // The counters below are written by the H.264 path only, so
+                    // say which path is live instead of showing zeros that read
+                    // as "dead session" on the legacy bitmap path.
                     if let l = live {
+                        row("Video path", l.videoPath == "egfx-h264"
+                            ? "H.264 / EGFX" : "Legacy bitmaps (no AVC)")
+                    }
+                    if let l = live, l.videoPath == "egfx-h264" {
                         row("Bitrate", bitrateText(l))
                         row("Frame rate", "\(l.fps) fps")
                         if l.rttMs > 0 { row("Link RTT", "\(l.rttMs) ms") }
                         if l.adaptive { row("Standing queue", "\(l.queueMs) ms") }
                         row("Frames sent", "\(l.frames)")
+                    } else if live != nil {
+                        Text("Bitrate, frame-rate and link RTT are H.264 telemetry: "
+                            + "this session is on the legacy bitmap path, which is not "
+                            + "rate-controlled by --bitrate.")
+                            .font(.caption).foregroundColor(.secondary)
                     } else {
                         Text("Turn on “Live statistics endpoint” in Advanced (then Apply) to see "
                             + "bitrate, link RTT and frame-rate here. Shown only over H.264.")
@@ -753,6 +770,7 @@ extension AppController {
         func int(_ k: String) -> Int { (o[k] as? NSNumber)?.intValue ?? 0 }
         func bool(_ k: String) -> Bool { (o[k] as? NSNumber)?.boolValue ?? false }
         return LiveStats(
+            videoPath: (o["video_path"] as? String) ?? "unknown",
             bitrateBps: int("bitrate_bps"), ceilingBps: int("ceiling_bps"),
             rttMs: int("rtt_ms"), queueMs: int("queue_delay_ms"),
             fps: int("fps"), frames: int("frames_sent"), adaptive: bool("adaptive"))
