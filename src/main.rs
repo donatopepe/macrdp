@@ -2809,13 +2809,10 @@ async fn async_main() -> Result<()> {
                 let mut found = None;
                 for _ in 0..12 {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    match primary_display_size().await {
-                        Ok(d) => {
-                            info!("display available again after waiting");
-                            found = Some(d);
-                            break;
-                        }
-                        Err(_) => {}
+                    if let Ok(d) = primary_display_size().await {
+                        info!("display available again after waiting");
+                        found = Some(d);
+                        break;
                     }
                 }
                 found.ok_or(first)?

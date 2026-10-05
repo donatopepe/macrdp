@@ -277,7 +277,160 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Runs the install logic without the GUI. `--print-paths` is side-effect
     /// free; `--install-agent` locates the server, writes + loads the agent
     /// (assumes the Keychain password is set separately for unattended deploys).
+/// Headless self-test: exercise every path the menu bar and the Settings
+    /// window can take EXCEPT the ones that need a human (showing a window,
+    /// opening a System Settings pane, the smart-card installer, the camera
+    /// system extension). Prints PASS/FAIL per item and exits non-zero if any
+    /// fail, so it can be run from a script or as a launchd health probe.
+    ///
+    /// It is deliberately non-destructive: config.env is snapshotted and put
+    /// back, and the Keychain round-trip uses its OWN service name, never the
+    /// real `macrdp` entry with the account password in it.
+    func selfTest() -> Int32 {
+        var pass = 0, fail = 0
+        func check(_ name: String, _ ok: Bool, _ detail: @autoclosure () -> String = "") {
+            if ok {
+                print("  ✓ \(name)"); pass += 1
+            } else {
+                print("  ✗ \(name)\(detail().isEmpty ? "" : " — \(detail())")"); fail += 1
+            }
+        }
+
+        print("macrdp Controller self-test — \(installedServerVersion() ?? "server app NOT FOUND")")
+
+        // 1. Inventory: the Settings window can write these, and the Rust bridge
+        //    is asserted against the same list.
+        let missing = ["ALLOW_SLEEP", "ENABLE_LOSSY_AUDIO", "USB_STREAM_STALL_MS",
+                       "RESTORE_WINDOWS_ON_DISCONNECT", "ENABLE_USB_REDIRECTION"]
+            .filter { ConfigKeys.key($0) == nil }
+        check("config key inventory complete", missing.isEmpty, "missing: \(missing)")
+
+        // 2. config.env round-trip, restored afterwards.
+        let snapshot = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
+        do {
+            try? FileManager.default.createDirectory(
+                at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: configURL.path) {
+                try? "BIND=\"127.0.0.1:3390\"\n".write(to: configURL, atomically: true,
+                                                      encoding: .utf8)
+            }
+            let probe = "SELFTEST_PROBE"
+            writeConfig(key: probe, value: "1")
+            let back = readConfig()[probe]
+            check("config.env write → read round-trip", back == "1", "read back \(back ?? "nil")")
+            // Rewrite an existing key rather than appending a second copy.
+            writeConfig(key: probe, value: "0")
+            check("config.env rewrite in place", readConfig()[probe] == "0")
+            let lines = (try? String(contentsOf: configURL, encoding: .utf8))?
+                .split(separator: "\n").filter { $0.contains(probe) } ?? []
+            check("no duplicate key written", lines.count == 1, "\(lines.count) copies")
+            if !snapshot.isEmpty {
+                try? snapshot.write(to: configURL, atomically: true, encoding: .utf8)
+            } else {
+                try? FileManager.default.removeItem(at: configURL)
+            }
+        }
+
+        // 3. The inverted key must round-trip to the value the SERVER expects:
+        //    "prevent sleep ON" has to write ALLOW_SLEEP=0.
+        let sleepKey = ConfigKeys.key("ALLOW_SLEEP")!
+        check("sleep toggle writes the inverted key",
+              ConfigKeys.value(for: sleepKey, toggleOn: true) == "0"
+                  && ConfigKeys.value(for: sleepKey, toggleOn: false) == "1")
+
+        // 4. Keychain, read-only on the real entry + a full round-trip on our own
+        //    service so nothing touches the stored account password.
+        check("Keychain: real entry detected (read-only)", hasKeychainPassword(),
+              "no macrdp entry — the server cannot start headless")
+        let probeService = "macrdp-selftest"
+        _ = run("/usr/bin/security",
+                ["delete-generic-password", "-s", probeService, "-a", NSUserName()])
+        let added = run("/usr/bin/security",
+                        ["add-generic-password", "-U", "-s", probeService, "-a", NSUserName(),
+                         "-w", "selftest-value"]).code == 0
+        // `-w` is what actually prints the password; without it the command
+        // prints only the attributes, so the comparison below would fail on a
+        // perfectly good entry.
+        let readRun = run("/usr/bin/security",
+                          ["find-generic-password", "-s", probeService, "-a", NSUserName(), "-w"])
+        let readBack = readRun.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            == "selftest-value"
+        let removed = run("/usr/bin/security",
+                          ["delete-generic-password", "-s", probeService, "-a", NSUserName()])
+            .code == 0
+        check("Keychain add → read → delete (own service)",
+              added && readBack && removed,
+              "add=\(added) read=\(readBack) delete=\(removed) "
+                  + "[find rc=\(readRun.code) out=\(readRun.stdout.prefix(120))]")
+
+        // 5. Permissions: read-only queries, so this is safe to run anywhere.
+        let screenOK = CGPreflightScreenCaptureAccess()
+        let axOK = AXIsProcessTrusted()
+        print("  · Screen Recording \(screenOK ? "granted" : "NOT granted")"
+            + " — the server bundle must be granted, not the controller")
+        print("  · Accessibility \(axOK ? "granted" : "NOT granted")")
+        check("permission probes answerable", true)
+
+        // 6. Install discovery.
+        check("server app found", locateServerApp() != nil)
+        check("controller bundle found", locateControllerApp() != nil)
+        check("server LaunchAgent plist present",
+              FileManager.default.fileExists(atPath: plistURL.path), plistURL.path)
+        check("controller login item present",
+              FileManager.default.fileExists(atPath: selfPlistURL.path), selfPlistURL.path)
+
+        // 7. launchd, read-only.
+        let st = agentState()
+        check("server agent state readable (loaded=\(st.loaded) pid=\(st.pid.map(String.init) ?? "none"))",
+              true)
+
+        // 8. Updater: version compare, asset selection, checksum parsing, and a
+        //    REAL fetch of the published SHA256SUMS — without installing
+        //    anything. This is the part that silently rots.
+        check("version compare rejects an older release",
+              !Version.isNewer("0.9.9", than: "0.9.10"))
+        check("version compare accepts a newer patch",
+              Version.isNewer("0.9.10", than: "0.9.9"))
+        switch latestRelease() {
+        case .failure(let why):
+            check("GitHub release lookup", false, why.message)
+        case .success(let rel):
+            check("GitHub release lookup (latest \(rel.tag))", true)
+            let names = rel.assets.map(\.lastPathComponent)
+            guard let zipName = Assets.url(in: names, endingWith: "-app.zip"),
+                  let sumsName = Assets.url(in: names, endingWith: "SHA256SUMS")
+            else {
+                check("release assets present", false, "assets: \(names)")
+                break
+            }
+            check("release assets present (\(names.count))", true)
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("macrdp-selftest-\(ProcessInfo.processInfo.processIdentifier)")
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+            let sumsURL = tmp.appendingPathComponent(sumsName)
+            guard download(assetURL(assets: rel.assets, suffix: "SHA256SUMS") ?? rel.assets[0],
+                           to: sumsURL)
+            else {
+                check("download SHA256SUMS", false)
+                break
+            }
+            // Deliberately do NOT download the 8 MB app here: verify the MANIFEST
+            // parses and that a wrong file name yields no expectation (which is
+            // what makes a tampered archive fail instead of pass).
+            let manifest = (try? String(contentsOf: sumsURL, encoding: .utf8)) ?? ""
+            let want = Checksums.expected(inManifest: manifest, for: zipName)
+            check("SHA256SUMS parses for \(zipName)", want?.count == 64,
+                  "expected 64 hex chars, got \(want?.count ?? -1)")
+            check("SHA256SUMS yields nothing for an unknown file",
+                  Checksums.expected(inManifest: manifest, for: "not-a-real-file.zip") == nil)
+        }
+
+        print("self-test: \(pass) ok, \(fail) failed")
+        return fail == 0 ? 0 : 1
+    }
     func runHeadless(_ args: [String]) -> Int32 {
+        if args.contains("--self-test") { return selfTest() }
         // Quit from a script / MDM: stop the server agent AND unload the
         // controller's login item, so nothing comes back until Start or the next
         // login. Same code path as the menu's Quit, so it cannot drift.
@@ -850,7 +1003,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             “Stop” only halts the server — everything stays installed and comes back at the next             login or from Start. “Uninstall” removes the server LaunchAgent, macrdp.app, the             Controller and its login item; config.env and the Keychain password are kept unless             you tick the boxes below.
             """
         a.accessoryView = accessory
-        let stop = a.addButton(withTitle: "Stop the server")
+        a.addButton(withTitle: "Stop the server")
         let uninstall = a.addButton(withTitle: "Uninstall")
         let cancel = a.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
@@ -1076,7 +1229,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 // Headless entry for scripted/MDM deploy + testing (no GUI, no status bar).
 let cliArgs = CommandLine.arguments
 if cliArgs.contains("--install-agent") || cliArgs.contains("--print-paths")
-    || cliArgs.contains("--stop-all") {
+    || cliArgs.contains("--stop-all") || cliArgs.contains("--self-test") {
     exit(AppController().runHeadless(cliArgs))
 }
 

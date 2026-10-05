@@ -57,6 +57,10 @@ done
 
 SNAPSHOT="$(mktemp "${TMPDIR:-/tmp}/macrdp-cfg.XXXXXX")"
 cp "$CONFIG" "$SNAPSHOT"
+# A second copy at a predictable path: if the harness is hard-killed (SIGKILL, no
+# trap) the operator can still put the config back by hand.
+HARD_BACKUP="$SUPPORT/config.env.harness-backup"
+cp "$CONFIG" "$HARD_BACKUP"
 restore() {
     if [ "$KEEP" -eq 1 ]; then
         echo "==> --keep: leaving config.env as the last test left it"
@@ -65,7 +69,7 @@ restore() {
         launchctl kickstart -k "$DOMAIN/$LABEL" 2>/dev/null
         echo "==> restored the original config.env and restarted the server"
     fi
-    rm -f "$SNAPSHOT"
+    rm -f "$SNAPSHOT" "$HARD_BACKUP"
 }
 trap restore EXIT INT TERM
 
@@ -73,20 +77,28 @@ server_pid() { pgrep -f "MacOS/macrdp .*--config" | head -1; }
 server_argv() { ps -o command= -p "$(server_pid)" 2>/dev/null; }
 server_env() { ps eww -o command= -p "$(server_pid)" 2>/dev/null; }
 
-# Restart the agent and wait until it is actually serving again.
+# Restart the agent, then wait for the NEW process.
+#
+# Two traps avoided, both of which produced wrong results here:
+#   * waiting for "some process exists" is not enough — `kickstart -k` leaves the
+#     outgoing pid visible for a moment, so the old pid and its listening socket
+#     look fine while the new one is still booting (~2 s: watchdog, TCC, PAM),
+#     and the log assertions then run against a banner that does not exist yet;
+#   * `lsof` inside the polling loop costs ~1 s per call here, which turned a
+#     30 s budget into many minutes and blew the caller's own timeout.
+# So: a wall-clock budget, cheap checks only inside the loop (pid + log size),
+# and the expensive listening check once, afterwards.
+RESTART_TIMEOUT="${RESTART_TIMEOUT:-25}"
 restart_and_wait() {
-    OLD_PID="$(server_pid)"
-    LOG_SIZE_BEFORE="$(wc -c < "$LOG" 2>/dev/null || echo 0)"
+    local old_pid size_before deadline p
+    old_pid="$(server_pid)"
+    size_before="$(wc -c < "$LOG" 2>/dev/null || echo 0)"
     launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null 2>&1
-    # No `lsof` inside the loop: it enumerates every socket and costs about a
-    # second here, which turned a 30 s wait into several minutes. Waiting on
-    # "a DIFFERENT pid exists and the log grew" is both cheaper and sufficient;
-    # the caller does the single lsof check afterwards.
-    for _ in $(seq 1 60); do
-        local p
+    deadline=$(( $(date +%s) + RESTART_TIMEOUT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
         p="$(server_pid)"
-        if [ -n "$p" ] && [ "$p" != "$OLD_PID" ] \
-            && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt "$LOG_SIZE_BEFORE" ]; then
+        if [ -n "$p" ] && [ "$p" != "$old_pid" ] \
+            && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt "$size_before" ]; then
             sleep 0.5   # let the startup banner finish writing
             return 0
         fi
@@ -94,6 +106,10 @@ restart_and_wait() {
     done
     return 1
 }
+
+# Is the server actually accepting connections? One lsof call, once — not in a loop.
+serving() { lsof -nP -iTCP:3390 -sTCP:LISTEN 2>/dev/null | grep -q macrdp; }
+
 
 ok()   { PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "$1"; }
 bad()  { FAIL=$((FAIL+1)); FAILED_KEYS+=("$2"); printf "  \033[31m✗\033[0m %s — %s\n" "$1" "$3"; }
@@ -111,16 +127,26 @@ set_key() {
 
 # assert_arg FLAG LABEL KEY  — the flag must be in the running argv
 assert_arg() {
-    if server_argv | grep -q -- "$1"; then ok "$2"; else bad "$2" "$3" "flag '$1' assente dall'argv: $(server_argv | cut -c1-90)"; fi
+    local n
+    n="$(server_argv | grep -c -- "$1" || true)"
+    if [ "${n:-0}" -gt 0 ]; then ok "$2"; else bad "$2" "$3" "flag '$1' assente dall'argv: $(server_argv | cut -c1-90)"; fi
 }
 assert_no_arg() {
-    if server_argv | grep -q -- "$1"; then bad "$2" "$3" "flag '$1' presente ma non dovrebbe"; else ok "$2"; fi
+    local n
+    n="$(server_argv | grep -c -- "$1" || true)"
+    if [ "${n:-0}" -gt 0 ]; then bad "$2" "$3" "flag '$1' presente ma non dovrebbe"; else ok "$2"; fi
 }
 assert_env() {
     if server_env | tr ' ' '\n' | grep -qx -- "$1"; then ok "$2"; else bad "$2" "$3" "variabile $1 assente dall'ambiente"; fi
 }
+# `grep -q` exits on the FIRST match, which SIGPIPEs the writer; under
+# `set -o pipefail` the pipeline then reports failure and this assertion lies
+# ("no log line") for a log line that is right there. `grep -c` drains stdin, so
+# the status reflects the search, not the pipe. Bit me once on ENABLE_H264.
 assert_log() {
-    if tail -400 "$LOG" | grep -q -- "$1"; then ok "$2"; else bad "$2" "$3" "nessuna riga di log con '$1'"; fi
+    local hits
+    hits="$(tail -400 "$LOG" | grep -c -- "$1" || true)"
+    if [ "${hits:-0}" -gt 0 ]; then ok "$2"; else bad "$2" "$3" "nessuna riga di log con '$1'"; fi
 }
 assert_port() {
     if lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; then ok "$2"; else bad "$2" "$3" "porta $1 non in ascolto"; fi
@@ -146,25 +172,27 @@ run_key() {
 
     echo "── $key=$value"
     set_key "$key" "$value"
-    restarted=0
-    restart_and_wait && restarted=1
     if [ "$how" = "expect_down" ]; then
+        restart_and_wait >/dev/null 2>&1 || true
+        sleep 3
         # Proves the key changed the outcome — and it is the most surprising
         # line in the file: no tty under launchd means no password prompt.
-        if [ "$restarted" -eq 1 ]; then
+        if pgrep -f "MacOS/macrdp .*--config" >/dev/null; then
             bad "$key=$value" "$key" "il server è ancora attivo: la chiave non ha cambiato nulla"
         else
             ok "$key=$value (server fuori, come previsto: nessuna fonte di password)"
         fi
         return 0
     fi
+    restarted=0
+    restart_and_wait && restarted=1
     if [ "$restarted" -eq 0 ]; then
         bad "$key=$value" "$key" "il server non è ripartito con questa configurazione"
         return 0
     fi
     # Every key: the server must be back up and serving. A key that breaks the
     # start is the failure this catches most of the time.
-    if pgrep -f "MacOS/macrdp .*--config" >/dev/null && lsof -nP -iTCP:3390 -sTCP:LISTEN >/dev/null 2>&1; then
+    if pgrep -f "MacOS/macrdp .*--config" >/dev/null && serving; then
         ok "$key=$value (server su e in ascolto)"
     else
         bad "$key=$value" "$key" "il server non è in ascolto dopo questa configurazione"

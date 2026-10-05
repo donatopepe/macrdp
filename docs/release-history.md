@@ -4,6 +4,22 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.10 — the menu bar grows up: quit, updates, uninstall, and a sleep switch
+
+A patch over v0.9.9, but **one behaviour change worth reading**: *Quit now stops the server* (it used to hide the icon only), and it also unloads the controller's own login item — otherwise `KeepAlive` respawns the icon within a second and Quit does nothing at all. Everything returns at the next login, or via Start / Show Controller.
+
+- **Quit that quits.** `bootout` the server agent, `bootout` our own login item, terminate. The plist stays on purpose: that is what makes the icon come back at the next login. `--stop-all` is the same code path headless, for scripts and MDM. Verified: 0 processes, 0 jobs, 0 listeners, no respawn after 10 s, and `--install-agent` + `open` bring both back.
+- **Check for updates…** — `releases/latest`, **numeric** version compare (0.9.10 beats 0.9.9; a string compare offers the downgrade), download, SHA-256 verified against `SHA256SUMS`, unpacked to a staging dir and swapped, the old bundle kept until the new one verifies, then re-signed with the local `macrdp Local Code Signing` certificate. If the designated requirement changed it says the grants must be re-issued — replacing the bundle is exactly the identity change v0.9.8 was about. Release assets carry the server only; the Controller is rebuilt from the repository.
+- **Uninstall…** — three buttons (Stop / Uninstall / Cancel) plus two **unticked** checkboxes for `config.env` and the Keychain password, which hold an account password. NSAlert carries at most three buttons, so the checklist could not be six rows. Reuses `packaging/uninstall-launchagent.sh` instead of reimplementing it.
+- **Sleep ▸** in the menu itself, with the current state checked: prevent-on-AC (default) or normal sleep policy, one kickstart per click.
+- **A display that is asleep no longer bricks startup.** `no displays available` was fatal, so a launchd agent crash-looped until someone touched the screen (36 respawns measured). It became reachable when the sleep policy went AC-only: unplug the laptop, let the display sleep, and the next restart could never come back. Startup now waits up to ~2 minutes for a display and says why. Related: the sleep watcher only re-asserts on a power-source *transition*, so a dead `caffeinate` child was never replaced — it is now.
+- **`macrdptray --self-test`** exercises every non-GUI path: config round-trip (restored afterwards), the key inventory, the inverted sleep key, the Keychain (its own service; the real entry is only ever read), permission probes, bundle discovery, launchd state, and the updater against the **published** `SHA256SUMS` without installing anything. 19 checks, all green on this host.
+- **`scripts/test-config-keys.sh`** round-trips every key the UI can write against the running server. Two lessons are baked into it, both learned the hard way: you cannot assert a key by looking for its flag in `ps -o command=`, because with `--config` the derived flags never enter the process argv; and `| grep -q` under `set -o pipefail` SIGPIPEs the writer, so an assertion can report "no log line" for a line that is right there. `USE_KEYCHAIN=0` is asserted as an *expected* failure — under launchd there is no tty, so no password prompt, so the server must exit.
+
+Tests: 226 Rust + 13 Swift. The Swift side lives in a new Foundation-only library target (`MacRDPUpdateCore`) because an executable target cannot be imported by a test target; its checksum parser test immediately caught a real bug — `shasum -b` writes `<hash> *<name>` with the asterisk glued on, which my parser did not match, so every update would have been refused as "unverified".
+
+Docs: a menu-by-menu table with how to verify each item, plus the headless equivalents, in `packaging/README.md`; the display-asleep failure in `docs/known-quirks.md`.
+
 ## v0.9.9 — the port preflight and the uninstaller that was missing
 
 A patch over v0.9.8 that closes the two items that release explicitly left open. **One behaviour change on the default startup path**: a second macrdp that would have quietly shadowed the first now refuses to start.

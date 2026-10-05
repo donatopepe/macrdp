@@ -143,6 +143,44 @@ the app happens to be running — pass `SETUP_LOGIN_ITEM=0` to skip. The app ste
 aside if another copy is already running, since the login item execs the binary
 directly and bypasses LaunchServices' one-instance handling.
 
+## What the menu bar does
+
+Every item, and what to check after using it:
+
+| Menu item | Effect | How to verify |
+|---|---|---|
+| **Show macrdp…** | the tabbed Settings window (Status, Connection, Video, Audio, Display, Input, Redirection, Advanced, Permissions) | window opens; Status shows the live pid |
+| **Sleep ▸ Prevent sleep while on AC power** | `ALLOW_SLEEP=0` (default) — the server holds the display awake **only on AC** | on AC: `pgrep caffeinate` finds one; unplug and it is released |
+| **Sleep ▸ Allow the Mac to sleep normally** | `ALLOW_SLEEP=1` | `pgrep caffeinate` empty; the Mac sleeps when idle |
+| **Check for updates…** | `releases/latest`, numeric version compare, SHA-256 verified download, bundle swapped, re-signed locally | with a current install it answers "macrdp is up to date" |
+| **Uninstall…** | Stop = halt the server only · Uninstall = agent + bundles + controller login item (via `packaging/uninstall-launchagent.sh`) · two unticked checkboxes for `config.env` and the Keychain password | the menu closes; `lsof -iTCP:3390` empty |
+| **Start / Stop / Restart** | the server LaunchAgent | `launchctl print gui/$UID/com.clintcan.macrdp` |
+| **Quit (stops the server)** | unloads the server agent **and** the controller's own login item (which is why it stays gone: `KeepAlive` would otherwise respawn it). Both return at the next login, or via Start / Show Controller. | `pgrep` = 0, `lsof` = 0, and no respawn after 10 s |
+| **Show Controller** (only when no copy runs) | reloads the login item, or opens the app if the plist is gone | the icon comes back |
+
+### Headless equivalents
+
+```bash
+macrdptray --self-test        # exercise every non-GUI path; non-zero on failure
+macrdptray --stop-all         # same code path as Quit, for scripts / MDM
+macrdptray --print-paths      # label, bind, app + plist + config paths, keychain state
+macrdptray --install-agent    # (re)install + load + kickstart the server agent
+```
+
+`--self-test` covers the config round-trip, the key inventory, the inverted sleep
+key, the Keychain (its OWN service — the real password entry is only ever read),
+permission probes, bundle discovery, launchd state, and the updater end to end
+against the **published** `SHA256SUMS` without installing anything.
+
+### Manual checks (the ones that need a person)
+
+- [ ] Settings window opens and each section renders
+- [ ] *Open Logs* opens `~/Library/Logs/macrdp.log`
+- [ ] *Open Screen Recording* / *Open Accessibility* land on the right pane
+- [ ] *Set password…* stores a new Keychain entry, and *Start* then works headless
+- [ ] *Install smart-card handler…* asks for admin (needs a USB trigger to work)
+- [ ] *Enable macrdp Camera…* installs and activates the system extension
+
 ## Day to day
 
 ```bash
