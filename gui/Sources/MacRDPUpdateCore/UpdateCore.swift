@@ -119,10 +119,11 @@ public struct AudioMode: Equatable, Sendable {
         return fromConfig(aac: aac, lossy: lossy)
     }
 
-    /// Canonicalize persisted / hand-edited config: lossy transport is
-    /// authoritative because it has already been measured as the desired mode.
+    /// Canonicalize persisted / hand-edited config: reliable RDPSND AAC is the
+    /// safe fallback for a contradictory legacy config because the lossy UDP
+    /// mode correlates with the repeated ~65s reset on this deployment's mstsc.
     public static func fromConfig(aac: Bool, lossy: Bool) -> AudioMode {
-        lossy ? AudioMode(aac: false, lossy: true) : AudioMode(aac: aac, lossy: false)
+        aac ? AudioMode(aac: true, lossy: false) : AudioMode(aac: false, lossy: lossy)
     }
 }
 

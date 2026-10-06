@@ -4,6 +4,17 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.17 — reliable AAC default; lossy UDP resets isolated
+
+The user reported repeated disconnects and asserted the network path was healthy. The log showed a strong implementation-mode correlation: 62 resets at 65.0–65.6 s for mstsc PC074FG build 22621 while lossy UDP audio was enabled; client loop failed with TCP reset-by-peer. After turning lossy UDP off and reliable RDPSND AAC on, the same connection remained up 27+ minutes with no reset, queue in the low ms, and frames continuing. One variable changed; bitrate, host and peer were held constant. Cause inside mstsc/UDP offer remains not proven, so this is a safe-default decision, not a claimed protocol root cause.
+
+- New installs now seed `ENABLE_AAC=1`, `ENABLE_LOSSY_AUDIO=0`: reliable AAC is the stability-first default. Existing configs are not rewritten.
+- Lossy UDP remains available and can sound smooth under injected independent loss; it is opt-in pending diagnosis of this client's periodic reset.
+- The Controller makes the modes mutually exclusive. A legacy config with both set now resolves to reliable AAC, the stable fallback. The server clears stale process-global lossy UDP gates before applying selected runtime args; otherwise a prior environment could re-enable the offer despite lossy mode being off.
+- Test-only evidence preserved: lossy ON produced 62 fixed-interval resets; lossy OFF + AAC ON held >27 minutes at observation. Continue monitoring; 27 minutes is evidence, not proof of indefinite stability.
+
+232 Rust + 18 Swift tests; fmt/clippy clean; CI green.
+
 ## v0.9.16 — 10 Mbit operator maximum, adaptive effective ceiling
 
 The user tested a 10 Mbit operator ceiling live and reported the desktop "much more responsive". The effective ceiling and adaptive FPS controller remain in place to back off if this link cannot sustain it. This is an operator maximum, **not** a forced 10 Mbit encode rate.

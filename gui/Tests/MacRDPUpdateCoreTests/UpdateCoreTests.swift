@@ -116,7 +116,7 @@ final class UpdateCoreTests: XCTestCase {
         // Mirrors args_from_config: hand-edited config.env with both keys ON
         // must never emit the incompatible --enable-aac + --enable-lossy-audio.
         let state = AudioMode.fromConfig(aac: true, lossy: true)
-        XCTAssertEqual(state, AudioMode(aac: false, lossy: true))
+        XCTAssertEqual(state, AudioMode(aac: true, lossy: false))
     }
 
     // MARK: Config key inventory

@@ -3411,6 +3411,18 @@ async fn async_main() -> Result<()> {
             );
         }
     }
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        enable_h264 = args.enable_h264,
+        enable_aac = args.enable_aac,
+        enable_lossy_audio = args.enable_lossy_audio,
+        bitrate_mbps = args.bitrate,
+        enable_udp_multitransport = args.enable_udp_multitransport || args.enable_lossy_audio,
+        udp_migrate_egfx = args.udp_migrate_egfx,
+        adaptive_bitrate = args.adaptive_bitrate,
+        "effective server configuration"
+    );
+
     let _udp_listener = if args.enable_udp_multitransport || args.enable_lossy_audio {
         // The server ISN isn't client-validated; seed it from the clock to avoid a
         // new RNG dependency (the security-relevant value is the cookie, not this).
