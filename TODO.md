@@ -96,6 +96,8 @@ Piano staccato su richiesta. Ordine = dipendenze, non preferenze.
       taglia; `ALLOW_SLEEP` e la guardia di porta sono già in v0.9.9.
 
 ## In flight — open follow-ups from the 2026-10-04/05 session
+- [ ] **FPS stage priority: 60→30 before bitrate, 10 only at the bitrate floor.** Operator requested FPS reduction as the first congestion lever, ceiling as the next. The in-progress unified state machine has one stage enum and one capture-side cadence gate (not a VT encoder handle shared between threads), but is not yet committed or installed. It needs verification on an overloaded test session: stage order, exactly one pacing timestamp, no starvation (frames_sent advances at every stage), and very-slow 30→60 recovery only after five clear minutes at the effective ceiling. Do not install before those measurements — the prior two-gate implementation froze video while audio continued.
+
 - [ ] **The stats endpoint's queue delay is stale, not decaying, when the desktop goes idle.** A snapshot reading taken while the screen was still moving (308 ms after a burst) stays at 308 ms forever once nothing is captured, because `queue_delay_ms` is "last measured" and no new frame means no new measurement. It reads like a live congestion number in the Status pane when it is really history. Either decay it toward 0 when no frame has shipped for N seconds, or have the payload carry the age of the reading so a consumer can label it stale. Small, but it is exactly the kind of thing that sends the next person hunting.
 
 

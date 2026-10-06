@@ -332,13 +332,11 @@ struct ConnectionContext {
     /// Hysteresis state: whether the controller is currently in a congestion episode
     /// (enters when the EWMA lag clears the high mark, exits below the low mark).
     adaptive_congested: bool,
-    /// Adaptive frame-rate stage: first congestion reduces capture submissions
-    /// from 60 to 30 before the bitrate ceiling is allowed to fall. Pacing is
-    /// capture-side, so no VideoToolbox encoder handle crosses threads.
-    adaptive_fps: u32,
+    /// Single adaptive FPS state and timer. All stages (configured, 30, 10)
+    /// share the same capture-side gate; no layered limiters or shared VT handle.
+    adaptive_fps_stage: AdaptiveFpsStage,
     adaptive_fps_clear_since: Option<Instant>,
-    /// P2b emergency floor below the staged 30-FPS limit.
-    last_floor_fps_pass: Instant,
+    last_adaptive_fps_pass: Instant,
     /// Blank-presentation detector state (the mstsc reconnect-blank; see
     /// [`should_blank_recover`]): consecutive zero / nonzero decode+render-time
     /// streaks from `on_qoe_metrics`, reset per recovery attempt so a re-fire
@@ -1113,28 +1111,72 @@ fn rate_action(
     }
 }
 
-/// P2b — pure decision: should this capture be DROPPED to enforce a frame-rate floor?
-///
-/// Engages only once the bitrate controller has already cut the encoder to its floor
-/// (`at_floor`) AND the link is still `congested` — i.e. lowering quality can no longer
-/// help, so the next lever is shedding *frames* (fewer frames → fewer packets → less
-/// load). It caps the effective frame rate to a floor by dropping any capture that
-/// arrives within `min_interval` of the last one we let through (`since_last_pass`).
-///
-/// It never drops to zero: a capture is let through once `min_interval` has elapsed, so
-/// the client always keeps receiving trailing frames to present/ack (the same reason the
-/// EGFX-on-UDP trickle floor never zeroes — dropping to zero pins the lag and freezes the
-/// picture). Works on BOTH transports; on TCP it's the only fps lever (there's no UDP
-/// frame-ack backpressure gate). When the link recovers (`congested` clears or the
-/// controller climbs off the floor) it stops dropping and the full capture rate resumes.
-/// Unit-tested. See [`Gfx::submit_bgra`].
-fn frame_drop_at_floor(
-    at_floor: bool,
+/// One adaptive FPS policy and one capture-side cadence gate. Stages are ordered
+/// by severity; each capture is either admitted or dropped by exactly one check.
+/// This replaces the former independent 60→30 gate and P2b 10-FPS emergency gate,
+/// which shared one timestamp and could reset one another until every capture
+/// was dropped (the observed failure was "audio only").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdaptiveFpsStage {
+    Configured(u32),
+    Congested30,
+    Emergency10,
+}
+impl AdaptiveFpsStage {
+    fn fps(self) -> u32 {
+        match self {
+            Self::Configured(fps) => fps.max(1),
+            Self::Congested30 => 30,
+            Self::Emergency10 => 10,
+        }
+    }
+    fn interval(self) -> Duration {
+        Duration::from_secs_f64(1.0 / f64::from(self.fps()))
+    }
+}
+
+fn select_fps_stage(
+    configured: u32,
     congested: bool,
-    since_last_pass: Duration,
-    min_interval: Duration,
-) -> bool {
-    at_floor && congested && since_last_pass < min_interval
+    at_bitrate_floor: bool,
+    current: AdaptiveFpsStage,
+) -> AdaptiveFpsStage {
+    let fps30 = ADAPTIVE_FPS_STAGE.min(configured.max(1));
+    if congested && at_bitrate_floor {
+        AdaptiveFpsStage::Emergency10
+    } else if congested && configured > fps30 {
+        AdaptiveFpsStage::Congested30
+    } else if congested {
+        AdaptiveFpsStage::Configured(configured)
+    } else {
+        // A clear control sample alone is not recovery; slow recovery gate below
+        // owns every upward transition.
+        current
+    }
+}
+
+fn fps_stage_should_drop(stage: AdaptiveFpsStage, since_last_admitted: Duration) -> bool {
+    since_last_admitted < stage.interval()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FpsRecoveryAction {
+    Hold,
+    RestoreConfigured,
+}
+
+/// Recovery is deliberately slow and only earned at the effective ceiling:
+/// queue-drain after AIMD backed off is not evidence of spare capacity.
+fn fps_recovery_step(
+    is_congested: bool,
+    at_effective_ceiling: bool,
+    clear_for: Duration,
+) -> FpsRecoveryAction {
+    if !is_congested && at_effective_ceiling && clear_for >= ADAPTIVE_FPS_RAISE_CLEAR_FOR {
+        FpsRecoveryAction::RestoreConfigured
+    } else {
+        FpsRecoveryAction::Hold
+    }
 }
 
 /// Encoder adjustments the adaptive controller wants applied this frame: the P1
@@ -1353,12 +1395,6 @@ pub struct Gfx {
     /// Cumulative reliable-tunnel retransmit count, bumped by the UDP listener and
     /// sampled (as deltas) by the controller. Shared `Arc` like the egfx flags.
     congestion_retransmits: Arc<AtomicU64>,
-    /// P2b: minimum spacing between captures once the frame-rate floor engages (bitrate
-    /// at the floor AND still congested) — i.e. `1 / floor-fps`. When P2b is active,
-    /// captures arriving sooner than this are dropped, capping the effective frame rate
-    /// so a congested link sheds packet load that bitrate cuts alone can't. Default 10
-    /// fps (100 ms); `MACRDP_ADAPTIVE_FLOOR_FPS` overrides. See [`frame_drop_at_floor`].
-    adaptive_min_fps_interval: Duration,
     /// Blank-presentation recovery (the mstsc reconnect-blank). On by default
     /// (`MACRDP_BLANK_RECOVERY=0` disables); a strict no-op unless a QoE-acking
     /// client (mstsc) decodes a whole detection window without ever presenting —
@@ -1495,12 +1531,6 @@ impl Gfx {
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(2);
-        // P2b frame-rate floor: once bitrate is pinned at the floor and the link is
-        // still congested, cap the effective fps to this (drop captures arriving sooner
-        // than 1/fps). Default 10 fps — matches the EGFX-on-UDP trickle floor and stays
-        // well above "must keep presenting." `MACRDP_ADAPTIVE_FLOOR_FPS` overrides.
-        let adaptive_floor_fps = env_u32("MACRDP_ADAPTIVE_FLOOR_FPS", 10).max(1);
-        let adaptive_min_fps_interval = Duration::from_millis(1000 / u64::from(adaptive_floor_fps));
         // P2a IDR backoff: the configured periodic-keyframe interval in frames (same
         // derivation as Encoder::new), and a stretched value (~10 min) that
         // effectively suppresses the periodic IDR for the duration of a congestion
@@ -1606,7 +1636,6 @@ impl Gfx {
                 ewma_alpha = adaptive_ewma_alpha,
                 normal_keyframe_frames,
                 stretched_keyframe_frames,
-                floor_fps = adaptive_floor_fps,
                 "EGFX adaptive bitrate + IDR backoff + frame-rate floor ENABLED (--adaptive-bitrate) — \
                  congestion-responsive rate control on both the UDP tunnel and the TCP path"
             );
@@ -1640,7 +1669,6 @@ impl Gfx {
             normal_keyframe_frames,
             stretched_keyframe_frames,
             congestion_retransmits,
-            adaptive_min_fps_interval,
             blank_recovery_enabled,
             blank_params,
             consecutive_blank_drops: Arc::new(AtomicU32::new(0)),
@@ -1991,67 +2019,44 @@ impl Gfx {
                     }
                 }
             }
-            // Higher-priority FPS stage: pace captures at 30 FPS before the
-            // effective bitrate ceiling begins stepping down. This reduces packet
-            // load while preserving per-frame detail. It is capture-side (before
-            // encode), so the VideoToolbox encoder stays thread-local — no shared
-            // handle, no Send/Sync issue. Restore configured FPS only after 5 min
-            // clear at the effective ceiling.
-            if self.adaptive_enabled && ctx.adaptive_fps < self.fps {
-                let now = Instant::now();
-                let interval = Duration::from_secs_f64(1.0 / f64::from(ctx.adaptive_fps.max(1)));
-                if now.saturating_duration_since(ctx.last_floor_fps_pass) < interval {
-                    trace!(
-                        effective_fps = ctx.adaptive_fps,
-                        "EGFX staged FPS limiter: dropping capture before bitrate ceiling"
-                    );
-                    if let Some(stats) = crate::stats::global() {
-                        stats.capture_drops.fetch_add(1, Ordering::Relaxed);
-                    }
-                    return Ok(true);
-                }
-                ctx.last_floor_fps_pass = now;
-            }
-
-            // P2b frame-rate floor: once the adaptive controller has cut the bitrate to
-            // its floor AND the link is still congested, lowering quality can't help —
-            // so shed FRAMES. Cap the effective fps (drop captures arriving within
-            // `adaptive_min_fps_interval`), cutting packet load on BOTH transports — it's
-            // the only fps lever on TCP, which has no UDP frame-ack backpressure gate.
-            // Never zero: one capture per interval gets through so the client keeps
-            // trailing frames to present/ack. The controller state read here was set by
-            // the previous interval's adaptive_bitrate_step (runs after submit) — fine,
-            // congestion persists for seconds. need_keyframe persists across the drop
-            // (consumed below), so an armed IDR lands on the next let-through. Dropping
-            // before encode keeps the H.264 reference chain valid. No-op unless
-            // --adaptive-bitrate AND the controller is actually at the floor under
-            // congestion → default path unchanged.
+            // ONE FPS gate, shared by configured / 30 / emergency 10 FPS stages.
+            // Select stage from the controller state, then make one drop/allow
+            // decision against one timestamp. Timestamp changes only when capture
+            // is admitted; this prevents the old layered gates from starving every
+            // frame while audio continues. All pacing is before encode on this
+            // thread; the !Send/!Sync VideoToolbox encoder is never shared/mutated.
             if self.adaptive_enabled {
-                let at_floor = ctx.adaptive_target_bps <= self.adaptive_floor_bps;
-                let now = Instant::now();
-                if frame_drop_at_floor(
-                    at_floor,
+                let desired = select_fps_stage(
+                    self.fps,
                     ctx.adaptive_congested,
-                    now.duration_since(ctx.last_floor_fps_pass),
-                    self.adaptive_min_fps_interval,
+                    ctx.adaptive_target_bps <= self.adaptive_floor_bps,
+                    ctx.adaptive_fps_stage,
+                );
+                if desired != ctx.adaptive_fps_stage {
+                    info!(
+                        previous_fps = ctx.adaptive_fps_stage.fps(),
+                        effective_fps = desired.fps(),
+                        congested = ctx.adaptive_congested,
+                        at_bitrate_floor = ctx.adaptive_target_bps <= self.adaptive_floor_bps,
+                        "EGFX adaptive FPS stage changed"
+                    );
+                    ctx.adaptive_fps_stage = desired;
+                }
+                if fps_stage_should_drop(
+                    ctx.adaptive_fps_stage,
+                    Instant::now().saturating_duration_since(ctx.last_adaptive_fps_pass),
                 ) {
                     trace!(
-                        "EGFX at bitrate floor + congested; dropping capture (frame-rate floor)"
+                        effective_fps = ctx.adaptive_fps_stage.fps(),
+                        "EGFX unified FPS cadence: dropping capture before encode"
                     );
                     if let Some(stats) = crate::stats::global() {
                         stats.capture_drops.fetch_add(1, Ordering::Relaxed);
                     }
                     return Ok(true);
                 }
-            }
-            // The legacy emergency floor has let this capture through: record it
-            // now so its next check is spaced by adaptive_min_fps_interval. Never
-            // update this on a dropped capture (that would self-starve forever).
-            if self.adaptive_enabled
-                && ctx.adaptive_target_bps <= self.adaptive_floor_bps
-                && ctx.adaptive_congested
-            {
-                ctx.last_floor_fps_pass = Instant::now();
+                // The single timer write: this frame is admitted.
+                ctx.last_adaptive_fps_pass = Instant::now();
             }
 
             // Drop-to-latest throttle: if too many frames are still in the
@@ -2336,38 +2341,54 @@ impl Gfx {
             ctx.adaptive_congested,
         );
         ctx.adaptive_congested = congested;
-        // --- frame-rate stage: higher priority than bitrate ceiling ------------
-        // On the first congested interval, halve capture cadence (60→30) before
-        // the ceiling's three-interval descent gate. This reduces packet count
-        // while preserving detail per frame. Recovery to configured FPS is slow:
-        // five uninterrupted clear minutes at the effective ceiling.
+        // Select FPS stage before the bitrate ceiling stage: configured → 30 on
+        // congestion → 10 only at the bitrate floor. Recovery is staged back up
+        // after five clear minutes at the effective ceiling; the capture thread
+        // owns the sole pacing/drop gate.
         let target_at_ceiling = ctx.adaptive_target_bps >= ctx.adaptive_ceiling_bps * 95 / 100;
-        if congested {
-            if ctx.adaptive_fps > ADAPTIVE_FPS_STAGE.min(self.fps) {
-                let previous = ctx.adaptive_fps;
-                ctx.adaptive_fps = ADAPTIVE_FPS_STAGE.min(self.fps);
-                ctx.adaptive_fps_clear_since = None;
-                ctx.last_floor_fps_pass = now;
-                info!(
-                    previous_fps = previous,
-                    effective_fps = ctx.adaptive_fps,
-                    "EGFX congested: reducing capture FPS before bitrate ceiling"
-                );
-            }
-        } else if target_at_ceiling && ctx.adaptive_fps < self.fps {
+        let desired_fps = select_fps_stage(
+            self.fps,
+            congested,
+            ctx.adaptive_target_bps <= self.adaptive_floor_bps,
+            ctx.adaptive_fps_stage,
+        );
+        // At the bitrate floor the stage may move 30→10 even though both are
+        // downward steps. Compare enum severity as well as numerical FPS (10 is
+        // numerically lower; this block handles every transition below).
+        if desired_fps != ctx.adaptive_fps_stage && desired_fps.fps() < ctx.adaptive_fps_stage.fps()
+        {
+            let previous = ctx.adaptive_fps_stage;
+            ctx.adaptive_fps_stage = desired_fps;
+            ctx.adaptive_fps_clear_since = None;
+            info!(
+                previous_fps = previous.fps(),
+                effective_fps = desired_fps.fps(),
+                congested,
+                at_bitrate_floor = ctx.adaptive_target_bps <= self.adaptive_floor_bps,
+                "EGFX adaptive FPS stage dropped before bitrate ceiling"
+            );
+        } else if !congested
+            && target_at_ceiling
+            && ctx.adaptive_fps_stage != AdaptiveFpsStage::Configured(self.fps)
+        {
             let since = *ctx.adaptive_fps_clear_since.get_or_insert(now);
-            if now.saturating_duration_since(since) >= ADAPTIVE_FPS_RAISE_CLEAR_FOR {
-                let previous = ctx.adaptive_fps;
-                ctx.adaptive_fps = self.fps;
+            if fps_recovery_step(
+                congested,
+                target_at_ceiling,
+                now.saturating_duration_since(since),
+            ) == FpsRecoveryAction::RestoreConfigured
+            {
+                let previous = ctx.adaptive_fps_stage;
+                let next = AdaptiveFpsStage::Configured(self.fps);
+                ctx.adaptive_fps_stage = next;
                 ctx.adaptive_fps_clear_since = None;
                 info!(
-                    previous_fps = previous,
-                    effective_fps = self.fps,
+                    previous_fps = previous.fps(),
+                    effective_fps = next.fps(),
                     "EGFX clear at ceiling for 5 min: restoring configured FPS"
                 );
             }
-        } else if !target_at_ceiling {
-            // Clear queue after the AIMD backed off is not capacity evidence.
+        } else if congested || !target_at_ceiling {
             ctx.adaptive_fps_clear_since = None;
         }
 
@@ -2499,7 +2520,7 @@ impl Gfx {
             crate::stats::mark_queue_delay_measured(s);
             s.rtt_ms
                 .store(self.link_rtt_ms.load(Ordering::Relaxed), Ordering::Relaxed);
-            s.fps.store(ctx.adaptive_fps, Ordering::Relaxed);
+            s.fps.store(ctx.adaptive_fps_stage.fps(), Ordering::Relaxed);
             s.frames_sent.store(
                 ctx.last_shipped_frame_id.load(Ordering::Relaxed),
                 Ordering::Relaxed,
@@ -3153,9 +3174,9 @@ impl GfxServerFactory for Gfx {
             adaptive_warmup_until: None,
             adaptive_delay_ewma: 0.0,
             adaptive_congested: false,
-            adaptive_fps: self.fps,
+            adaptive_fps_stage: AdaptiveFpsStage::Configured(self.fps),
             adaptive_fps_clear_since: None,
-            last_floor_fps_pass: Instant::now(),
+            last_adaptive_fps_pass: Instant::now(),
             qoe: QoeEvidence::default(),
             last_nonzero_qoe_at: Instant::now(),
             blank_recovery_attempts: 0,
@@ -5078,46 +5099,30 @@ mod tests {
         ));
     }
 
-    // ---- P2b: frame_drop_at_floor ----
-
     #[test]
-    fn frame_drop_at_floor_only_when_at_floor_and_congested() {
-        let min = Duration::from_millis(100);
-        let soon = Duration::from_millis(10); // inside the min-fps spacing
-                                              // Both conditions + too-soon → drop.
-        assert!(frame_drop_at_floor(true, true, soon, min));
-        // Not at floor → never drops (bitrate cuts are still the right lever).
-        assert!(!frame_drop_at_floor(false, true, soon, min));
-        // Not congested → never drops (link is fine).
-        assert!(!frame_drop_at_floor(true, false, soon, min));
-        // Neither → never drops.
-        assert!(!frame_drop_at_floor(false, false, soon, min));
-    }
-
-    #[test]
-    fn frame_drop_at_floor_respects_min_fps_spacing() {
-        let min = Duration::from_millis(100);
-        // A capture that arrives after the spacing elapsed is let through (never zero).
-        assert!(!frame_drop_at_floor(
-            true,
-            true,
-            Duration::from_millis(100),
-            min
-        ));
-        assert!(!frame_drop_at_floor(
-            true,
-            true,
-            Duration::from_millis(250),
-            min
-        ));
-        // One arriving sooner is dropped — capping the effective fps.
-        assert!(frame_drop_at_floor(
-            true,
-            true,
-            Duration::from_millis(99),
-            min
-        ));
-        assert!(frame_drop_at_floor(true, true, Duration::ZERO, min));
+    fn a_clear_sample_does_not_restore_fps_before_the_five_minute_gate() {
+        assert_eq!(
+            select_fps_stage(60, false, false, AdaptiveFpsStage::Congested30),
+            AdaptiveFpsStage::Congested30
+        );
+        assert_eq!(
+            select_fps_stage(60, false, false, AdaptiveFpsStage::Emergency10),
+            AdaptiveFpsStage::Emergency10
+        );
+        // Continued congestion at bitrate floor escalates 30 → 10 immediately.
+        assert_eq!(
+            select_fps_stage(60, true, true, AdaptiveFpsStage::Congested30),
+            AdaptiveFpsStage::Emergency10
+        );
+        // Clearing congestion alone does not move either stage upward.
+        assert_eq!(
+            select_fps_stage(60, false, false, AdaptiveFpsStage::Emergency10),
+            AdaptiveFpsStage::Emergency10
+        );
+        assert_eq!(
+            select_fps_stage(60, true, false, AdaptiveFpsStage::Emergency10),
+            AdaptiveFpsStage::Congested30
+        );
     }
 
     #[test]
