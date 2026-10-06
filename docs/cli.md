@@ -161,12 +161,12 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   otherwise a fixed target. Config key: BITRATE.
                           #   With --adaptive-bitrate the server ALSO keeps an
                           #   EFFECTIVE ceiling below it: after 3 congested control
-                          #   intervals it steps down (at most once per 5 s, never
-                          #   below half --bitrate, never above it) and does not
-                          #   climb back within a session. So an unreachable
-                          #   --bitrate degrades to a stable, bounded stream
-                          #   instead of a limit cycle; `effective_ceiling_bps` in
-                          #   the stats payload shows where it settled.
+                          #   intervals it steps down (at most once per 5 s, floor half --bitrate).
+                          #   FPS sheds load first: 60→30 on congestion; the
+                          #   ceiling follows; 10 fps only at the bitrate floor.
+                          #   The ceiling rises +50 kbit only after 5 uninterrupted
+                          #   clear minutes at the bound. Stats: effective ceiling
+                          #   and effective FPS.
 --keyframe-interval SECS  # periodic IDR safety net (default 2; only with --enable-h264)
 --flush-frames N          # trailing skip-P-frames re-sent after each change to drain
                           #   mstsc's presentation buffer (default 4; 0 disables; --enable-h264)

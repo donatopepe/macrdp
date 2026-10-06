@@ -4,6 +4,12 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.14 — one FPS limiter, priority before bitrate
+
+The FPS controller had grown two independent capture-drop gates: the new 60→30 congestion stage and the older 10-FPS emergency floor. Both wrote the same timestamp. Under congestion one could reset the other's clock, causing every capture to be dropped while the audio stream remained alive — exactly the reported "video stuck, audio keeps playing". v0.9.14 replaces both with **one state machine, one cadence gate, and one timestamp**, on the capture thread before encode (VideoToolbox encoder remains thread-local, no `Send`/`Sync` sharing): configured rate → 30 FPS on congestion → bitrate ceiling steps down → 10 FPS only at the bitrate floor. FPS recovery waits 5 uninterrupted clear minutes at the effective ceiling; a momentary clear after AIMD backs off does not restore it.
+
+Live-tested with an intentionally unreachable 6 Mbit operator ceiling: connected 90 s, 60→30 once, one ceiling step 6→3 Mbit, then 30 FPS / 3 Mbit stable; queue 8–45 ms, zero audio drops, frames continued to ship. 232 Rust tests; fmt and clippy clean.
+
 ## v0.9.13 — the ceiling converges, and three open items close
 
 Two changes and three closures. The feature was **built three times and measured twice before a version was kept**, and the two discarded designs are recorded here because they are the reason the shipped one looks the way it does.
