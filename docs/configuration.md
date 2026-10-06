@@ -114,7 +114,7 @@ macrdp --check-permissions   Print the macOS permission + code-identity report
                           hardware-encoded via VideoToolbox, instead of legacy
                           bitmaps. Falls back to legacy automatically for
                           clients that don't negotiate H.264. See [video.md](video.md).
---bitrate N               H.264 bitrate CEILING in Mbps (default 4; only with
+--bitrate N               H.264 bitrate CEILING in Mbps (default 6; only with
                           --enable-h264). It is a CEILING, not a target: a value
                           the link cannot sustain is worse than a low one
                           (measured: 6 → rate-controller limit cycle, queue to

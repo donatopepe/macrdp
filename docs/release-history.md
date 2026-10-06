@@ -25,6 +25,8 @@ Two changes and three closures. The feature was **built three times and measured
 
 233 Rust + 13 Swift tests; fmt and clippy `-D warnings` clean.
 
+Follow-up default correction: operator `--bitrate` defaults to **6 Mbit**. The requested maximum stays distinct from the effective ceiling: congestion backs the effective value down (floor half the operator maximum), while the requested maximum remains 6 for a genuinely capable link. This does not alter this host's measured 4 Mbit ZeroTier `config.env` setting.
+
 ## v0.9.12 — the tuned deployment becomes the default for everyone
 
 A patch whose substance is a **set of defaults**, each promoted only after it was measured on a real deployment (macOS, H.264 + video playback, ~24 ms ZeroTier path). A new install is now seeded with a configuration that was converged by measurement instead of by taste. **Behaviour change for existing installs: none** — `config.env` is yours, and nothing here rewrites an existing one.

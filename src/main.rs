@@ -692,7 +692,7 @@ struct Args {
     /// Raise it if you measure headroom (see docs/conventions.md: baseline
     /// first). On a fast LAN 8–12 is fine; if the queue delay in the stats
     /// endpoint climbs, the ceiling is above the link, not below it.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 6)]
     bitrate: u32,
 
     /// H.264 periodic keyframe (IDR) interval in seconds (only with
@@ -3734,12 +3734,12 @@ mod config_tests {
 
         // Unset → the server default (6).
         let p = write_temp("br3", "ENABLE_H264=1\n");
-        assert_eq!(args_from_config(&p).unwrap().bitrate, 4);
+        assert_eq!(args_from_config(&p).unwrap().bitrate, 6);
         fs::remove_file(&p).ok();
 
         // Empty BITRATE is ignored (no arg pushed) → default, not an error.
         let p = write_temp("br4", "BITRATE=\n");
-        assert_eq!(args_from_config(&p).unwrap().bitrate, 4);
+        assert_eq!(args_from_config(&p).unwrap().bitrate, 6);
         fs::remove_file(&p).ok();
     }
 
