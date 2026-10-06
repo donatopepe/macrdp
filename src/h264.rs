@@ -1120,14 +1120,12 @@ fn rate_action(
 enum AdaptiveFpsStage {
     Configured(u32),
     Congested30,
-    Emergency10,
 }
 impl AdaptiveFpsStage {
     fn fps(self) -> u32 {
         match self {
             Self::Configured(fps) => fps.max(1),
             Self::Congested30 => 30,
-            Self::Emergency10 => 10,
         }
     }
     fn interval(self) -> Duration {
@@ -1138,13 +1136,11 @@ impl AdaptiveFpsStage {
 fn select_fps_stage(
     configured: u32,
     congested: bool,
-    at_bitrate_floor: bool,
+    _at_bitrate_floor: bool,
     current: AdaptiveFpsStage,
 ) -> AdaptiveFpsStage {
     let fps30 = ADAPTIVE_FPS_STAGE.min(configured.max(1));
-    if congested && at_bitrate_floor {
-        AdaptiveFpsStage::Emergency10
-    } else if congested && configured > fps30 {
+    if congested && configured > fps30 {
         AdaptiveFpsStage::Congested30
     } else if congested {
         AdaptiveFpsStage::Configured(configured)
@@ -5105,22 +5101,15 @@ mod tests {
             select_fps_stage(60, false, false, AdaptiveFpsStage::Congested30),
             AdaptiveFpsStage::Congested30
         );
-        assert_eq!(
-            select_fps_stage(60, false, false, AdaptiveFpsStage::Emergency10),
-            AdaptiveFpsStage::Emergency10
-        );
-        // Continued congestion at bitrate floor escalates 30 → 10 immediately.
+        // There is no separate emergency FPS stage at the bitrate floor.
+        // The bitrate ceiling is the sole next lever; this prevents two FPS
+        // controllers from fighting over one cadence timer.
         assert_eq!(
             select_fps_stage(60, true, true, AdaptiveFpsStage::Congested30),
-            AdaptiveFpsStage::Emergency10
-        );
-        // Clearing congestion alone does not move either stage upward.
-        assert_eq!(
-            select_fps_stage(60, false, false, AdaptiveFpsStage::Emergency10),
-            AdaptiveFpsStage::Emergency10
+            AdaptiveFpsStage::Congested30
         );
         assert_eq!(
-            select_fps_stage(60, true, false, AdaptiveFpsStage::Emergency10),
+            select_fps_stage(60, true, false, AdaptiveFpsStage::Congested30),
             AdaptiveFpsStage::Congested30
         );
     }
