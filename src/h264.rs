@@ -2043,11 +2043,17 @@ impl Gfx {
                     }
                     return Ok(true);
                 }
-                if at_floor && ctx.adaptive_congested {
-                    ctx.last_floor_fps_pass = now;
-                    debug!("EGFX frame-rate floor active — capping fps (let a capture through)");
-                }
             }
+            // The legacy emergency floor has let this capture through: record it
+            // now so its next check is spaced by adaptive_min_fps_interval. Never
+            // update this on a dropped capture (that would self-starve forever).
+            if self.adaptive_enabled
+                && ctx.adaptive_target_bps <= self.adaptive_floor_bps
+                && ctx.adaptive_congested
+            {
+                ctx.last_floor_fps_pass = Instant::now();
+            }
+
             // Drop-to-latest throttle: if too many frames are still in the
             // VT/ship pipeline, skip this capture entirely. This bounds latency
             // under load WITHOUT relying on frame acks (clients commonly suspend
