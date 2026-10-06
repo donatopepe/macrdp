@@ -2036,21 +2036,6 @@ fn args_from_config(path: &Path) -> Result<Args> {
     // boundary, including hand-edited config.env (the GUI also clears AAC when
     // lossy is selected). Thus the server can never see both flags enabled.
     let enable_lossy_audio = on("ENABLE_LOSSY_AUDIO", false);
-    // These expert gates are process-global. Clear stale values before applying
-    // the current config, because tests can parse multiple configs in one process
-    // and a LaunchAgent plist may also have inherited a previous lossy setting.
-    for var in [
-        "MACRDP_UDP_OFFER_FECL",
-        "MACRDP_UDP_LOSSY_DELIVERY",
-        "MACRDP_UDP_LOSSY_AUDIO_DUP",
-    ] {
-        std::env::remove_var(var);
-    }
-    if enable_lossy_audio {
-        std::env::set_var("MACRDP_UDP_OFFER_FECL", "1");
-        std::env::set_var("MACRDP_UDP_LOSSY_DELIVERY", "1");
-        std::env::set_var("MACRDP_UDP_LOSSY_AUDIO_DUP", "1");
-    }
     if enable_lossy_audio && on("ENABLE_AAC", false) {
         eprintln!("config.env has ENABLE_AAC=1 and ENABLE_LOSSY_AUDIO=1; the modes are mutually exclusive, lossy audio wins and normal RDPSND AAC is suppressed");
     }
@@ -2338,6 +2323,25 @@ fn args_from_config(path: &Path) -> Result<Args> {
         .with_context(|| format!("config file {} produced invalid settings", path.display()))
 }
 
+/// Canonicalize the process-global lossy audio gates from current server args.
+/// Must run after config/CLI parsing and before UDP provider/listener setup.
+/// Clearing first is essential: a prior plist env or in-process config parse must
+/// not leave a stale lossy offer/delivery switch enabled when user selects AAC.
+fn apply_lossy_audio_env(enabled: bool) {
+    for var in [
+        "MACRDP_UDP_OFFER_FECL",
+        "MACRDP_UDP_LOSSY_DELIVERY",
+        "MACRDP_UDP_LOSSY_AUDIO_DUP",
+    ] {
+        std::env::remove_var(var);
+    }
+    if enabled {
+        std::env::set_var("MACRDP_UDP_OFFER_FECL", "1");
+        std::env::set_var("MACRDP_UDP_LOSSY_DELIVERY", "1");
+        std::env::set_var("MACRDP_UDP_LOSSY_AUDIO_DUP", "1");
+    }
+}
+
 async fn async_main() -> Result<()> {
     let mut args = Args::parse();
     // If launched with `--config <file>` (the LaunchAgent path), the file is the
@@ -2345,6 +2349,10 @@ async fn async_main() -> Result<()> {
     if let Some(cfg_path) = args.config.clone() {
         args = args_from_config(&cfg_path)?;
     }
+    // The lossy expert gates live in process-global env and could be inherited
+    // from a previous server invocation/plist even when current config disables
+    // lossy audio. Clear stale values before setting up any transport providers.
+    apply_lossy_audio_env(args.enable_lossy_audio);
 
     // Research spike (Phase-1b USB-redirection go/no-go): run the UserHCI probe
     // and exit before any server/auth/capture setup. Requires the signed+
@@ -3740,6 +3748,36 @@ mod config_tests {
     /// dependency makes conditional — AAC is meaningless without H.264, so the
     /// harness must set both — plus the plain one, to prove the bridge emits it.
     #[test]
+    fn lossy_udp_environment_tracks_selected_mode() {
+        std::env::set_var("MACRDP_UDP_OFFER_FECL", "stale");
+        std::env::set_var("MACRDP_UDP_LOSSY_DELIVERY", "stale");
+        std::env::set_var("MACRDP_UDP_LOSSY_AUDIO_DUP", "stale");
+        apply_lossy_audio_env(true);
+        for key in [
+            "MACRDP_UDP_OFFER_FECL",
+            "MACRDP_UDP_LOSSY_DELIVERY",
+            "MACRDP_UDP_LOSSY_AUDIO_DUP",
+        ] {
+            assert_eq!(
+                std::env::var(key).as_deref(),
+                Ok("1"),
+                "{key} enabled with lossy mode"
+            );
+        }
+        apply_lossy_audio_env(false);
+        for key in [
+            "MACRDP_UDP_OFFER_FECL",
+            "MACRDP_UDP_LOSSY_DELIVERY",
+            "MACRDP_UDP_LOSSY_AUDIO_DUP",
+        ] {
+            assert!(
+                std::env::var(key).is_err(),
+                "{key} cleared for reliable AAC/PCM mode"
+            );
+        }
+    }
+
+    #[test]
     fn aac_bridge_needs_h264() {
         // The two audio transport modes are mutually exclusive. Lossy mode is
         // authoritative for a hand-edited config as well as the UI toggle.
@@ -3750,15 +3788,6 @@ mod config_tests {
         let a = args_from_config(&p).unwrap();
         assert!(a.enable_lossy_audio);
         assert!(!a.enable_aac, "lossy audio must suppress normal RDPSND AAC");
-        assert_eq!(std::env::var("MACRDP_UDP_OFFER_FECL").as_deref(), Ok("1"));
-        assert_eq!(
-            std::env::var("MACRDP_UDP_LOSSY_DELIVERY").as_deref(),
-            Ok("1")
-        );
-        assert_eq!(
-            std::env::var("MACRDP_UDP_LOSSY_AUDIO_DUP").as_deref(),
-            Ok("1")
-        );
         fs::remove_file(&p).ok();
 
         // AAC wins only when lossy transport is off.
@@ -3769,10 +3798,6 @@ mod config_tests {
         let a = args_from_config(&p).unwrap();
         assert!(a.enable_aac);
         assert!(!a.enable_lossy_audio);
-        assert!(
-            std::env::var("MACRDP_UDP_OFFER_FECL").is_err(),
-            "AAC/TCP mode must clear stale lossy UDP enable gates"
-        );
         fs::remove_file(&p).ok();
 
         let p = write_temp("aac1", "ENABLE_AAC=1\n");
