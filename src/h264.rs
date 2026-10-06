@@ -2337,10 +2337,10 @@ impl Gfx {
             ctx.adaptive_congested,
         );
         ctx.adaptive_congested = congested;
-        // Select FPS stage before the bitrate ceiling stage: configured → 30 on
-        // congestion → 10 only at the bitrate floor. Recovery is staged back up
-        // after five clear minutes at the effective ceiling; the capture thread
-        // owns the sole pacing/drop gate.
+        // FPS sheds load first: 60→30 on congestion, while `select_fps_stage`
+        // holds that state on a transient clear sample. The bitrate ceiling then
+        // converges downward if congestion persists. Slowly restore 60 only after
+        // five clear minutes at the effective ceiling.
         let target_at_ceiling = ctx.adaptive_target_bps >= ctx.adaptive_ceiling_bps * 95 / 100;
         let desired_fps = select_fps_stage(
             self.fps,
@@ -2348,11 +2348,7 @@ impl Gfx {
             ctx.adaptive_target_bps <= self.adaptive_floor_bps,
             ctx.adaptive_fps_stage,
         );
-        // At the bitrate floor the stage may move 30→10 even though both are
-        // downward steps. Compare enum severity as well as numerical FPS (10 is
-        // numerically lower; this block handles every transition below).
-        if desired_fps != ctx.adaptive_fps_stage && desired_fps.fps() < ctx.adaptive_fps_stage.fps()
-        {
+        if desired_fps != ctx.adaptive_fps_stage {
             let previous = ctx.adaptive_fps_stage;
             ctx.adaptive_fps_stage = desired_fps;
             ctx.adaptive_fps_clear_since = None;
@@ -2361,7 +2357,7 @@ impl Gfx {
                 effective_fps = desired_fps.fps(),
                 congested,
                 at_bitrate_floor = ctx.adaptive_target_bps <= self.adaptive_floor_bps,
-                "EGFX adaptive FPS stage dropped before bitrate ceiling"
+                "EGFX adaptive FPS stage changed"
             );
         } else if !congested
             && target_at_ceiling
