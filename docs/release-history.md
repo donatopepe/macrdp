@@ -31,7 +31,7 @@ The user verified that lossy audio alone works well, while enabling reliable AAC
 
 - **New-install baseline:** `ENABLE_LOSSY_AUDIO=1`, `ENABLE_AAC=0`. This is the measured choice on this deployment; existing `config.env` files remain untouched.
 - **Mutual exclusion in Controller:** selecting Lossy audio clears AAC in the draft; selecting reliable AAC clears Lossy audio. `AudioMode` is pure Foundation logic with tests for both toggle directions and disabling either mode.
-- **Mutual exclusion at server config bridge:** hand-edited `config.env` with both keys ON is canonicalized to lossy mode: only `--enable-lossy-audio` is emitted, normal `--enable-aac` suppressed. Lossy mode still requires H.264/EGFX, which is validated and warned.
+- **Mutual exclusion at server config bridge:** hand-edited `config.env` with both keys ON is canonicalized to lossy mode: only `--enable-lossy-audio` is emitted, normal `--enable-aac` suppressed. Lossy mode still requires H.264/EGFX, which is validated and warned. Follow-up `fed12e9` also clears the expert UDP lossy-enable environment gates before applying each config, so switching Lossy off cannot inherit stale UDP gates from a previous config in a reused process; tests cover the reset.
 - **Docs and UI clarified:** settings labels name the transports, identify mutual exclusion, explain lossy-mode RTT gating and describe how to switch back to reliable AAC.
 
 Tests: 232 Rust + 22 Swift; fmt and clippy `-D warnings` clean.
