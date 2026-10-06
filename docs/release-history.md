@@ -4,6 +4,17 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.18 — apply audio transport gates at runtime, not config parsing
+
+A correctness issue invalidated the first lossy-vs-AAC A/B: `args_from_config` was mutating process-global UDP environment gates. That helper also runs in unit tests, Controller/config checks, and in-process config reload paths; it is not the actual runtime boundary. The effective `Args` could say reliable AAC while a stale lossy UDP gate remained active in the UDP provider, so `ENABLE_LOSSY_AUDIO=0` alone did not prove lossy transport was absent. Thus the first AAC-on/lossy-off A/B was invalid as evidence.
+
+- Move lossy UDP gate handling to `apply_lossy_audio_env(args.enable_lossy_audio)`, called once at actual server startup after config parsing and before provider/listener setup.
+- Clear `MACRDP_UDP_OFFER_FECL`, `MACRDP_UDP_LOSSY_DELIVERY`, and `MACRDP_UDP_LOSSY_AUDIO_DUP` first; set them only when effective `--enable-lossy-audio` is true.
+- Add regression test seeding stale values, asserting lossy ON enables all three, then reliable AAC/lossy OFF clears all three.
+- Keep new-install audio default reliable AAC ON / lossy UDP OFF while the fixed-65-second issue is investigated. Existing configs remain untouched. **The previous >27-minute AAC session does not prove lossy was off**; re-run the A/B with this startup fix before drawing conclusions about the underlying disconnect.
+
+233 Rust + 18 Swift tests; fmt and clippy `-D warnings` clean.
+
 ## v0.9.17 — reliable AAC default; lossy UDP resets isolated
 
 The user reported repeated disconnects and asserted the network path was healthy. The log showed a strong implementation-mode correlation: 62 resets at 65.0–65.6 s for mstsc PC074FG build 22621 while lossy UDP audio was enabled; client loop failed with TCP reset-by-peer. After turning lossy UDP off and reliable RDPSND AAC on, the same connection remained up 27+ minutes with no reset, queue in the low ms, and frames continuing. One variable changed; bitrate, host and peer were held constant. Cause inside mstsc/UDP offer remains not proven, so this is a safe-default decision, not a claimed protocol root cause.

@@ -3770,11 +3770,7 @@ mod config_tests {
             "MACRDP_UDP_LOSSY_DELIVERY",
             "MACRDP_UDP_LOSSY_AUDIO_DUP",
         ] {
-            assert_eq!(
-                std::env::var(key).as_deref(),
-                Ok("1"),
-                "{key} enabled with lossy mode"
-            );
+            assert_eq!(std::env::var(key).as_deref(), Ok("1"));
         }
         apply_lossy_audio_env(false);
         for key in [
@@ -3782,10 +3778,7 @@ mod config_tests {
             "MACRDP_UDP_LOSSY_DELIVERY",
             "MACRDP_UDP_LOSSY_AUDIO_DUP",
         ] {
-            assert!(
-                std::env::var(key).is_err(),
-                "{key} cleared for reliable AAC/PCM mode"
-            );
+            assert!(std::env::var(key).is_err());
         }
     }
 
