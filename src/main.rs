@@ -687,12 +687,18 @@ struct Args {
     /// share the socket, so 1237 write stalls and 91 audio drops followed).
     /// Dropping the ceiling to 4 — inside the achievable band — collapsed all of
     /// it in one change: bitrate stable at the ceiling, **1** backoff, 50 write
-    /// stalls, 1 audio drop, at the same 60 fps. Hence the default.
+    /// stalls, 1 audio drop, at the same 60 fps. The effective ceiling steps down
+    /// rapidly under congestion and rises only +50 kbit after five clear minutes
+    /// at its bound; `--bitrate` remains the operator's requested MAXIMUM and is
+    /// available again when a faster link genuinely sustains it. The user then
+    /// tested 10 Mbit on this deployment and reported significantly more
+    /// responsiveness; hence 10 is the new global operator maximum, while this
+    /// host's existing measured 4 Mbit remains untouched in config.env.
     ///
-    /// Raise it if you measure headroom (see docs/conventions.md: baseline
-    /// first). On a fast LAN 8–12 is fine; if the queue delay in the stats
-    /// endpoint climbs, the ceiling is above the link, not below it.
-    #[arg(long, default_value_t = 6)]
+    /// Measure on your own link (docs/conventions.md: baseline first). If queue
+    /// delay climbs or the FPS stage drops, the effective maximum will step down;
+    /// on a capable link it can very slowly climb back toward this requested max.
+    #[arg(long, default_value_t = 10)]
     bitrate: u32,
 
     /// H.264 periodic keyframe (IDR) interval in seconds (only with
@@ -3764,14 +3770,14 @@ mod config_tests {
         assert_eq!(a.fps, Some(24)); // the non-bitrate flag survived the strip
         fs::remove_file(&p).ok();
 
-        // Unset → the server default (6).
+        // Unset → the server default (10).
         let p = write_temp("br3", "ENABLE_H264=1\n");
-        assert_eq!(args_from_config(&p).unwrap().bitrate, 6);
+        assert_eq!(args_from_config(&p).unwrap().bitrate, 10);
         fs::remove_file(&p).ok();
 
         // Empty BITRATE is ignored (no arg pushed) → default, not an error.
         let p = write_temp("br4", "BITRATE=\n");
-        assert_eq!(args_from_config(&p).unwrap().bitrate, 6);
+        assert_eq!(args_from_config(&p).unwrap().bitrate, 10);
         fs::remove_file(&p).ok();
     }
 

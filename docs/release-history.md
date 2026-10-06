@@ -4,6 +4,16 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.16 — 10 Mbit operator maximum, adaptive effective ceiling
+
+The user tested a 10 Mbit operator ceiling live and reported the desktop "much more responsive". The effective ceiling and adaptive FPS controller remain in place to back off if this link cannot sustain it. This is an operator maximum, **not** a forced 10 Mbit encode rate.
+
+- `--bitrate` binary default: 6 → **10 Mbit/s**; seeded config now has `BITRATE=10`. `EXTRA_FLAGS` stays `--fps 60`, so there is one source of truth for the ceiling. This follows today's operator confirmation that 10 Mbit is much more responsive, not the earlier 6-vs-4 congestion measurement.
+- Existing installations are not rewritten. This host keeps its explicit `BITRATE=4` in `config.env`, the previously measured sustainable maximum for its ZeroTier path.
+- Documented the intent: new installs inherit the tested responsive operator maximum; congestion pulls the effective ceiling down, and it can only climb +50 kbit after five continuous clear minutes at the bound.
+
+Verification: the user reported the 10 Mbit live trial as more responsive; Rust bridge tests pin default=10 and explicit BITRATE overrides.
+
 ## v0.9.15 — lossy audio becomes the default, AAC modes are exclusive
 
 The user verified that lossy audio alone plays well; enabling both lossy audio and reliable RDPSND AAC breaks audio for the mstsc client. The two modes both carry AAC Wave2, but on different channels (lossy RDPEA DVC vs reliable RDPSND), and simultaneous negotiation is incompatible.

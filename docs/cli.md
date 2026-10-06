@@ -155,18 +155,13 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   Reuses the Ctrl+Alt+G gather machinery. Config:
                           #   RESTORE_WINDOWS_ON_DISCONNECT. macOS-only.
 --enable-h264             # stream H.264 over EGFX (AVC420) instead of legacy bitmaps
---bitrate N               # H.264 bitrate CEILING in Mbps (default 6; only with
-                          #   --enable-h264). With --adaptive-bitrate it's the
-                          #   ceiling the encoder backs off from under congestion;
-                          #   otherwise a fixed target. Config key: BITRATE.
-                          #   With --adaptive-bitrate the server ALSO keeps an
-                          #   EFFECTIVE ceiling below it: after 3 congested control
-                          #   intervals it steps down (at most once per 5 s, floor half --bitrate).
-                          #   FPS sheds load first: 60→30 on congestion; the
-                          #   ceiling follows; 10 fps only at the bitrate floor.
-                          #   The ceiling rises +50 kbit only after 5 uninterrupted
-                          #   clear minutes at the bound. Stats: effective ceiling
-                          #   and effective FPS.
+--bitrate N               # H.264 bitrate CEILING in Mbps (default 10; only with
+                          #   --enable-h264). Operator maximum, not target; config
+                          #   key BITRATE. With --adaptive-bitrate the effective
+                          #   ceiling steps down on congestion (max once/5s, floor
+                          #   half --bitrate) and climbs +50 kbit only after 5 clear
+                          #   minutes at the bound. FPS sheds load first, then
+                          #   ceiling; stats expose effective ceiling and FPS.
 --keyframe-interval SECS  # periodic IDR safety net (default 2; only with --enable-h264)
 --flush-frames N          # trailing skip-P-frames re-sent after each change to drain
                           #   mstsc's presentation buffer (default 4; 0 disables; --enable-h264)
