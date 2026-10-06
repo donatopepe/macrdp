@@ -2036,6 +2036,27 @@ fn args_from_config(path: &Path) -> Result<Args> {
     // boundary, including hand-edited config.env (the GUI also clears AAC when
     // lossy is selected). Thus the server can never see both flags enabled.
     let enable_lossy_audio = on("ENABLE_LOSSY_AUDIO", false);
+    // These expert gates are process-global. Clear stale values before applying
+    // the current config, because tests can parse multiple configs in one process
+    // and a LaunchAgent plist may also have inherited a previous lossy setting.
+    for var in [
+        "MACRDP_UDP_OFFER_FECL",
+        "MACRDP_UDP_LOSSY_DELIVERY",
+        "MACRDP_UDP_LOSSY_AUDIO_DUP",
+    ] {
+        std::env::remove_var(var);
+    }
+    if enable_lossy_audio {
+        std::env::set_var("MACRDP_UDP_OFFER_FECL", "1");
+        std::env::set_var("MACRDP_UDP_LOSSY_DELIVERY", "1");
+        std::env::set_var("MACRDP_UDP_LOSSY_AUDIO_DUP", "1");
+    }
+    if enable_lossy_audio && on("ENABLE_AAC", false) {
+        eprintln!("config.env has ENABLE_AAC=1 and ENABLE_LOSSY_AUDIO=1; the modes are mutually exclusive, lossy audio wins and normal RDPSND AAC is suppressed");
+    }
+    // Keep the two audio modes exclusive without silently switching the
+    // operator's explicit choice: lossy wins only when ENABLE_LOSSY_AUDIO=1;
+    // ENABLE_AAC=1 with lossy=0 remains reliable RDPSND AAC.
     let enable_aac = on("ENABLE_AAC", false) && !enable_lossy_audio;
     if enable_aac {
         argv.push("--enable-aac".into());
@@ -3729,6 +3750,15 @@ mod config_tests {
         let a = args_from_config(&p).unwrap();
         assert!(a.enable_lossy_audio);
         assert!(!a.enable_aac, "lossy audio must suppress normal RDPSND AAC");
+        assert_eq!(std::env::var("MACRDP_UDP_OFFER_FECL").as_deref(), Ok("1"));
+        assert_eq!(
+            std::env::var("MACRDP_UDP_LOSSY_DELIVERY").as_deref(),
+            Ok("1")
+        );
+        assert_eq!(
+            std::env::var("MACRDP_UDP_LOSSY_AUDIO_DUP").as_deref(),
+            Ok("1")
+        );
         fs::remove_file(&p).ok();
 
         // AAC wins only when lossy transport is off.
@@ -3739,6 +3769,10 @@ mod config_tests {
         let a = args_from_config(&p).unwrap();
         assert!(a.enable_aac);
         assert!(!a.enable_lossy_audio);
+        assert!(
+            std::env::var("MACRDP_UDP_OFFER_FECL").is_err(),
+            "AAC/TCP mode must clear stale lossy UDP enable gates"
+        );
         fs::remove_file(&p).ok();
 
         let p = write_temp("aac1", "ENABLE_AAC=1\n");
