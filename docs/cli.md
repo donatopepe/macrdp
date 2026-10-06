@@ -321,7 +321,9 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   retransmit counts, the old behaviour). macOS-only.
 --enable-lossy-audio      # EXPERIMENTAL, opt-in (default OFF; ENABLE_LOSSY_AUDIO=1
                           #   in config.env). Implies --enable-udp-multitransport;
-                          #   needs --enable-aac + --enable-h264. Stream RDPSND audio
+                          #   needs --enable-h264; mutually exclusive with
+                          #   --enable-aac (if both config keys are set, lossy wins).
+                          #   Stream RDPSND audio
                           #   over a LOSSY UDP/DTLS tunnel instead of TCP — the loss-
                           #   resilient audio path. AAC Wave2 data rides a lossy
                           #   RDPEUDP flow (deliver-on-arrival, no retransmit) and

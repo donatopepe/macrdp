@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import MacRDPUpdateCore
 
 // Draft model backing the tabbed Settings window (SettingsWindow.swift).
 //
@@ -72,12 +73,45 @@ final class SettingsModel: ObservableObject {
 
     func setBool(_ key: String, _ value: Bool) {
         draft[key] = value ? "1" : "0"
+        if key == "ENABLE_AAC" || key == "ENABLE_LOSSY_AUDIO" {
+            let audio = AudioMode.resolve(
+                enabledKey: key,
+                enabled: value,
+                aac: bool("ENABLE_AAC"),
+                lossy: bool("ENABLE_LOSSY_AUDIO")
+            )
+            draft["ENABLE_AAC"] = audio.aac ? "1" : "0"
+            draft["ENABLE_LOSSY_AUDIO"] = audio.lossy ? "1" : "0"
+        }
         normalize()
     }
 
     func setString(_ key: String, _ value: String) {
         draft[key] = value
         normalize()
+    }
+
+    /// A separate typed rule test can exercise this without SwiftUI/AppKit.
+    /// Lossy audio uses AAC Wave2 inside its lossy DVC, so enabling it must turn
+    /// OFF reliable RDPSND AAC; enabling reliable AAC does the inverse.
+    static func mutuallyExclusiveAudioValues(
+        changedKey: String, enabled: Bool, currentAAC: Bool, currentLossy: Bool
+    ) -> (aac: Bool, lossy: Bool) {
+        var aac = currentAAC
+        var lossy = currentLossy
+        guard enabled else {
+            if changedKey == "ENABLE_AAC" { aac = false }
+            if changedKey == "ENABLE_LOSSY_AUDIO" { lossy = false }
+            return (aac, lossy)
+        }
+        if changedKey == "ENABLE_AAC" {
+            aac = true
+            lossy = false
+        } else if changedKey == "ENABLE_LOSSY_AUDIO" {
+            lossy = true
+            aac = false
+        }
+        return (aac, lossy)
     }
 
     func boolBinding(_ key: String, default def: Bool = false) -> Binding<Bool> {
@@ -128,6 +162,17 @@ final class SettingsModel: ObservableObject {
         } else if (draft["UDP_MIGRATE_EGFX"] ?? "0") == "1" {
             draft["ENABLE_H264"] = "1"
         }
+        // AAC RDPSND and lossy-DVC audio are mutually exclusive for the
+        // supported mstsc path: the DVC requires AAC Wave2 as its payload, while
+        // the normal AAC toggle advertises AAC on RDPSND. On either user's
+        // transition to ON, the other mode is reset in the same draft transaction
+        // so the server never receives both and silently falls back or conflicts.
+        let audio = AudioMode.fromConfig(
+            aac: (draft["ENABLE_AAC"] ?? "0") == "1",
+            lossy: (draft["ENABLE_LOSSY_AUDIO"] ?? "0") == "1"
+        )
+        draft["ENABLE_AAC"] = audio.aac ? "1" : "0"
+        draft["ENABLE_LOSSY_AUDIO"] = audio.lossy ? "1" : "0"
     }
 
     // MARK: - Network bind (loopback <-> all interfaces, port preserved)

@@ -80,6 +80,45 @@ final class UpdateCoreTests: XCTestCase {
             "844e7a37460b493718fdb3a4374ab6e548980d29c8ca6717caf6c31dddee5e7d")
     }
 
+    // MARK: Mutually-exclusive audio settings
+
+    func test_enable_lossy_audio_turns_reliable_aac_off() {
+        let state = AudioMode.resolve(enabledKey: "ENABLE_LOSSY_AUDIO", enabled: true,
+                                      aac: true, lossy: false)
+        XCTAssertEqual(state, AudioMode(aac: false, lossy: true))
+    }
+
+    func test_enable_reliable_aac_turns_lossy_audio_off() {
+        let state = AudioMode.resolve(enabledKey: "ENABLE_AAC", enabled: true,
+                                      aac: false, lossy: true)
+        XCTAssertEqual(state, AudioMode(aac: true, lossy: false))
+    }
+
+    func test_disabling_one_mode_leaves_other_mode_unchanged() {
+        XCTAssertEqual(AudioMode.resolve(enabledKey: "ENABLE_AAC", enabled: false,
+                                         aac: true, lossy: false),
+                       AudioMode(aac: false, lossy: false))
+        XCTAssertEqual(AudioMode.resolve(enabledKey: "ENABLE_LOSSY_AUDIO", enabled: false,
+                                         aac: false, lossy: true),
+                       AudioMode(aac: false, lossy: false))
+    }
+
+    func test_disabling_audio_mode_does_not_enable_the_other() {
+        XCTAssertEqual(AudioMode.resolve(enabledKey: "ENABLE_AAC", enabled: false,
+                                         aac: true, lossy: false),
+                       AudioMode(aac: false, lossy: false))
+        XCTAssertEqual(AudioMode.resolve(enabledKey: "ENABLE_LOSSY_AUDIO", enabled: false,
+                                         aac: false, lossy: true),
+                       AudioMode(aac: false, lossy: false))
+    }
+
+    func test_server_config_conflict_gives_lossy_audio_precedence() {
+        // Mirrors args_from_config: hand-edited config.env with both keys ON
+        // must never emit the incompatible --enable-aac + --enable-lossy-audio.
+        let state = AudioMode.fromConfig(aac: true, lossy: true)
+        XCTAssertEqual(state, AudioMode(aac: false, lossy: true))
+    }
+
     // MARK: Config key inventory
 
     func test_no_duplicate_keys() {

@@ -912,7 +912,8 @@ struct Args {
     adaptive_bitrate: bool,
 
     /// EXPERIMENTAL, opt-in (default OFF; implies --enable-udp-multitransport,
-    /// requires --enable-aac and --enable-h264). Stream RDPSND audio over a LOSSY
+    /// requires --enable-h264; mutually exclusive with --enable-aac, which is
+    /// suppressed if both are requested in config.env). Stream RDPSND audio over a LOSSY
     /// UDP/DTLS tunnel with 1+1 redundancy instead of TCP — the loss-resilient audio
     /// path. The MS-RDPEA format handshake runs on a reliable DVC over TCP; AAC Wave2
     /// data is Soft-Synced onto a lossy (UdpFecL) RDPEUDP flow (deliver-on-arrival, no
@@ -2023,7 +2024,14 @@ fn args_from_config(path: &Path) -> Result<Args> {
     if on("ENABLE_H264", false) {
         argv.push("--enable-h264".into());
     }
-    if on("ENABLE_AAC", false) {
+    // Lossy RDPSND uses AAC Wave2 as payload over its lossy DVC; advertising
+    // normal AAC simultaneously on the reliable RDPSND channel conflicts with
+    // that client negotiation. Make lossy mode authoritative at the config
+    // boundary, including hand-edited config.env (the GUI also clears AAC when
+    // lossy is selected). Thus the server can never see both flags enabled.
+    let enable_lossy_audio = on("ENABLE_LOSSY_AUDIO", false);
+    let enable_aac = on("ENABLE_AAC", false) && !enable_lossy_audio;
+    if enable_aac {
         argv.push("--enable-aac".into());
     }
     if let Some(bitrate) = cfg.get("AAC_BITRATE") {
@@ -2093,7 +2101,7 @@ fn args_from_config(path: &Path) -> Result<Args> {
     if on("ADAPTIVE_BITRATE", false) {
         argv.push("--adaptive-bitrate".into());
     }
-    if on("ENABLE_LOSSY_AUDIO", false) {
+    if enable_lossy_audio {
         argv.push("--enable-lossy-audio".into());
     }
     if on("VIRTUAL_DISPLAY", false) {
@@ -3343,6 +3351,10 @@ async fn async_main() -> Result<()> {
     // channel migration yet, so a client that completes the handshake still runs
     // the session over TCP.
     //
+    // Lossy RDPSND and reliable AAC are mutually exclusive for this client path:
+    // lossy audio already uses AAC Wave2, carried by its RDPEA DVC over UDP. At
+    // config translation, ENABLE_LOSSY_AUDIO wins and ENABLE_AAC is suppressed,
+    // so a hand-edited config cannot request both codecs/transports.
     // `--enable-lossy-audio` is the one-switch promotion of the verified lossy-audio
     // path: it bridges the three expert env gates the vendored listener + provider
     // read (offer the lossy UdpFecL transport, use lossy deliver-on-arrival delivery,
@@ -3359,9 +3371,8 @@ async fn async_main() -> Result<()> {
             warn!(
                 enable_aac = args.enable_aac,
                 enable_h264 = args.enable_h264,
-                "--enable-lossy-audio needs --enable-aac (MS-RDPEA requires AAC for the lossy DVC) \
-                 AND --enable-h264 (the lossy-audio Soft-Sync rides the EGFX dispatch path); without \
-                 both, audio stays on TCP"
+                "--enable-lossy-audio needs AAC Wave2 and H.264/EGFX (RDPEA DVC rides the \
+                 EGFX dispatch path); without both, audio stays on TCP"
             );
         }
     }
@@ -3703,6 +3714,27 @@ mod config_tests {
     /// harness must set both — plus the plain one, to prove the bridge emits it.
     #[test]
     fn aac_bridge_needs_h264() {
+        // The two audio transport modes are mutually exclusive. Lossy mode is
+        // authoritative for a hand-edited config as well as the UI toggle.
+        let p = write_temp(
+            "audio-exclusive-lossy",
+            "ENABLE_AAC=1\nENABLE_LOSSY_AUDIO=1\nENABLE_H264=1\n",
+        );
+        let a = args_from_config(&p).unwrap();
+        assert!(a.enable_lossy_audio);
+        assert!(!a.enable_aac, "lossy audio must suppress normal RDPSND AAC");
+        fs::remove_file(&p).ok();
+
+        // AAC wins only when lossy transport is off.
+        let p = write_temp(
+            "audio-exclusive-aac",
+            "ENABLE_AAC=1\nENABLE_LOSSY_AUDIO=0\nENABLE_H264=1\n",
+        );
+        let a = args_from_config(&p).unwrap();
+        assert!(a.enable_aac);
+        assert!(!a.enable_lossy_audio);
+        fs::remove_file(&p).ok();
+
         let p = write_temp("aac1", "ENABLE_AAC=1\n");
         let a = args_from_config(&p).unwrap();
         assert!(

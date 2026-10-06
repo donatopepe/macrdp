@@ -4,6 +4,28 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.15 — lossy audio becomes the default, AAC modes are exclusive
+
+The user verified that lossy audio alone plays well; enabling both lossy audio and reliable RDPSND AAC breaks audio for the mstsc client. The two modes both carry AAC Wave2, but on different channels (lossy RDPEA DVC vs reliable RDPSND), and simultaneous negotiation is incompatible.
+
+- **New-install baseline:** `ENABLE_LOSSY_AUDIO=1`, `ENABLE_AAC=0` (reliable RDPSND AAC is opt-in). Existing `config.env` files are never rewritten.
+- **One mutually-exclusive rule:** turning Lossy audio on in the Controller turns AAC off in the same draft/apply; turning reliable AAC on turns Lossy audio off. `AudioMode` is pure Foundation logic, unit-tested.
+- **Config safety:** hand-edited config with both keys on is canonicalized the same way at the Rust bridge: lossy wins and the server never receives both `--enable-lossy-audio` and `--enable-aac`. The audio setting tests pin this.
+- CLI, feature description, Settings labels/help, and seeded config explain the exclusivity, measured default, and opt-back-in path for reliable AAC.
+
+Tests: 232 Rust + 18 Swift; fmt and clippy `-D warnings` clean.
+
+## v0.9.15 — lossy audio is default; reliable AAC and lossy AAC are mutually exclusive
+
+The user verified that lossy audio alone works well, while enabling reliable AAC and lossy audio together breaks mstsc audio. Both modes carry AAC Wave2, but on different channels: lossy RDPEA DVC vs reliable RDPSND. Simultaneous negotiation is incompatible.
+
+- **New-install baseline:** `ENABLE_LOSSY_AUDIO=1`, `ENABLE_AAC=0`. This is the measured choice on this deployment; existing `config.env` files remain untouched.
+- **Mutual exclusion in Controller:** selecting Lossy audio clears AAC in the draft; selecting reliable AAC clears Lossy audio. `AudioMode` is pure Foundation logic with tests for both toggle directions and disabling either mode.
+- **Mutual exclusion at server config bridge:** hand-edited `config.env` with both keys ON is canonicalized to lossy mode: only `--enable-lossy-audio` is emitted, normal `--enable-aac` suppressed. Lossy mode still requires H.264/EGFX, which is validated and warned.
+- **Docs and UI clarified:** settings labels name the transports, identify mutual exclusion, explain lossy-mode RTT gating and describe how to switch back to reliable AAC.
+
+Tests: 232 Rust + 22 Swift; fmt and clippy `-D warnings` clean.
+
 ## v0.9.14 — one FPS limiter, priority before bitrate
 
 The FPS controller had grown two independent capture-drop gates: the new 60→30 congestion stage and the older 10-FPS emergency floor. Both wrote the same timestamp. Under congestion one could reset the other's clock, causing every capture to be dropped while the audio stream remained alive — exactly the reported "video stuck, audio keeps playing". v0.9.14 replaces both with **one state machine, one cadence gate, and one timestamp**, on the capture thread before encode (VideoToolbox encoder remains thread-local, no `Send`/`Sync` sharing): configured rate → 30 FPS on congestion → bitrate ceiling steps down → 10 FPS only at the bitrate floor. FPS recovery waits 5 uninterrupted clear minutes at the effective ceiling; a momentary clear after AIMD backs off does not restore it.

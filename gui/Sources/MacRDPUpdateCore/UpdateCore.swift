@@ -90,6 +90,42 @@ public enum ConfigKeys {
     }
 }
 
+/// Resolution of mutually-exclusive reliable RDPSND AAC and lossy-DVC audio modes.
+/// Both carry AAC for mstsc, but advertise it on different transports: enabling
+/// one disables the other; if a hand-edited config enables both, lossy wins.
+public struct AudioMode: Equatable, Sendable {
+    public let aac: Bool
+    public let lossy: Bool
+
+    public init(aac: Bool, lossy: Bool) {
+        self.aac = aac
+        self.lossy = lossy
+    }
+
+    public static func resolve(enabledKey: String, enabled: Bool,
+                               aac: Bool, lossy: Bool) -> AudioMode {
+        if enabled && enabledKey == "ENABLE_AAC" {
+            return AudioMode(aac: true, lossy: false)
+        }
+        if enabled && enabledKey == "ENABLE_LOSSY_AUDIO" {
+            return AudioMode(aac: false, lossy: true)
+        }
+        if !enabled && enabledKey == "ENABLE_AAC" {
+            return AudioMode(aac: false, lossy: lossy)
+        }
+        if !enabled && enabledKey == "ENABLE_LOSSY_AUDIO" {
+            return AudioMode(aac: aac, lossy: false)
+        }
+        return fromConfig(aac: aac, lossy: lossy)
+    }
+
+    /// Canonicalize persisted / hand-edited config: lossy transport is
+    /// authoritative because it has already been measured as the desired mode.
+    public static func fromConfig(aac: Bool, lossy: Bool) -> AudioMode {
+        lossy ? AudioMode(aac: false, lossy: true) : AudioMode(aac: aac, lossy: false)
+    }
+}
+
 /// Version comparison for the updater. Numeric per component, so 0.9.10 beats
 /// 0.9.9 — a plain string compare gets that backwards, and an updater that
 /// offers a downgrade is how people learn to dismiss updaters.

@@ -321,13 +321,13 @@ private struct AudioTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("AAC audio", isOn: model.boolBinding("ENABLE_AAC"))
-                Text("Compresses forwarded audio as AAC-LC (~11× less bandwidth than PCM). Clients "
-                    + "without AAC fall back to PCM. Adds ~40–50 ms latency, so it's off by default.")
+                Toggle("AAC audio (reliable RDPSND)", isOn: model.boolBinding("ENABLE_AAC"))
+                Text("AAC-LC over the normal reliable audio channel. Adds ~40–50 ms encoder latency. "
+                    + "Mutually exclusive with Lossy audio; enabling either disables the other.")
                     .font(.caption).foregroundColor(.secondary)
-                Toggle("Lossy audio", isOn: model.boolBinding("ENABLE_LOSSY_AUDIO"))
-                Text("Switches the audio stream to a lossy codec when the client offers one. "
-                    + "LAN/Wi-Fi only — it is not safe on a lossy or high-latency link.")
+                Toggle("Lossy audio (adaptive UDP)", isOn: model.boolBinding("ENABLE_LOSSY_AUDIO"))
+                Text("AAC Wave2 over a duplicated lossy UDP tunnel. Best on low-loss LAN/Wi-Fi; "
+                    + "the RTT gate leaves VPN / slow links on TCP. Mutually exclusive with normal AAC.")
                     .font(.caption).foregroundColor(.secondary)
             }
         }
