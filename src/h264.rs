@@ -332,10 +332,12 @@ struct ConnectionContext {
     /// Hysteresis state: whether the controller is currently in a congestion episode
     /// (enters when the EWMA lag clears the high mark, exits below the low mark).
     adaptive_congested: bool,
-    /// P2b: when the last capture was let through under the frame-rate floor (the
-    /// fps cap that engages once bitrate is at the floor and the link is still
-    /// congested). Throttles let-throughs to `Gfx::adaptive_min_fps_interval`, like
-    /// `last_throttle_ship` does for the EGFX-on-UDP trickle. See [`frame_drop_at_floor`].
+    /// Adaptive frame-rate stage: first congestion reduces capture submissions
+    /// from 60 to 30 before the bitrate ceiling is allowed to fall. Pacing is
+    /// capture-side, so no VideoToolbox encoder handle crosses threads.
+    adaptive_fps: u32,
+    adaptive_fps_clear_since: Option<Instant>,
+    /// P2b emergency floor below the staged 30-FPS limit.
     last_floor_fps_pass: Instant,
     /// Blank-presentation detector state (the mstsc reconnect-blank; see
     /// [`should_blank_recover`]): consecutive zero / nonzero decode+render-time
@@ -1206,6 +1208,11 @@ fn ceiling_step(
 /// Minimum wall-clock gap between two ceiling steps, so the walk-down is over
 /// tens of seconds rather than one control interval.
 const CEILING_STEP_MIN_INTERVAL: Duration = Duration::from_secs(5);
+/// First congestion stage: halve a 60 FPS stream before reducing its bitrate ceiling.
+const ADAPTIVE_FPS_STAGE: u32 = 30;
+/// FPS recovery is slower than bitrate recovery: five uninterrupted minutes at
+/// the effective ceiling before 30 -> configured (usually 60).
+const ADAPTIVE_FPS_RAISE_CLEAR_FOR: Duration = Duration::from_secs(300);
 
 /// Read the ack-recovery config from the environment once. Returns
 /// `(enabled, params)`; disabled (default) keeps the feature off and the path
@@ -1984,6 +1991,28 @@ impl Gfx {
                     }
                 }
             }
+            // Higher-priority FPS stage: pace captures at 30 FPS before the
+            // effective bitrate ceiling begins stepping down. This reduces packet
+            // load while preserving per-frame detail. It is capture-side (before
+            // encode), so the VideoToolbox encoder stays thread-local — no shared
+            // handle, no Send/Sync issue. Restore configured FPS only after 5 min
+            // clear at the effective ceiling.
+            if self.adaptive_enabled && ctx.adaptive_fps < self.fps {
+                let now = Instant::now();
+                let interval = Duration::from_secs_f64(1.0 / f64::from(ctx.adaptive_fps.max(1)));
+                if now.saturating_duration_since(ctx.last_floor_fps_pass) < interval {
+                    trace!(
+                        effective_fps = ctx.adaptive_fps,
+                        "EGFX staged FPS limiter: dropping capture before bitrate ceiling"
+                    );
+                    if let Some(stats) = crate::stats::global() {
+                        stats.capture_drops.fetch_add(1, Ordering::Relaxed);
+                    }
+                    return Ok(true);
+                }
+                ctx.last_floor_fps_pass = now;
+            }
+
             // P2b frame-rate floor: once the adaptive controller has cut the bitrate to
             // its floor AND the link is still congested, lowering quality can't help —
             // so shed FRAMES. Cap the effective fps (drop captures arriving within
@@ -2301,6 +2330,41 @@ impl Gfx {
             ctx.adaptive_congested,
         );
         ctx.adaptive_congested = congested;
+        // --- frame-rate stage: higher priority than bitrate ceiling ------------
+        // On the first congested interval, halve capture cadence (60→30) before
+        // the ceiling's three-interval descent gate. This reduces packet count
+        // while preserving detail per frame. Recovery to configured FPS is slow:
+        // five uninterrupted clear minutes at the effective ceiling.
+        let target_at_ceiling = ctx.adaptive_target_bps >= ctx.adaptive_ceiling_bps * 95 / 100;
+        if congested {
+            if ctx.adaptive_fps > ADAPTIVE_FPS_STAGE.min(self.fps) {
+                let previous = ctx.adaptive_fps;
+                ctx.adaptive_fps = ADAPTIVE_FPS_STAGE.min(self.fps);
+                ctx.adaptive_fps_clear_since = None;
+                ctx.last_floor_fps_pass = now;
+                info!(
+                    previous_fps = previous,
+                    effective_fps = ctx.adaptive_fps,
+                    "EGFX congested: reducing capture FPS before bitrate ceiling"
+                );
+            }
+        } else if target_at_ceiling && ctx.adaptive_fps < self.fps {
+            let since = *ctx.adaptive_fps_clear_since.get_or_insert(now);
+            if now.saturating_duration_since(since) >= ADAPTIVE_FPS_RAISE_CLEAR_FOR {
+                let previous = ctx.adaptive_fps;
+                ctx.adaptive_fps = self.fps;
+                ctx.adaptive_fps_clear_since = None;
+                info!(
+                    previous_fps = previous,
+                    effective_fps = self.fps,
+                    "EGFX clear at ceiling for 5 min: restoring configured FPS"
+                );
+            }
+        } else if !target_at_ceiling {
+            // Clear queue after the AIMD backed off is not capacity evidence.
+            ctx.adaptive_fps_clear_since = None;
+        }
+
         // --- effective ceiling -------------------------------------------------
         // Converge on a per-interval basis, BEFORE the AIMD reads the ceiling, so
         // the target inherits the new bound in the same step instead of spending
@@ -2429,7 +2493,7 @@ impl Gfx {
             crate::stats::mark_queue_delay_measured(s);
             s.rtt_ms
                 .store(self.link_rtt_ms.load(Ordering::Relaxed), Ordering::Relaxed);
-            s.fps.store(self.fps, Ordering::Relaxed);
+            s.fps.store(ctx.adaptive_fps, Ordering::Relaxed);
             s.frames_sent.store(
                 ctx.last_shipped_frame_id.load(Ordering::Relaxed),
                 Ordering::Relaxed,
@@ -3083,6 +3147,8 @@ impl GfxServerFactory for Gfx {
             adaptive_warmup_until: None,
             adaptive_delay_ewma: 0.0,
             adaptive_congested: false,
+            adaptive_fps: self.fps,
+            adaptive_fps_clear_since: None,
             last_floor_fps_pass: Instant::now(),
             qoe: QoeEvidence::default(),
             last_nonzero_qoe_at: Instant::now(),
