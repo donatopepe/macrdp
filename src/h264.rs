@@ -1352,6 +1352,10 @@ pub struct Gfx {
     adaptive_decrease: f32,
     adaptive_interval: Duration,
     ceiling_step_interval: Duration,
+    keyboard_idr_interval: Duration,
+    keyboard_idr_min_spacing: Duration,
+    keyboard_idr_stillness: Duration,
+    keyboard_idr_max_per_second: u32,
     ceiling_congestion_intervals: u32,
     /// Standing queue delay (ms above the windowed-min RTT) at which the
     /// controller treats the link as congested; hysteresis exits at half this.
@@ -1507,6 +1511,16 @@ impl Gfx {
         let ceiling_step_interval = watchdog_ms("MACRDP_ADAPTIVE_CEILING_STEP_MS", 200);
         let ceiling_congestion_intervals =
             env_u32("MACRDP_ADAPTIVE_CEILING_CONGESTED_INTERVALS", 1);
+        // Bound typed-text presentation lag with IDRs triggered by real keyboard
+        // posts, not every modifier/sync callback. Latest capture is retained by
+        // SCK; a brief quiet wait coalesces character bursts into one IDR.
+        let keyboard_idr_interval =
+            Duration::from_millis(env_u32("MACRDP_KEYBOARD_IDR_INTERVAL_MS", 200) as u64);
+        let keyboard_idr_min_spacing =
+            Duration::from_millis(env_u32("MACRDP_KEYBOARD_IDR_MIN_SPACING_MS", 500) as u64);
+        let keyboard_idr_stillness =
+            Duration::from_millis(env_u32("MACRDP_KEYBOARD_IDR_STILLNESS_MS", 50) as u64);
+        let keyboard_idr_max_per_second = env_u32("MACRDP_KEYBOARD_IDR_MAX_PER_SECOND", 2);
         // Congestion threshold: STANDING QUEUE DELAY in ms (sample ack-RTT minus
         // the windowed-min RTT). Time-based and transport-agnostic — replaced the
         // per-transport frame-count lag thresholds, which read a long-but-clean
@@ -1655,6 +1669,10 @@ impl Gfx {
                 interval_ms = adaptive_interval.as_millis() as u64,
                 queue_high_ms = adaptive_queue_high_ms,
                 ewma_alpha = adaptive_ewma_alpha,
+                keyboard_idr_interval_ms = keyboard_idr_interval.as_millis() as u64,
+                keyboard_idr_min_spacing_ms = keyboard_idr_min_spacing.as_millis() as u64,
+                keyboard_idr_stillness_ms = keyboard_idr_stillness.as_millis() as u64,
+                keyboard_idr_max_per_second,
                 normal_keyframe_frames,
                 stretched_keyframe_frames,
                 "EGFX adaptive bitrate + IDR backoff + frame-rate floor ENABLED (--adaptive-bitrate) — \
@@ -1685,6 +1703,10 @@ impl Gfx {
             adaptive_decrease,
             adaptive_interval,
             ceiling_step_interval,
+            keyboard_idr_interval,
+            keyboard_idr_min_spacing,
+            keyboard_idr_stillness,
+            keyboard_idr_max_per_second,
             ceiling_congestion_intervals,
             adaptive_queue_high_ms,
             adaptive_ewma_alpha,
@@ -2901,6 +2923,15 @@ impl Gfx {
     /// flicker). If a plain IDR turns out not to un-blank the surface-retention
     /// case on some client, [`request_reactivation`] is the heavier escalation.
     /// `capture.rs` calls this when it observes the flag.
+    pub(crate) fn keyboard_idr_settings(&self) -> (Duration, Duration, Duration, u32) {
+        (
+            self.keyboard_idr_interval,
+            self.keyboard_idr_min_spacing,
+            self.keyboard_idr_stillness,
+            self.keyboard_idr_max_per_second,
+        )
+    }
+
     pub(crate) fn force_keyframe(&self) {
         if let Ok(mut guard) = self.ctx.lock() {
             if let Some(ctx) = guard.as_mut() {

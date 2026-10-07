@@ -52,6 +52,10 @@ pub(crate) static RESYNC_VIDEO: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 pub(crate) static RESYNC_AUDIO: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+/// Monotonic count of actual keyboard events posted to macOS. Capture path uses
+/// it to force a throttled IDR so typed pixels do not wait on client P-frame paint.
+pub(crate) static KEYBOARD_POST_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 use std::fs;
 use std::io::{BufReader, IsTerminal};
@@ -3109,6 +3113,10 @@ async fn async_main() -> Result<()> {
         crate::stats::set_diagnostics(diagnostics.clone());
     }
 
+    // Shared actual-key-post activity for the capture loop's bounded keyboard IDR.
+    // No key payload is retained; macOS input increments only after CGEventPost.
+    let keyboard_activity = capture::PendingResize::new();
+
     // EGFX/H.264 video pipeline (macOS-only; opt-in via --enable-h264). One
     // clone drives the builder's GfxServerFactory (protocol side); another
     // rides on CaptureDisplay, where the capture loop feeds it BGRA frames.
@@ -3171,6 +3179,7 @@ async fn async_main() -> Result<()> {
         gfx: gfx.clone(),
         keyframe_on_change,
         click_signal: click_signal.clone(),
+        keyboard_activity: keyboard_activity.clone(),
         flush_frames: args.flush_frames,
         display_suppressed: Some(display_suppressed.clone()),
         // Live in-session resize (client drags its window, sending an
@@ -3208,6 +3217,7 @@ async fn async_main() -> Result<()> {
         desktop_size.clone(),
         capture_display_id,
         click_signal,
+        args.enable_h264.then(|| keyboard_activity.clone()),
         args.keyboard_layout.clone(),
         Some(keyboard_layout_klid.clone()),
     )?;

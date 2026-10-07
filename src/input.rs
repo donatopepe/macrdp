@@ -39,18 +39,21 @@ impl MacInputHandler {
         desktop_size: crate::capture::SharedDesktopSize,
         target_display_id: Option<u32>,
         click_signal: Option<crate::capture::ClickSignal>,
+        keyboard_activity: Option<crate::capture::PendingResize>,
         keyboard_layout: Option<String>,
         keyboard_layout_klid: Option<SharedKeyboardLayout>,
     ) -> anyhow::Result<Self> {
         #[cfg(target_os = "macos")]
         let inner = macos::Inner::new(
             target_display_id,
+            keyboard_activity.clone(),
             keyboard_layout.as_deref(),
             keyboard_layout_klid,
         )?;
         #[cfg(not(target_os = "macos"))]
         {
             let _ = target_display_id;
+            let _ = keyboard_activity;
             let _ = keyboard_layout;
             let _ = keyboard_layout_klid;
         }
@@ -72,6 +75,8 @@ impl RdpServerInputHandler for MacInputHandler {
             // not count as typed keys. Never retain callback payload.
             crate::stats::record_keyboard_received();
             self.inner.keyboard(event);
+            // Counted after callback returns; capture loop observes generation and
+            // emits a fresh EGFX IDR. Increment only actual posted key events below.
         }
         #[cfg(not(target_os = "macos"))]
         trace!(?event, "keyboard event (stub)");
@@ -635,6 +640,8 @@ mod macos {
     }
 
     pub struct Inner {
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+        keyboard_activity: Option<crate::capture::PendingResize>,
         // CombinedSessionState source used for ordinary input and app-level
         // shortcuts.
         source: CGEventSource,
@@ -703,6 +710,7 @@ mod macos {
     impl Inner {
         pub fn new(
             target_display_id: Option<u32>,
+            keyboard_activity: Option<crate::capture::PendingResize>,
             keyboard_layout: Option<&str>,
             klid_handle: Option<super::SharedKeyboardLayout>,
         ) -> Result<Self> {
@@ -754,6 +762,7 @@ mod macos {
                 tracing::info!("keyboard layout will auto-detect from the connecting client");
             }
             Ok(Self {
+                keyboard_activity,
                 source,
                 source_hid,
                 source_fn,
@@ -1065,6 +1074,11 @@ mod macos {
                                 ev.set_flags(flags);
                                 ev.set_string_from_utf16_unchecked(&utf16);
                                 ev.post(CGEventTapLocation::HID);
+                                crate::KEYBOARD_POST_GENERATION
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if let Some(signal) = &self.keyboard_activity {
+                                    signal.record_keyboard();
+                                }
                                 crate::stats::record_input_handler_duration(
                                     event_started.elapsed(),
                                     true,
@@ -1118,6 +1132,10 @@ mod macos {
                 "input CGEvent before post"
             );
             ev.post(CGEventTapLocation::HID);
+            crate::KEYBOARD_POST_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(signal) = &self.keyboard_activity {
+                signal.record_keyboard();
+            }
             crate::stats::record_input_handler_duration(event_started.elapsed(), true);
             tracing::debug!(vk = format!("0x{vk:02X}"), down, "input CGEvent posted");
         }
@@ -1400,6 +1418,10 @@ mod macos {
                 "unicode CGEvent before post"
             );
             ev.post(CGEventTapLocation::HID);
+            crate::KEYBOARD_POST_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(signal) = &self.keyboard_activity {
+                signal.record_keyboard();
+            }
             tracing::debug!(code = format!("0x{c:04X}"), "unicode CGEvent posted");
             crate::stats::record_input_handler_duration(event_started.elapsed(), true);
         }

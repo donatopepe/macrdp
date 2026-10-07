@@ -126,9 +126,10 @@ struct PendingResizeInner {
     /// Packed size of the most recently requested resize. Meaningless while
     /// `last_update_ms == 0`.
     size: AtomicU32,
-    /// Milliseconds since `epoch` of the last `request()` call; 0 = no
-    /// pending request (never requested, or already consumed).
+    /// Milliseconds since `epoch` of the last resize request; 0 = no resize.
     last_update_ms: AtomicU64,
+    /// New keyboard events never clear while coalescing a typing burst.
+    keyboard_generation: AtomicU64,
 }
 
 impl PendingResize {
@@ -138,6 +139,7 @@ impl PendingResize {
                 epoch: Instant::now(),
                 size: AtomicU32::new(0),
                 last_update_ms: AtomicU64::new(0),
+                keyboard_generation: AtomicU64::new(0),
             }),
         }
     }
@@ -163,6 +165,18 @@ impl PendingResize {
     /// of blocking indefinitely on the next camera sample.
     pub fn has_pending(&self) -> bool {
         self.inner.last_update_ms.load(Ordering::Relaxed) != 0
+    }
+
+    /// Record actual RDP key post (not modifier/Sync callbacks).
+    pub fn record_keyboard(&self) {
+        self.inner
+            .keyboard_generation
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Latest actual keyboard event generation; monotonic and non-consuming.
+    pub fn keyboard_generation(&self) -> u64 {
+        self.inner.keyboard_generation.load(Ordering::Relaxed)
     }
 
     /// If a request has been outstanding for at least `debounce` with no
@@ -390,6 +404,8 @@ pub struct CaptureDisplay {
     /// path (both codec paths) and, via `virtual_display` below, on the
     /// virtual-display path.
     pub pending_resize: PendingResize,
+    /// Actual posted keyboard activity, shared with SCK loop for prompt IDRs.
+    pub keyboard_activity: PendingResize,
     /// Operator ceiling for a live client-requested resize (`--max-client-size`),
     /// mirroring the connect-time cap the vendored acceptor applies. `None` =
     /// no cap beyond the protocol max (still enforced by `adopt_client_size`).
@@ -857,6 +873,7 @@ impl CaptureDisplay {
                 self.stretch,
                 self.desktop_size.clone(),
                 self.pending_resize.clone(),
+                self.keyboard_activity.clone(),
                 self.suppress_next_adopt.clone(),
             )
             .await?,
@@ -991,6 +1008,15 @@ mod macos {
         /// Mouse-click hint for the post-click keyframe-threshold drop. Only
         /// consulted when `keyframe_on_change.enabled`.
         click_signal: Option<ClickSignal>,
+        /// Keyboard activity generation currently coalesced into a low-latency IDR.
+        keyboard_generation: u64,
+        keyboard_idr_due_at: Option<Instant>,
+        keyboard_idr_last_at: Option<Instant>,
+        keyboard_idr_window_started: Instant,
+        keyboard_idr_window_count: u32,
+        keyboard_idr_interval: Duration,
+        keyboard_idr_max_per_second: u32,
+        keyboard_idr_stillness: Duration,
         /// Interval between SCK frames (1/fps). Doubles as the flush-burst
         /// timeout: when SCK goes idle we wait at most this long before
         /// re-submitting the last frame to drain mstsc's presentation buffer.
@@ -1076,6 +1102,7 @@ mod macos {
         /// reactivation's `request_initial_size` call doesn't re-adopt
         /// whatever size the client's Confirm Active echoes.
         suppress_next_adopt: Arc<AtomicBool>,
+        keyboard_activity: PendingResize,
     }
 
     impl ScreenCaptureUpdates {
@@ -1097,6 +1124,7 @@ mod macos {
             stretch: bool,
             desktop_size: SharedDesktopSize,
             pending_resize: PendingResize,
+            keyboard_activity: PendingResize,
             suppress_next_adopt: Arc<AtomicBool>,
         ) -> Result<Self> {
             let content = AsyncSCShareableContent::get()
@@ -1274,6 +1302,15 @@ mod macos {
                 frame_interval,
                 flush_frames,
                 last_gfx_submit_at: None,
+                keyboard_generation: keyboard_activity.keyboard_generation(),
+                keyboard_idr_due_at: None,
+                keyboard_idr_last_at: None,
+                keyboard_idr_window_started: Instant::now(),
+                keyboard_idr_window_count: 0,
+                keyboard_idr_interval: Duration::from_millis(200),
+                keyboard_idr_max_per_second: 2,
+                keyboard_idr_stillness: Duration::from_millis(50),
+                keyboard_activity,
                 flush_remaining: 0,
                 last_frame: Vec::new(),
                 last_stride: 0,
@@ -1464,6 +1501,34 @@ mod macos {
                     return Ok(Some(update));
                 }
 
+                // Observe actual keyboard-post generation. Coalesce bursts; the
+                // IDR request is consumed only by a fresh captured frame below.
+                if let Some(gfx) = self.gfx.as_ref() {
+                    let generation = self.keyboard_activity.keyboard_generation();
+                    if generation != self.keyboard_generation {
+                        self.keyboard_generation = generation;
+                        let (debounce, min_spacing, stillness, max_per_second) =
+                            gfx.keyboard_idr_settings();
+                        self.keyboard_idr_interval = debounce;
+                        self.keyboard_idr_max_per_second = max_per_second;
+                        self.keyboard_idr_stillness = stillness;
+                        if self.keyboard_idr_due_at.is_none() {
+                            let now = Instant::now();
+                            let cooldown =
+                                self.keyboard_idr_last_at.map_or(Duration::ZERO, |last| {
+                                    min_spacing.saturating_sub(now.saturating_duration_since(last))
+                                });
+                            self.keyboard_idr_due_at = Some(now + debounce.max(cooldown));
+                        }
+                    }
+                    if self.keyboard_idr_window_started.elapsed() >= Duration::from_secs(1) {
+                        self.keyboard_idr_window_started = Instant::now();
+                        self.keyboard_idr_window_count = 0;
+                    }
+                    // Keep pending when capped; generation coalesces all keys,
+                    // and next window can still force one frame without loss.
+                }
+
                 // Client minimized (sent `SuppressOutput { desktop_rect: None }`)
                 // — stop pulling SCK samples and stop encoding/shipping. Without
                 // this, mstsc accumulates EGFX frames during a long minimize and
@@ -1510,19 +1575,55 @@ mod macos {
                     }
                 }
 
-                // While a flush burst OR a debounced resize is pending, don't
-                // block indefinitely on SCK: it stops delivering frames on a
-                // static screen, so wait at most one frame interval before
-                // looping back to the top (where the flush burst re-submits the
-                // last frame, and a settled resize gets picked up promptly
-                // instead of stalling until the next real desktop change).
-                // (Neither pending — the common idle case — blocks normally.)
-                let sample = if self.flush_remaining > 0 || self.pending_resize.has_pending() {
-                    match tokio::time::timeout(self.frame_interval, self.stream.next()).await {
+                // Keyboard IDR and flush/resize work require bounded wakeup
+                // while SCK is idle. During active typing, wake ~100ms after the
+                // latest posted key and submit the freshest capture as one forced
+                // IDR, coalescing bursts without a keyframe per character.
+                let keyboard_pending = self.keyboard_idr_due_at.is_some();
+                let sample = if self.flush_remaining > 0
+                    || self.pending_resize.has_pending()
+                    || keyboard_pending
+                {
+                    let wait = if keyboard_pending {
+                        self.frame_interval.min(self.keyboard_idr_interval)
+                    } else {
+                        self.frame_interval
+                    };
+                    match tokio::time::timeout(wait, self.stream.next()).await {
                         Ok(Some(sample)) => sample,
                         Ok(None) => return Ok(None),
                         Err(_) => {
-                            if self.flush_remaining > 0 {
+                            let now = Instant::now();
+                            let keyboard_idr =
+                                self.keyboard_idr_due_at.is_some_and(|due| now >= due)
+                                    && self.keyboard_idr_window_count
+                                        < self.keyboard_idr_max_per_second
+                                    && self.keyboard_idr_last_at.is_none_or(|last| {
+                                        now.duration_since(last) >= self.keyboard_idr_stillness
+                                    });
+                            if keyboard_idr {
+                                // SCK has gone idle after the last caret/glyph update.
+                                // Re-encode the freshest captured pixels as an IDR so
+                                // the client cannot leave final typed text in its P-frame queue.
+                                if let (Some(gfx), false) =
+                                    (self.gfx.as_ref(), self.last_frame.is_empty())
+                                {
+                                    match gfx.submit_bgra(&self.last_frame, self.last_stride, true)
+                                    {
+                                        Ok(true) => {
+                                            self.keyboard_idr_due_at = None;
+                                            self.keyboard_idr_last_at = Some(now);
+                                            self.keyboard_idr_window_count += 1;
+                                            self.flush_remaining = 0;
+                                            tracing::debug!("keyboard echo IDR submitted from latest captured frame");
+                                        }
+                                        Ok(false) => {}
+                                        Err(error) => {
+                                            tracing::warn!(?error, "keyboard echo IDR failed")
+                                        }
+                                    }
+                                }
+                            } else if self.flush_remaining > 0 {
                                 self.flush_remaining -= 1;
                                 if let Some(gfx) = self.gfx.as_ref() {
                                     if !self.last_frame.is_empty() {
@@ -1703,8 +1804,18 @@ mod macos {
                     } else {
                         false
                     };
-                    let submit_started = Instant::now();
-                    match gfx.submit_bgra(src, stride_bytes, big_change || resume_keyframe) {
+                    let now = Instant::now();
+                    let keyboard_idr = self.keyboard_idr_due_at.is_some_and(|due| now >= due)
+                        && self.keyboard_idr_window_count < self.keyboard_idr_max_per_second
+                        && self.keyboard_idr_last_at.is_none_or(|last| {
+                            now.duration_since(last) >= self.keyboard_idr_stillness
+                        });
+                    let submit_started = now;
+                    match gfx.submit_bgra(
+                        src,
+                        stride_bytes,
+                        big_change || resume_keyframe || keyboard_idr,
+                    ) {
                         Ok(true) => {
                             if let Some(stats) = crate::stats::global() {
                                 if let Some(previous) = self.last_gfx_submit_at {
@@ -1719,6 +1830,14 @@ mod macos {
                                 }
                             }
                             self.last_gfx_submit_at = Some(submit_started);
+                            if keyboard_idr {
+                                self.keyboard_idr_due_at = None;
+                                self.keyboard_idr_last_at = Some(submit_started);
+                                self.keyboard_idr_window_count += 1;
+                                tracing::debug!(
+                                    "coalesced keyboard echo IDR submitted with latest capture"
+                                );
+                            }
                             self.seeded = true;
                             // First-EGFX-frame milestone: arms the suppress
                             // gate (see `first_egfx_frame_sent` in the struct).
