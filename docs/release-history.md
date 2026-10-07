@@ -4,13 +4,13 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
-## v0.9.22 — keyboard timing starts at actual CGEventPost
+## v0.9.24 — distinguish inbound key callbacks from posted events
 
 Corrects a v0.9.21 telemetry-boundary issue: its keyboard timer included RDP callbacks that only changed modifier bookkeeping or were swallowed, not only events that reached CoreGraphics. The microsecond timer now starts at the actual scan-code, RDP Unicode, or configured-layout Unicode key post; modifiers/focus work and swallowed events excluded. This is still server-to-CGEventPost latency, not client paint time. No typed text or key identity logged.
 
-Also corrects release metadata: binary/Cargo package now reports v0.9.22, matching release tag, bundle, and updater. (The first published artifact used this code under the stale 0.9.21 package version; superseded by rebuilt checksum-verified v0.9.22 assets.)
+Also corrects release metadata: binary/Cargo package reports v0.9.24, matching release tag, bundle, and updater. The keyboard callback counter is separate from CGEvent-posted keys; no input payload is stored.
 
-235 Rust + 18 Swift tests; fmt/clippy/CI clean; arm64 asset SHA verified after rebuild.
+235 Rust + 18 Swift tests; fmt/clippy/CI clean; arm64 asset SHA verified.
 
 ## v0.9.21 — preserve sub-millisecond input diagnostics
 
