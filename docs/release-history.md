@@ -4,6 +4,17 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.21 — preserve sub-millisecond input diagnostics
+
+The first live attempt to use v0.9.20's input metrics while the user typed exposed a measurement bug: callback times were rounded down to integer milliseconds, so a normal ~hundreds-of-microseconds `CGEventPost` callback appeared as `input_last_ms=0` and its rolling p95 also showed zero. That is insufficient evidence for the key-echo issue.
+
+- Replace input timing fields with microsecond-resolution `input_total_us`, `input_last_us`, `input_max_us`, and rolling `input_latency_{p50,p95,max}_us`.
+- Separate keyboard and mouse callback counts. The data remains aggregate only—no keycodes, Unicode characters, modifiers or typed content.
+- Pure unit test pins 240 µs and 1 ms conversion without rounding to zero.
+- Existing `config.env` is untouched. Install/restart v0.9.21 before using the new stats fields; v0.9.20 had millisecond fields and cannot report the corrected schema.
+
+235 Rust + 18 Swift tests; fmt and clippy `-D warnings` clean; CI/security/release required before install.
+
 ## v0.9.20 — input diagnostics and faster adaptive response
 
 The user observes visible video then an early disconnect, plus keystrokes whose final character is delayed. This release instruments both hypotheses without recording typed content, adds exact pre-encode drop reasons, surfaces session-close error causes, and makes the existing adaptive controller react faster.
@@ -13,7 +24,7 @@ The user observes visible video then an early disconnect, plus keystrokes whose 
 - Reactions: adaptive controller tick 200 ms (was 300); target AIMD drop factor 0.5 (was 0.7) and additive increase 1/8 ceiling per tick (was 1/16); effective ceiling may step down every 200 ms after one congested control interval (was 5 s / 3 intervals). FPS remains one unified capture-side gate. H.264 in-flight default 2→1 to reduce encoder/decode queueing during typing; more captures may be dropped under sustained motion.
 - Five-minute clear-at-bound ceiling/FPS recovery retained; controller does NOT blindly restore max on a brief queue drain.
 
-Validation: 234 Rust + 18 Swift tests; fmt/clippy clean. Live verification still required for input latency: stats `input_latency_p95_ms` measures only server callback-to-CGEventPost, not mstsc presentation; compare it with `capture_interval_ms`, `frames_sent`, drop reasons and the next disconnect's `transport_error`.
+Validation: 234 Rust + 18 Swift tests; fmt/clippy clean. Live verification still required for input latency: stats `input_latency_p95_us` measures only server callback-to-CGEventPost, not mstsc presentation; compare it with `capture_interval_ms`, `frames_sent`, drop reasons and the next disconnect's `transport_error`.
 
 ## v0.9.19 — input and frame-drop diagnostics; responsive AIMD defaults
 

@@ -72,16 +72,20 @@ pub struct SessionStats {
     pub capture_drop_event_queue: AtomicU64,
     pub capture_drop_pipeline: AtomicU64,
     pub capture_drop_udp_lag: AtomicU64,
-    /// Input callback timing from RDP handler entry through macOS post return.
-    /// Aggregate durations only; never keycodes, Unicode chars or text.
+    /// Keyboard and mouse callbacks received by the macOS input handler.
     pub input_events: AtomicU64,
-    pub input_total_ms: AtomicU64,
-    pub input_last_ms: AtomicU32,
-    pub input_max_ms: AtomicU32,
+    pub input_keyboard_events: AtomicU64,
+    pub input_mouse_events: AtomicU64,
+    /// Handler duration from callback entry through CoreGraphics post return.
+    /// Microseconds preserve sub-millisecond key-path cost; payload never logged.
+    pub input_total_us: AtomicU64,
+    pub input_last_us: AtomicU32,
+    pub input_max_us: AtomicU32,
     pub input_over_10ms: AtomicU64,
-    pub input_latency_p50_ms: AtomicU32,
-    pub input_latency_p95_ms: AtomicU32,
-    pub input_latency_max_ms: AtomicU32,
+    /// Rolling aggregate input handler latency, in microseconds.
+    pub input_latency_p50_us: AtomicU32,
+    pub input_latency_p95_us: AtomicU32,
+    pub input_latency_max_us: AtomicU32,
     input_latency_window: ironrdp_server::LatencyWindow,
     /// Number of ScreenCaptureKit samples discarded before processing.
     pub capture_sample_drops: AtomicU64,
@@ -401,8 +405,8 @@ impl SessionStats {
                 "\"encode_latency_p50_ms\":{},\"encode_latency_p95_ms\":{},\"encode_latency_max_ms\":{},",
                 "\"ship_latency_p50_ms\":{},\"ship_latency_p95_ms\":{},\"ship_latency_max_ms\":{},",
                 "\"socket_write_p50_ms\":{},\"socket_write_p95_ms\":{},\"socket_write_max_ms\":{},",
-                "\"input_events\":{},\"input_total_ms\":{},\"input_last_ms\":{},\"input_max_ms\":{},\"input_over_10ms\":{},",
-                "\"input_latency_p50_ms\":{},\"input_latency_p95_ms\":{},\"input_latency_max_ms\":{},",
+                "\"input_events\":{},\"input_keyboard_events\":{},\"input_mouse_events\":{},\"input_total_us\":{},\"input_last_us\":{},\"input_max_us\":{},\"input_over_10ms\":{},",
+                "\"input_latency_p50_us\":{},\"input_latency_p95_us\":{},\"input_latency_max_us\":{},",
                 "\"audio_queue_p50_ms\":{},\"audio_queue_p95_ms\":{},\"audio_queue_max_ms\":{},",
                 "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
                 "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
@@ -477,13 +481,15 @@ impl SessionStats {
             self.socket_write_p95_ms.load(Ordering::Relaxed),
             self.socket_write_max_ms.load(Ordering::Relaxed),
             self.input_events.load(Ordering::Relaxed),
-            self.input_total_ms.load(Ordering::Relaxed),
-            self.input_last_ms.load(Ordering::Relaxed),
-            self.input_max_ms.load(Ordering::Relaxed),
+            self.input_keyboard_events.load(Ordering::Relaxed),
+            self.input_mouse_events.load(Ordering::Relaxed),
+            self.input_total_us.load(Ordering::Relaxed),
+            self.input_last_us.load(Ordering::Relaxed),
+            self.input_max_us.load(Ordering::Relaxed),
             self.input_over_10ms.load(Ordering::Relaxed),
-            self.input_latency_p50_ms.load(Ordering::Relaxed),
-            self.input_latency_p95_ms.load(Ordering::Relaxed),
-            self.input_latency_max_ms.load(Ordering::Relaxed),
+            self.input_latency_p50_us.load(Ordering::Relaxed),
+            self.input_latency_p95_us.load(Ordering::Relaxed),
+            self.input_latency_max_us.load(Ordering::Relaxed),
             self.audio_queue_p50_ms.load(Ordering::Relaxed),
             self.audio_queue_p95_ms.load(Ordering::Relaxed),
             self.audio_queue_max_ms.load(Ordering::Relaxed),
@@ -511,21 +517,30 @@ impl SessionStats {
     }
 }
 
+fn input_duration_us(duration: std::time::Duration) -> u32 {
+    duration.as_micros().min(u128::from(u32::MAX)) as u32
+}
+
 /// Record end-to-end time spent in the macOS input handler callback. The
 /// caller brackets one RDP keyboard/mouse event; no key identity/text is stored.
-pub fn record_input_handler_duration(duration: std::time::Duration) {
+pub fn record_input_handler_duration(duration: std::time::Duration, keyboard: bool) {
     let Some(stats) = global() else { return };
-    let ms = duration.as_millis().min(u128::from(u32::MAX)) as u32;
+    let us = input_duration_us(duration);
     stats.input_events.fetch_add(1, Ordering::Relaxed);
+    if keyboard {
+        stats.input_keyboard_events.fetch_add(1, Ordering::Relaxed);
+    } else {
+        stats.input_mouse_events.fetch_add(1, Ordering::Relaxed);
+    }
     stats
-        .input_total_ms
-        .fetch_add(u64::from(ms), Ordering::Relaxed);
-    stats.input_last_ms.store(ms, Ordering::Relaxed);
-    stats.input_max_ms.fetch_max(ms, Ordering::Relaxed);
-    if ms >= 10 {
+        .input_total_us
+        .fetch_add(u64::from(us), Ordering::Relaxed);
+    stats.input_last_us.store(us, Ordering::Relaxed);
+    stats.input_max_us.fetch_max(us, Ordering::Relaxed);
+    if duration >= std::time::Duration::from_millis(10) {
         stats.input_over_10ms.fetch_add(1, Ordering::Relaxed);
     }
-    stats.input_latency_window.record(ms);
+    stats.input_latency_window.record(us);
 }
 
 static GLOBAL: OnceLock<Arc<SessionStats>> = OnceLock::new();
@@ -649,9 +664,9 @@ pub fn publish_latency_windows() {
     );
     publish_window(
         &stats.input_latency_window,
-        &stats.input_latency_p50_ms,
-        &stats.input_latency_p95_ms,
-        &stats.input_latency_max_ms,
+        &stats.input_latency_p50_us,
+        &stats.input_latency_p95_us,
+        &stats.input_latency_max_us,
     );
     publish_window(
         &diag.audio_queue_window,
@@ -779,6 +794,15 @@ mod tests {
     /// The queue reading is "last measured", not decayed — a consumer needs the
     /// age to tell a live congestion number from history, which is exactly what
     /// a static desktop used to disguise.
+    #[test]
+    fn input_handler_timer_preserves_sub_millisecond_precision() {
+        assert_eq!(
+            input_duration_us(std::time::Duration::from_micros(240)),
+            240
+        );
+        assert_eq!(input_duration_us(std::time::Duration::from_millis(1)), 1000);
+    }
+
     #[test]
     fn queue_delay_reading_carries_its_age() {
         let s = SessionStats::default();

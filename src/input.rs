@@ -71,7 +71,7 @@ impl RdpServerInputHandler for MacInputHandler {
             // or any representation of the typed content.
             let started = std::time::Instant::now();
             self.inner.keyboard(event);
-            crate::stats::record_input_handler_duration(started.elapsed());
+            crate::stats::record_input_handler_duration(started.elapsed(), true);
         }
         #[cfg(not(target_os = "macos"))]
         trace!(?event, "keyboard event (stub)");
@@ -95,7 +95,7 @@ impl RdpServerInputHandler for MacInputHandler {
             let letterbox = self.desktop_size.letterbox();
             let started = std::time::Instant::now();
             self.inner.mouse(event, width, height, letterbox);
-            crate::stats::record_input_handler_duration(started.elapsed());
+            crate::stats::record_input_handler_duration(started.elapsed(), false);
         }
         #[cfg(not(target_os = "macos"))]
         trace!(?event, "mouse event (stub)");
