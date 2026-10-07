@@ -72,6 +72,8 @@ pub struct SessionStats {
     pub capture_drop_event_queue: AtomicU64,
     pub capture_drop_pipeline: AtomicU64,
     pub capture_drop_udp_lag: AtomicU64,
+    /// Incoming RDP keyboard-handler callbacks, including Sync/modifier events.
+    pub keyboard_callbacks: AtomicU64,
     /// Keyboard and mouse callback events that reached CoreGraphics posting.
     pub input_events: AtomicU64,
     pub input_keyboard_events: AtomicU64,
@@ -405,7 +407,7 @@ impl SessionStats {
                 "\"encode_latency_p50_ms\":{},\"encode_latency_p95_ms\":{},\"encode_latency_max_ms\":{},",
                 "\"ship_latency_p50_ms\":{},\"ship_latency_p95_ms\":{},\"ship_latency_max_ms\":{},",
                 "\"socket_write_p50_ms\":{},\"socket_write_p95_ms\":{},\"socket_write_max_ms\":{},",
-                "\"input_events\":{},\"input_keyboard_events\":{},\"input_mouse_events\":{},\"input_total_us\":{},\"input_last_us\":{},\"input_max_us\":{},\"input_over_10ms\":{},",
+                "\"keyboard_callbacks\":{},\"input_events\":{},\"input_keyboard_events\":{},\"input_mouse_events\":{},\"input_total_us\":{},\"input_last_us\":{},\"input_max_us\":{},\"input_over_10ms\":{},",
                 "\"input_latency_p50_us\":{},\"input_latency_p95_us\":{},\"input_latency_max_us\":{},",
                 "\"audio_queue_p50_ms\":{},\"audio_queue_p95_ms\":{},\"audio_queue_max_ms\":{},",
                 "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
@@ -480,6 +482,7 @@ impl SessionStats {
             self.socket_write_p50_ms.load(Ordering::Relaxed),
             self.socket_write_p95_ms.load(Ordering::Relaxed),
             self.socket_write_max_ms.load(Ordering::Relaxed),
+            self.keyboard_callbacks.load(Ordering::Relaxed),
             self.input_events.load(Ordering::Relaxed),
             self.input_keyboard_events.load(Ordering::Relaxed),
             self.input_mouse_events.load(Ordering::Relaxed),
@@ -523,6 +526,13 @@ fn input_duration_us(duration: std::time::Duration) -> u32 {
 
 /// Record end-to-end time spent in the macOS input handler callback. The
 /// caller brackets one RDP keyboard/mouse event; no key identity/text is stored.
+/// Count inbound keyboard callbacks before Sync/modifier dispatch (no payload saved).
+pub fn record_keyboard_received() {
+    if let Some(stats) = global() {
+        stats.keyboard_callbacks.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub fn record_input_handler_duration(duration: std::time::Duration, keyboard: bool) {
     let Some(stats) = global() else { return };
     let us = input_duration_us(duration);

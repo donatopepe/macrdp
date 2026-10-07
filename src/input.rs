@@ -67,11 +67,11 @@ impl RdpServerInputHandler for MacInputHandler {
     fn keyboard(&mut self, event: KeyboardEvent) {
         #[cfg(target_os = "macos")]
         {
-            // Timing only: never emit scancode, Unicode character, modifiers,
-            // or any representation of the typed content.
-            let started = std::time::Instant::now();
+            // Count inbound RDP keyboard callbacks separately from key events
+            // actually posted to CoreGraphics. Sync/modifier-only callbacks do
+            // not count as typed keys. Never retain callback payload.
+            crate::stats::record_keyboard_received();
             self.inner.keyboard(event);
-            crate::stats::record_input_handler_duration(started.elapsed(), true);
         }
         #[cfg(not(target_os = "macos"))]
         trace!(?event, "keyboard event (stub)");
