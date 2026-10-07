@@ -702,13 +702,12 @@ struct Args {
     bitrate: u32,
 
     /// H.264 periodic keyframe (IDR) interval in seconds (only with
-    /// --enable-h264). Default 2. This is a safety net for transient decode
-    /// glitches on small changes (e.g. mstsc's lingering garbled text while
-    /// typing); large changes (window-to-front, scroll) can also force an
-    /// immediate IDR if --keyframe-on-change is set (off by default). Lower self-heals
-    /// faster but frequent IDRs cost bandwidth/quality at a fixed bitrate and
-    /// can stutter. Fractional values are allowed. First frame is a keyframe.
-    #[arg(long, default_value_t = 2.0)]
+    /// --enable-h264). The default is 1 s: frequent enough to drain mstsc's
+    /// small AVC420 presentation buffer during typing and repaint the final
+    /// caret/glyph after ScreenCaptureKit goes idle. IDRs are larger than P-frames,
+    /// so this trades some bandwidth and compression efficiency for interactive
+    /// echo. Set 2–5 s for bandwidth efficiency; the first frame is always IDR.
+    #[arg(long, default_value_t = 1.0)]
     keyframe_interval: f32,
 
     /// Force on-change H.264 keyframes (only with --enable-h264). OFF by

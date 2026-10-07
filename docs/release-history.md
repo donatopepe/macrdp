@@ -4,6 +4,12 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.25 — faster final-keystroke H.264 presentation
+
+Live evidence shows RDP input callbacks arrive and actual keys are posted to macOS with ~100µs p95, while H.264 frames continue shipping. User still sees several-second delay for typed pixels. Reduce periodic IDR interval from 2s to 1s: at the adaptive 30fps stage, a two-frame client AVC420 presentation queue spans ~67ms rather than ~133ms, and a static-screen final update waits at most half as long for periodic IDR. No per-keystroke IDR, no higher bitrate/FPS or relaxed congestion threshold. Tradeoff: twice as many periodic keyframes and more bandwidth; one IDR/s bounded. Existing `config.env` unchanged; new installs use 1s, operator can override with `EXTRA_FLAGS="--keyframe-interval N"`.
+
+Verification: 235 Rust tests (3 ignored), 18 Swift; fmt/clippy clean. This is a targeted latency intervention; it does not prove client presentation resolved. During next typing trial correlate inbound keyboard callbacks, key-post p95, frames/capture cadence, queue and visible echo.
+
 ## v0.9.24 — distinguish inbound key callbacks from posted events
 
 Corrects a v0.9.21 telemetry-boundary issue: its keyboard timer included RDP callbacks that only changed modifier bookkeeping or were swallowed, not only events that reached CoreGraphics. The microsecond timer now starts at the actual scan-code, RDP Unicode, or configured-layout Unicode key post; modifiers/focus work and swallowed events excluded. This is still server-to-CGEventPost latency, not client paint time. No typed text or key identity logged.
