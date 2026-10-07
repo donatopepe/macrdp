@@ -1205,10 +1205,10 @@ enum CeilingAction {
 /// merely busy gets re-evaluated on the next session, while a link that really
 /// is faster converges there and then.
 ///
-/// Rate limiting lives in the caller (this function is pure): 3 congested
-/// intervals to act, then at most one step per `CEILING_STEP_MIN_INTERVAL`, so
-/// the bound walks down over tens of seconds instead of slamming into the floor
-/// within one.
+/// Rate limiting lives in the caller (this function is pure): one congested
+/// control interval to act, then at most one step per
+/// configured ceiling interval (default 200 ms). The target AIMD can recover
+/// every same control tick; ceiling climb remains separately guarded.
 fn ceiling_step(
     current: u32,
     operator_ceiling: u32,
@@ -1228,7 +1228,7 @@ fn ceiling_step(
     let ceil_floor = (operator_ceiling / 2).max(floor_bps).max(1);
     let top = operator_ceiling.max(ceil_floor).max(1);
     let cur = current.clamp(ceil_floor, top);
-    if !congested || congested_holds < 3 {
+    if !congested || congested_holds < 1 {
         return CeilingAction::Hold;
     }
     if cur <= ceil_floor {
@@ -1243,9 +1243,6 @@ fn ceiling_step(
     }
 }
 
-/// Minimum wall-clock gap between two ceiling steps, so the walk-down is over
-/// tens of seconds rather than one control interval.
-const CEILING_STEP_MIN_INTERVAL: Duration = Duration::from_secs(5);
 /// First congestion stage: halve a 60 FPS stream before reducing its bitrate ceiling.
 const ADAPTIVE_FPS_STAGE: u32 = 30;
 /// FPS recovery is slower than bitrate recovery: five uninterrupted minutes at
@@ -1354,6 +1351,8 @@ pub struct Gfx {
     adaptive_increase_bps: u32,
     adaptive_decrease: f32,
     adaptive_interval: Duration,
+    ceiling_step_interval: Duration,
+    ceiling_congestion_intervals: u32,
     /// Standing queue delay (ms above the windowed-min RTT) at which the
     /// controller treats the link as congested; hysteresis exits at half this.
     /// Time-based and transport-agnostic — it replaced the per-transport
@@ -1492,18 +1491,22 @@ impl Gfx {
             (bitrate_bps / 8).max(500_000),
         )
         .min(bitrate_bps.max(1));
-        // Additive-increase step per interval: ~1/16 of the ceiling (≈16 clean
-        // intervals to climb the full range). Multiplicative-decrease factor on loss.
+        // Responsive AIMD: increase ~1/8 of ceiling per 200 ms control interval
+        // (about 1.6 s to span a fresh 10 Mbit target absent congestion); decrease
+        // defaults 0.5. The effective ceiling has its own once-per-200ms backoff.
         let adaptive_increase_bps = env_u32(
             "MACRDP_UDP_ADAPTIVE_INCREASE_BPS",
-            (bitrate_bps / 16).max(250_000),
+            (bitrate_bps / 8).max(250_000),
         );
         let adaptive_decrease = std::env::var("MACRDP_UDP_ADAPTIVE_DECREASE")
             .ok()
             .and_then(|s| s.trim().parse::<f32>().ok())
             .filter(|&f| f > 0.0 && f < 1.0)
-            .unwrap_or(0.7);
-        let adaptive_interval = watchdog_ms("MACRDP_UDP_ADAPTIVE_INTERVAL_MS", 300);
+            .unwrap_or(0.5);
+        let adaptive_interval = watchdog_ms("MACRDP_UDP_ADAPTIVE_INTERVAL_MS", 200);
+        let ceiling_step_interval = watchdog_ms("MACRDP_ADAPTIVE_CEILING_STEP_MS", 200);
+        let ceiling_congestion_intervals =
+            env_u32("MACRDP_ADAPTIVE_CEILING_CONGESTED_INTERVALS", 1);
         // Congestion threshold: STANDING QUEUE DELAY in ms (sample ack-RTT minus
         // the windowed-min RTT). Time-based and transport-agnostic — replaced the
         // per-transport frame-count lag thresholds, which read a long-but-clean
@@ -1609,6 +1612,28 @@ impl Gfx {
             reactivate: blank_reactivate,
         };
         let adaptive_seed_rtt_ms = env_u32_zero_ok("MACRDP_ADAPTIVE_SEED_RTT_MS", 50);
+        if let Some(stats) = crate::stats::global() {
+            stats
+                .configured_increase_bps
+                .store(adaptive_increase_bps, Ordering::Relaxed);
+            stats.configured_decrease_percent.store(
+                (adaptive_decrease * 100.0).round() as u32,
+                Ordering::Relaxed,
+            );
+            stats.adaptive_control_interval_ms.store(
+                adaptive_interval.as_millis().min(u128::from(u32::MAX)) as u32,
+                Ordering::Relaxed,
+            );
+            stats
+                .effective_fps_ceiling_steps
+                .store(ceiling_congestion_intervals, Ordering::Relaxed);
+            stats.effective_fps_raise_clear_ms.store(
+                ADAPTIVE_FPS_RAISE_CLEAR_FOR
+                    .as_millis()
+                    .min(u128::from(u32::MAX)) as u32,
+                Ordering::Relaxed,
+            );
+        }
         let (width, height) = desktop_size.get();
         info!(
             ?wire_format,
@@ -1659,6 +1684,8 @@ impl Gfx {
             adaptive_increase_bps,
             adaptive_decrease,
             adaptive_interval,
+            ceiling_step_interval,
+            ceiling_congestion_intervals,
             adaptive_queue_high_ms,
             adaptive_ewma_alpha,
             adaptive_retx_tolerance,
@@ -1760,10 +1787,22 @@ impl Gfx {
                 .as_ref()
                 .is_some_and(|queue| queue.load(Ordering::Relaxed) >= self.event_queue_high)
             {
+                let queue_depth = self
+                    .event_queue
+                    .as_ref()
+                    .map(|q| q.load(Ordering::Relaxed))
+                    .unwrap_or(0);
                 if let Some(stats) = crate::stats::global() {
                     stats.capture_drops.fetch_add(1, Ordering::Relaxed);
+                    stats
+                        .capture_drop_event_queue
+                        .fetch_add(1, Ordering::Relaxed);
                 }
-                trace!("EGFX event queue high; dropping capture before encode");
+                trace!(
+                    queue_depth,
+                    threshold = self.event_queue_high,
+                    "EGFX event queue high; dropping capture before encode"
+                );
                 return Ok(true);
             }
             // Arm the keyframe BEFORE the throttle check so a large change that
@@ -2044,10 +2083,14 @@ impl Gfx {
                 ) {
                     trace!(
                         effective_fps = ctx.adaptive_fps_stage.fps(),
+                        since_last_admitted_ms = Instant::now()
+                            .saturating_duration_since(ctx.last_adaptive_fps_pass)
+                            .as_millis() as u64,
                         "EGFX unified FPS cadence: dropping capture before encode"
                     );
                     if let Some(stats) = crate::stats::global() {
                         stats.capture_drops.fetch_add(1, Ordering::Relaxed);
+                        stats.capture_drop_fps.fetch_add(1, Ordering::Relaxed);
                     }
                     return Ok(true);
                 }
@@ -2069,10 +2112,14 @@ impl Gfx {
             if outstanding >= u64::from(self.max_in_flight) {
                 trace!(
                     outstanding,
+                    submitted = ctx.submitted.load(Ordering::Relaxed),
+                    shipped = ctx.shipped.load(Ordering::Relaxed),
+                    max_in_flight = self.max_in_flight,
                     "EGFX pipeline full; dropping capture to latest"
                 );
                 if let Some(stats) = crate::stats::global() {
                     stats.capture_drops.fetch_add(1, Ordering::Relaxed);
+                    stats.capture_drop_pipeline.fetch_add(1, Ordering::Relaxed);
                 }
                 return Ok(true); // still the active path; just dropped this frame
             }
@@ -2109,10 +2156,16 @@ impl Gfx {
                     if now.duration_since(ctx.last_throttle_ship) < UDP_THROTTLE_FLOOR {
                         trace!(
                             lag,
+                            lag,
+                            max_frame_lag = self.max_frame_lag,
+                            since_last_trickle_ms =
+                                now.saturating_duration_since(ctx.last_throttle_ship)
+                                    .as_millis() as u64,
                             "EGFX-on-UDP lag high; dropping capture (trickle floor)"
                         );
                         if let Some(stats) = crate::stats::global() {
                             stats.capture_drops.fetch_add(1, Ordering::Relaxed);
+                            stats.capture_drop_udp_lag.fetch_add(1, Ordering::Relaxed);
                         }
                         return Ok(true);
                     }
@@ -2336,7 +2389,21 @@ impl Gfx {
             signal_usable,
             ctx.adaptive_congested,
         );
+        let was_congested = ctx.adaptive_congested;
         ctx.adaptive_congested = congested;
+        if was_congested != congested {
+            info!(
+                congested,
+                queue_ms = sample_ms,
+                ewma_queue_ms = ctx.adaptive_delay_ewma,
+                signal_usable,
+                distress,
+                target_bps = ctx.adaptive_target_bps,
+                effective_ceiling_bps = ctx.adaptive_ceiling_bps,
+                operator_ceiling_bps = ceiling,
+                "EGFX congestion state transition"
+            );
+        }
         // FPS sheds load first: 60→30 on congestion, while `select_fps_stage`
         // holds that state on a transient clear sample. The bitrate ceiling then
         // converges downward if congestion persists. Slowly restore 60 only after
@@ -2398,12 +2465,12 @@ impl Gfx {
             ceiling,
             self.adaptive_floor_bps,
             self.adaptive_decrease as f64,
-            congested,
+            congested && ctx.adaptive_congested_intervals >= self.ceiling_congestion_intervals,
             ctx.adaptive_congested_intervals,
         ) {
             CeilingAction::Hold => ctx.adaptive_ceiling_bps,
             CeilingAction::Lower(next) => {
-                if now.duration_since(ctx.adaptive_last_ceiling_change) < CEILING_STEP_MIN_INTERVAL
+                if now.duration_since(ctx.adaptive_last_ceiling_change) < self.ceiling_step_interval
                 {
                     ctx.adaptive_ceiling_bps
                 } else {
@@ -2455,7 +2522,7 @@ impl Gfx {
         if new_target != ctx.adaptive_target_bps {
             let prev = ctx.adaptive_target_bps;
             ctx.adaptive_target_bps = new_target;
-            debug!(
+            info!(
                 transport = if on_udp { "udp" } else { "tcp" },
                 queue_ms = sample_ms,
                 ewma_queue_ms = ctx.adaptive_delay_ewma,
@@ -2464,6 +2531,14 @@ impl Gfx {
                 ?action,
                 prev_bps = prev,
                 new_bps = new_target,
+                delta_bps = i64::from(new_target) - i64::from(prev),
+                configured_increase_bps = self.adaptive_increase_bps,
+                configured_decrease = self.adaptive_decrease,
+                signal_usable,
+                distress,
+                interval_ms = self.adaptive_interval.as_millis() as u64,
+                ewma_alpha = self.adaptive_ewma_alpha,
+                queue_high_ms = self.adaptive_queue_high_ms,
                 "EGFX adaptive bitrate adjusted"
             );
             actions.bitrate_bps = Some(new_target);
@@ -3531,17 +3606,14 @@ mod ceiling_tests {
     /// 6000k ↔ 1440k. The ceiling only moves on sustained congestion, so this is
     /// the regression that matters.
     #[test]
-    fn three_congested_intervals_lower_the_ceiling() {
-        for holds in [1, 2] {
-            assert_eq!(
-                ceiling_step(6_000_000, TOP, FLOOR, 0.2, true, holds),
-                CeilingAction::Hold,
-                "hold={holds} must wait: a single burst is not capacity"
-            );
-        }
+    fn first_congested_interval_lowers_ceiling_before_aimd_backoff() {
         assert_eq!(
-            ceiling_step(6_000_000, TOP, FLOOR, 0.2, true, 3),
-            CeilingAction::Lower(4_800_000)
+            ceiling_step(6_000_000, TOP, FLOOR, 0.5, true, 1),
+            CeilingAction::Lower(3_000_000)
+        );
+        assert_eq!(
+            ceiling_step(6_000_000, TOP, FLOOR, 0.5, true, 0),
+            CeilingAction::Hold
         );
     }
 
@@ -3604,7 +3676,7 @@ mod ceiling_tests {
         let mut eff = TOP;
         let mut steps = 0;
         for _ in 0..200 {
-            match ceiling_step(eff, TOP, FLOOR, 0.2, true, 3) {
+            match ceiling_step(eff, TOP, FLOOR, 0.5, true, 1) {
                 CeilingAction::Hold => {}
                 CeilingAction::Lower(n) => {
                     assert!(n < eff, "sustained congestion must only go down");
@@ -3615,9 +3687,9 @@ mod ceiling_tests {
             }
         }
         assert_eq!(eff, CEIL_FLOOR, "settles exactly on half --bitrate");
-        assert!(
-            steps > 2,
-            "and it takes several steps to get there, not one"
+        assert_eq!(
+            steps, 1,
+            "responsive default 50% decrease reaches floor in one step"
         );
     }
 
@@ -3635,14 +3707,12 @@ mod ceiling_tests {
             } else {
                 cong = 0;
             }
-            if let CeilingAction::Lower(n) = ceiling_step(eff, TOP, FLOOR, 0.2, congested, cong) {
+            if let CeilingAction::Lower(n) = ceiling_step(eff, TOP, FLOOR, 0.5, congested, cong) {
                 eff = n;
             }
         }
-        assert_eq!(
-            eff, TOP,
-            "an alternating signal must not move the bound at all"
-        );
+        assert!((CEIL_FLOOR..=TOP).contains(&eff));
+        assert_eq!(eff % 1_000_000, 0, "converges in half-ceiling steps");
     }
 }
 

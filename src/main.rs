@@ -755,7 +755,7 @@ struct Args {
     /// throttles at capture, before encoding — encoded frames are never dropped
     /// (that would break the H.264 reference chain). Default 2; raise to 3–4 if
     /// video looks too skippy under heavy motion.
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 1)]
     h264_frames_in_flight: u32,
 
     /// Number of trailing "flush" frames re-sent after the last on-screen change

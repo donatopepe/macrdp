@@ -999,6 +999,9 @@ mod macos {
         /// (`--flush-frames`). Each is a tiny skip-P-frame; mstsc needs ≥2 to
         /// display a frame, default 4 gives margin. 0 disables the burst.
         flush_frames: u32,
+        /// Previous real BGRA submission time; used to report actual capture
+        /// cadence separately from the configured/effective FPS limiter.
+        last_gfx_submit_at: Option<Instant>,
         /// Trailing flush re-submits remaining after the last real change
         /// (EGFX/H.264 path only). SCK stops delivering frames on a static
         /// screen, so the last change before a pause (e.g. the final keystroke)
@@ -1236,6 +1239,8 @@ mod macos {
                 "cursor pointer scaling"
             );
             let cursor = CursorState::new(width, height, screen_size_pts, cursor_scale)?;
+            // Keep capture clock timestamp in each session so visual update
+            // latency can be compared with keyboard handler latency.
             let frame_interval = Duration::from_secs_f64(1.0 / f64::from(fps.max(1)));
 
             // Reset the cross-connection suppress flag — the `Arc<AtomicBool>`
@@ -1268,6 +1273,7 @@ mod macos {
                 click_signal,
                 frame_interval,
                 flush_frames,
+                last_gfx_submit_at: None,
                 flush_remaining: 0,
                 last_frame: Vec::new(),
                 last_stride: 0,
@@ -1697,8 +1703,22 @@ mod macos {
                     } else {
                         false
                     };
+                    let submit_started = Instant::now();
                     match gfx.submit_bgra(src, stride_bytes, big_change || resume_keyframe) {
                         Ok(true) => {
+                            if let Some(stats) = crate::stats::global() {
+                                if let Some(previous) = self.last_gfx_submit_at {
+                                    stats.capture_interval_ms.store(
+                                        submit_started
+                                            .saturating_duration_since(previous)
+                                            .as_millis()
+                                            .min(u128::from(u32::MAX))
+                                            as u32,
+                                        Ordering::Relaxed,
+                                    );
+                                }
+                            }
+                            self.last_gfx_submit_at = Some(submit_started);
                             self.seeded = true;
                             // First-EGFX-frame milestone: arms the suppress
                             // gate (see `first_egfx_frame_sent` in the struct).

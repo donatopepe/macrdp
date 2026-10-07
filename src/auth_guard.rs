@@ -456,10 +456,48 @@ pub fn audit_reject(ip: IpAddr, decision: Decision) {
     }
 }
 
+/// Redact likely secret-bearing fields from transport errors before audit.
+/// Protocol errors are useful for diagnosis, but never write credential blobs,
+/// challenge/response buffers, or long base64/hex tokens into the security log.
+fn redact_audit_error(raw: &str) -> String {
+    let bounded = bound_reason(Some(raw));
+    let mut out = Vec::new();
+    for token in bounded.split_whitespace() {
+        let lower = token.to_ascii_lowercase();
+        let sensitive = [
+            "password",
+            "credential",
+            "ntlm",
+            "response=",
+            "token=",
+            "secret=",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle));
+        let opaque = token.len() > 80
+            || (token.len() >= 40
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() || c == '=' || c == '+'));
+        out.push(if sensitive || opaque {
+            "[redacted]"
+        } else {
+            token
+        });
+    }
+    out.join(" ")
+}
+
 /// Audit-log a finished connection and its classified outcome. `port` is the
 /// peer's source port, carried so a collector can correlate this `disconnect`
 /// with its matching `accept` on the `(src_ip, src_port)` tuple.
-pub fn audit_disconnect(ip: IpAddr, port: u16, duration: Duration, outcome: Outcome) {
+pub fn audit_disconnect(
+    ip: IpAddr,
+    port: u16,
+    duration: Duration,
+    outcome: Outcome,
+    error: Option<&str>,
+) {
     if audit_enabled() {
         tracing::info!(
             target: "macrdp::audit",
@@ -470,6 +508,10 @@ pub fn audit_disconnect(ip: IpAddr, port: u16, duration: Duration, outcome: Outc
             src_ip = %ip,
             src_port = port,
             duration_ms = duration.as_millis() as u64,
+            transport_error = %match error {
+                Some(reason) => redact_audit_error(reason),
+                None => "none".to_string(),
+            },
             outcome = match outcome {
                 Outcome::Success => "success",
                 Outcome::Failure => "failure",
@@ -718,7 +760,11 @@ impl ironrdp_server::ConnectionHandler for AuthGuardHandler {
         }
         self.last_end_by_ip.insert(peer.ip(), Instant::now());
         self.core.record_outcome(Instant::now(), peer.ip(), outcome);
-        audit_disconnect(peer.ip(), peer.port(), duration, outcome);
+        // Error is protocol/transport context only (e.g. reset, EOF, X.224
+        // parse stage). Bound/sanitize it and explicitly redact credential-like
+        // tokens before it reaches the human log or SIEM audit record.
+        let reason = error.map(|e| redact_audit_error(&format!("{e:#}")));
+        audit_disconnect(peer.ip(), peer.port(), duration, outcome, reason.as_deref());
         // The guard must never halt the server.
         ironrdp_server::PostConnectionAction::Continue
     }
@@ -1006,6 +1052,18 @@ mod tests {
         for _ in 0..1000 {
             assert_eq!(c.decide(t0, peer), Decision::Accept);
         }
+    }
+
+    #[test]
+    fn disconnect_error_redaction_keeps_causes_but_hides_secrets() {
+        assert_eq!(
+            redact_audit_error("client loop failure: Connection reset by peer (os error 54)"),
+            "client loop failure: Connection reset by peer (os error 54)"
+        );
+        assert_eq!(
+            redact_audit_error("password=hunter2 token=abcdef0123456789abcdef0123456789abcdef01"),
+            "[redacted] [redacted]"
+        );
     }
 
     #[test]

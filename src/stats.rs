@@ -53,11 +53,36 @@ pub struct SessionStats {
     /// gap between the two is the whole story of a session that "got slower on
     /// its own": published so that gap is a number rather than an inference.
     pub effective_ceiling_bps: AtomicU32,
+    pub configured_increase_bps: AtomicU32,
+    pub configured_decrease_percent: AtomicU32,
+    pub adaptive_control_interval_ms: AtomicU32,
+    pub effective_fps_ceiling_steps: AtomicU32,
+    pub effective_fps_raise_clear_ms: AtomicU32,
     /// Effective frame rate (capped by the adaptive floor under congestion).
     pub fps: AtomicU32,
+    /// Interval between captured BGRA samples submitted to EGFX.
+    /// This is server-side capture cadence, not client presentation latency.
+    pub capture_interval_ms: AtomicU32,
+    /// Effective AIMD knobs from resolved startup configuration.
     pub frames_sent: AtomicU64,
     /// Number of captures dropped before VideoToolbox submission.
     pub capture_drops: AtomicU64,
+    /// Capture drops by exact pre-encode reason.
+    pub capture_drop_fps: AtomicU64,
+    pub capture_drop_event_queue: AtomicU64,
+    pub capture_drop_pipeline: AtomicU64,
+    pub capture_drop_udp_lag: AtomicU64,
+    /// Input callback timing from RDP handler entry through macOS post return.
+    /// Aggregate durations only; never keycodes, Unicode chars or text.
+    pub input_events: AtomicU64,
+    pub input_total_ms: AtomicU64,
+    pub input_last_ms: AtomicU32,
+    pub input_max_ms: AtomicU32,
+    pub input_over_10ms: AtomicU64,
+    pub input_latency_p50_ms: AtomicU32,
+    pub input_latency_p95_ms: AtomicU32,
+    pub input_latency_max_ms: AtomicU32,
+    input_latency_window: ironrdp_server::LatencyWindow,
     /// Number of ScreenCaptureKit samples discarded before processing.
     pub capture_sample_drops: AtomicU64,
     /// Number of screen samples superseded by a newer sample before conversion.
@@ -364,8 +389,9 @@ impl SessionStats {
             concat!(
                 "{{\"connected\":{},\"width\":{},\"height\":{},\"bitrate_bps\":{},",
                 "\"ceiling_bps\":{},\"effective_ceiling_bps\":{},",
-                "\"rtt_ms\":{},\"queue_delay_ms\":{},\"fps\":{},",
-                "\"frames_sent\":{},\"capture_drops\":{},\"capture_sample_drops\":{},",
+                "\"configured_increase_bps\":{},\"configured_decrease_percent\":{},\"adaptive_control_interval_ms\":{},\"effective_fps_ceiling_steps\":{},\"effective_fps_raise_clear_ms\":{},",
+                "\"rtt_ms\":{},\"queue_delay_ms\":{},\"fps\":{},\"capture_interval_ms\":{},",
+                "\"frames_sent\":{},\"capture_drops\":{},\"capture_drop_fps\":{},\"capture_drop_event_queue\":{},\"capture_drop_pipeline\":{},\"capture_drop_udp_lag\":{},\"capture_sample_drops\":{},",
                 "\"capture_superseded\":{},\"capture_buffered\":{},\"display_pending\":{},\"outbound_queued_packets\":{},\"outbound_queued_bytes\":{},\"outbound_enqueued_packets\":{},\"outbound_rejected_packets\":{},\"outbound_sent_packets\":{},\"outbound_sent_bytes\":{},\"display_overflow_resyncs\":{},\"capture_age_ms\":{},",
                 "\"encode_latency_ms\":{},\"ship_latency_ms\":{},\"encoded_pending\":{},",
                 "\"server_event_queue\":{},\"socket_write_stalls\":{},\"socket_write_ms\":{},",
@@ -375,6 +401,8 @@ impl SessionStats {
                 "\"encode_latency_p50_ms\":{},\"encode_latency_p95_ms\":{},\"encode_latency_max_ms\":{},",
                 "\"ship_latency_p50_ms\":{},\"ship_latency_p95_ms\":{},\"ship_latency_max_ms\":{},",
                 "\"socket_write_p50_ms\":{},\"socket_write_p95_ms\":{},\"socket_write_max_ms\":{},",
+                "\"input_events\":{},\"input_total_ms\":{},\"input_last_ms\":{},\"input_max_ms\":{},\"input_over_10ms\":{},",
+                "\"input_latency_p50_ms\":{},\"input_latency_p95_ms\":{},\"input_latency_max_ms\":{},",
                 "\"audio_queue_p50_ms\":{},\"audio_queue_p95_ms\":{},\"audio_queue_max_ms\":{},",
                 "\"audio_write_p50_ms\":{},\"audio_write_p95_ms\":{},\"audio_write_max_ms\":{},",
                 "\"audio_pts_ms\":{},\"video_pts_ms\":{},\"av_offset_ms\":{},\"av_samples\":{},",
@@ -389,11 +417,21 @@ impl SessionStats {
             self.bitrate_bps.load(Ordering::Relaxed),
             self.ceiling_bps.load(Ordering::Relaxed),
             self.effective_ceiling_bps.load(Ordering::Relaxed),
+            self.configured_increase_bps.load(Ordering::Relaxed),
+            self.configured_decrease_percent.load(Ordering::Relaxed),
+            self.adaptive_control_interval_ms.load(Ordering::Relaxed),
+            self.effective_fps_ceiling_steps.load(Ordering::Relaxed),
+            self.effective_fps_raise_clear_ms.load(Ordering::Relaxed),
             self.rtt_ms.load(Ordering::Relaxed),
             self.queue_delay_ms.load(Ordering::Relaxed),
             self.fps.load(Ordering::Relaxed),
+            self.capture_interval_ms.load(Ordering::Relaxed),
             self.frames_sent.load(Ordering::Relaxed),
             self.capture_drops.load(Ordering::Relaxed),
+            self.capture_drop_fps.load(Ordering::Relaxed),
+            self.capture_drop_event_queue.load(Ordering::Relaxed),
+            self.capture_drop_pipeline.load(Ordering::Relaxed),
+            self.capture_drop_udp_lag.load(Ordering::Relaxed),
             self.capture_sample_drops.load(Ordering::Relaxed),
             self.capture_superseded.load(Ordering::Relaxed),
             self.capture_buffered.load(Ordering::Relaxed),
@@ -438,6 +476,14 @@ impl SessionStats {
             self.socket_write_p50_ms.load(Ordering::Relaxed),
             self.socket_write_p95_ms.load(Ordering::Relaxed),
             self.socket_write_max_ms.load(Ordering::Relaxed),
+            self.input_events.load(Ordering::Relaxed),
+            self.input_total_ms.load(Ordering::Relaxed),
+            self.input_last_ms.load(Ordering::Relaxed),
+            self.input_max_ms.load(Ordering::Relaxed),
+            self.input_over_10ms.load(Ordering::Relaxed),
+            self.input_latency_p50_ms.load(Ordering::Relaxed),
+            self.input_latency_p95_ms.load(Ordering::Relaxed),
+            self.input_latency_max_ms.load(Ordering::Relaxed),
             self.audio_queue_p50_ms.load(Ordering::Relaxed),
             self.audio_queue_p95_ms.load(Ordering::Relaxed),
             self.audio_queue_max_ms.load(Ordering::Relaxed),
@@ -463,6 +509,23 @@ impl SessionStats {
             queue_delay_age_ms(self),
         )
     }
+}
+
+/// Record end-to-end time spent in the macOS input handler callback. The
+/// caller brackets one RDP keyboard/mouse event; no key identity/text is stored.
+pub fn record_input_handler_duration(duration: std::time::Duration) {
+    let Some(stats) = global() else { return };
+    let ms = duration.as_millis().min(u128::from(u32::MAX)) as u32;
+    stats.input_events.fetch_add(1, Ordering::Relaxed);
+    stats
+        .input_total_ms
+        .fetch_add(u64::from(ms), Ordering::Relaxed);
+    stats.input_last_ms.store(ms, Ordering::Relaxed);
+    stats.input_max_ms.fetch_max(ms, Ordering::Relaxed);
+    if ms >= 10 {
+        stats.input_over_10ms.fetch_add(1, Ordering::Relaxed);
+    }
+    stats.input_latency_window.record(ms);
 }
 
 static GLOBAL: OnceLock<Arc<SessionStats>> = OnceLock::new();
@@ -583,6 +646,12 @@ pub fn publish_latency_windows() {
         &stats.socket_write_p50_ms,
         &stats.socket_write_p95_ms,
         &stats.socket_write_max_ms,
+    );
+    publish_window(
+        &stats.input_latency_window,
+        &stats.input_latency_p50_ms,
+        &stats.input_latency_p95_ms,
+        &stats.input_latency_max_ms,
     );
     publish_window(
         &diag.audio_queue_window,

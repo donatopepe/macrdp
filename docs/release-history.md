@@ -4,6 +4,29 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.20 — input diagnostics and faster adaptive response
+
+The user observes visible video then an early disconnect, plus keystrokes whose final character is delayed. This release instruments both hypotheses without recording typed content, adds exact pre-encode drop reasons, surfaces session-close error causes, and makes the existing adaptive controller react faster.
+
+- Stats endpoint: aggregate RDP input-handler duration through `CGEventPost` (count, total, last, max, rolling p50/p95/max, and number ≥10 ms); never records keycodes, Unicode codepoints, modifiers, or text. Also publishes actual capture-submit interval and per-gate capture drop counters (FPS, event queue, pipeline depth, UDP lag), plus the adaptive parameters actually running.
+- Disconnect audit now includes sanitized/bounded `transport_error` cause (`none`, `Connection reset by peer`, parse/write error, etc.), not just heuristic `outcome=success/failure`. Redacts secret-like or long opaque tokens and strips controls.
+- Reactions: adaptive controller tick 200 ms (was 300); target AIMD drop factor 0.5 (was 0.7) and additive increase 1/8 ceiling per tick (was 1/16); effective ceiling may step down every 200 ms after one congested control interval (was 5 s / 3 intervals). FPS remains one unified capture-side gate. H.264 in-flight default 2→1 to reduce encoder/decode queueing during typing; more captures may be dropped under sustained motion.
+- Five-minute clear-at-bound ceiling/FPS recovery retained; controller does NOT blindly restore max on a brief queue drain.
+
+Validation: 234 Rust + 18 Swift tests; fmt/clippy clean. Live verification still required for input latency: stats `input_latency_p95_ms` measures only server callback-to-CGEventPost, not mstsc presentation; compare it with `capture_interval_ms`, `frames_sent`, drop reasons and the next disconnect's `transport_error`.
+
+## v0.9.19 — input and frame-drop diagnostics; responsive AIMD defaults
+
+The user reports visible video followed by early disconnects and delayed keyboard echo. v0.9.18 confirms a long-lived socket with low queue/encoder latency but does not prove RDP input reaches/presents promptly. This release makes the next incident classifiable without logging any key data.
+
+- Status endpoint adds `capture_drop_fps`, `capture_drop_event_queue`, `capture_drop_pipeline`, `capture_drop_udp_lag`, and aggregate input callback timing (`input_events`, total/last/max ms, `input_over_10ms`). Input timing covers the Rust handler through `CGEventPost`; no scancode, Unicode value, modifier or text is recorded.
+- Congestion-state edges now log queue sample/EWMA, ACK usability/distress, current target, effective ceiling and operator ceiling. Every AIMD bitrate target change is INFO-visible, with delta, interval, EWMA and queue threshold, not hidden at debug.
+- More reactive rate controller: 300 ms control tick; effective ceiling acts after one congested interval and may step at most once per tick; 50% decrease and 1/8-ceiling additive increase (about 3.75 s to climb a fresh 10 Mbit span, absent further congestion). Any sustained queue still backs off immediately; this is not a promise that a congested link can hold 10 Mbit.
+
+Verification plan, one current client/build at a time: compare these metrics at connect, during typing, and at any disconnect; distinguish blank recovery/drop from transport failure; check total capture-drop count against its four reason counters. Threshold for input-side diagnosis: handler p95 must remain below 5 ms; if handler is fast but visual echo lags, next investigation is EGFX/QoE presentation rather than keystroke translation.
+
+233 Rust tests, fmt/clippy clean; input telemetry contains timing only.
+
 ## v0.9.18 — apply audio transport gates at runtime, not config parsing
 
 A correctness issue invalidated the first lossy-vs-AAC A/B: `args_from_config` was mutating process-global UDP environment gates. That helper also runs in unit tests, Controller/config checks, and in-process config reload paths; it is not the actual runtime boundary. The effective `Args` could say reliable AAC while a stale lossy UDP gate remained active in the UDP provider, so `ENABLE_LOSSY_AUDIO=0` alone did not prove lossy transport was absent. Thus the first AAC-on/lossy-off A/B was invalid as evidence.
