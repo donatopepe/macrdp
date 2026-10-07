@@ -10,6 +10,7 @@ The first live attempt to use v0.9.20's input metrics while the user typed expos
 
 - Replace input timing fields with microsecond-resolution `input_total_us`, `input_last_us`, `input_max_us`, and rolling `input_latency_{p50,p95,max}_us`.
 - Separate keyboard and mouse callback counts. The data remains aggregate only—no keycodes, Unicode characters, modifiers or typed content.
+- Timing starts at each actual CoreGraphics keyboard-post branch (keycode, RDP Unicode, and configured layout Unicode), not at the wrapper callback. Modifier-state/focus bookkeeping that posts no key event no longer contaminates the keyboard latency sample.
 - Pure unit test pins 240 µs and 1 ms conversion without rounding to zero.
 - Existing `config.env` is untouched. Install/restart v0.9.21 before using the new stats fields; v0.9.20 had millisecond fields and cannot report the corrected schema.
 

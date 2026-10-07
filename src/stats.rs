@@ -72,7 +72,7 @@ pub struct SessionStats {
     pub capture_drop_event_queue: AtomicU64,
     pub capture_drop_pipeline: AtomicU64,
     pub capture_drop_udp_lag: AtomicU64,
-    /// Keyboard and mouse callbacks received by the macOS input handler.
+    /// Keyboard and mouse callback events that reached CoreGraphics posting.
     pub input_events: AtomicU64,
     pub input_keyboard_events: AtomicU64,
     pub input_mouse_events: AtomicU64,

@@ -1050,6 +1050,7 @@ mod macos {
                         // Empty string = a pending dead key; swallow it and let
                         // the composed character arrive on the next keystroke.
                         if !text.is_empty() {
+                            let event_started = Instant::now();
                             let utf16: Vec<u16> = text.encode_utf16().collect();
                             if let Ok(ev) =
                                 CGEvent::new_keyboard_event(self.source.clone(), 0, true)
@@ -1064,6 +1065,10 @@ mod macos {
                                 ev.set_flags(flags);
                                 ev.set_string_from_utf16_unchecked(&utf16);
                                 ev.post(CGEventTapLocation::HID);
+                                crate::stats::record_input_handler_duration(
+                                    event_started.elapsed(),
+                                    true,
+                                );
                             }
                         }
                     }
@@ -1083,6 +1088,7 @@ mod macos {
                 warn!(vk, down, "CGEvent::new_keyboard_event failed");
                 return;
             };
+            let event_started = Instant::now();
             let generated_flags = ev.get_flags();
             let mut flags = self.mods.cg_flags();
             // Only F-key events carry SecondaryFn. Private source isolates its
@@ -1112,6 +1118,7 @@ mod macos {
                 "input CGEvent before post"
             );
             ev.post(CGEventTapLocation::HID);
+            crate::stats::record_input_handler_duration(event_started.elapsed(), true);
             tracing::debug!(vk = format!("0x{vk:02X}"), down, "input CGEvent posted");
         }
 
@@ -1371,6 +1378,7 @@ mod macos {
                 tracing::debug!(code = format!("0x{c:04X}"), "unicode release ignored");
                 return;
             }
+            let event_started = Instant::now();
             tracing::debug!(code = format!("0x{c:04X}"), "unicode input begin");
             let Ok(ev) = CGEvent::new_keyboard_event(self.source.clone(), 0, true) else {
                 warn!("unicode CGEvent create failed");
@@ -1393,6 +1401,7 @@ mod macos {
             );
             ev.post(CGEventTapLocation::HID);
             tracing::debug!(code = format!("0x{c:04X}"), "unicode CGEvent posted");
+            crate::stats::record_input_handler_duration(event_started.elapsed(), true);
         }
 
         pub fn mouse(
