@@ -1,5 +1,11 @@
 # Release history
 
+## v0.9.32 — four typed-input-to-wire-output latency series
+
+Adds separate opt-in metrics from each keyboard/mouse RDP input event reaching IronRDP handler to next relevant outbound media write: keyboard→video, mouse→video, keyboard→audio, mouse→audio. Each output sample contributes count, last/max/p50/p95 ms. Origin is stamped per input event at server dispatch, prior to macOS input handling. No content, keycode, button, text or pointer coordinate retained. Video endpoint is EGFX/H.264 socket write; audio endpoint is RDPSND wave socket write. Neither demonstrates remote client decoded/rendered/displayed the video or audibly played audio; no per-event presentation ACK exists. A single output can correlate with multiple inputs, so count is output correlation sample count, not a delivery ACK per input.
+
+Reads only through opt-in loopback stats endpoint. Existing config.env unchanged. 235 Rust (3 ignored), 18 Swift; fmt/clippy + CI/security clean; arm64 release SHA verified. Requires v0.9.32 server restart; read all four series while performing keyboard and mouse actions.
+
 ## v0.9.31 — separate input-receive to video/audio send measurements
 
 Adds opt-in endpoint measurements from IronRDP keyboard or mouse event dispatch to the corresponding outbound frame/write or RDPSND audio-wave write. Four separate distributions: keyboard→video, mouse→video, keyboard→audio, mouse→audio; each includes correlated output count and last/max/p50/p95 latency in milliseconds. Origin timestamps are set per input event at handler entry, not later macOS event posting. No key contents, pointer coordinates, or button identity retained.
