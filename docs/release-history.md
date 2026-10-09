@@ -1,5 +1,11 @@
 # Release history
 
+## v0.9.39 — gate ACK-distress bitrate backoff on FPS-first floor
+
+Follow-up audit: no-ACK distress is a safety fallback, but it too must obey the explicit load-actuator order. While FPS is above 30 and queue error is negative, suppress its synthetic bitrate pressure and freeze bitrate PID state; FPS PID sheds first. At FPS 30, measured queue/ACK-distress remains able to lower bitrate to adaptive floor. Retransmit-loss enters same FPS-first treatment. On queue recovery, both rise. Existing config.env unchanged; 50 ms queue target remains.
+
+230 Rust (3 ignored), 18 Swift; fmt/clippy + CI/security pass; arm64 asset SHA verified. Live congested test still pending.
+
 ## v0.9.38 — no-ACK safety cannot bypass FPS priority
 
 Fixes priority interaction: under an extreme ACK stall, the preexisting distress fallback used to invoke bitrate decrease even while the FPS PID was already lowering cadence above 30. While FPS >30 and queue pressure is negative, the bitrate PID is now frozen including integral state and derivative baseline; the FPS actuator owns load shedding to the hard 30 FPS floor. Bitrate PID then may reduce toward its configured adaptive floor. Recovery can raise both normally. Distress signal still operates after reaching 30. Existing config untouched.
