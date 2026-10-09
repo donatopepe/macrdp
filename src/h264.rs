@@ -1123,6 +1123,10 @@ fn fps_pid_has_priority(queue_error_ms: f64, current_fps: f64, priority_floor_fp
     queue_error_ms < 0.0 && current_fps > f64::from(priority_floor_fps)
 }
 
+fn fps_pid_deadband(error_ms: f64, deadband_ms: f64) -> bool {
+    error_ms.abs() < deadband_ms.max(0.0)
+}
+
 fn clamp_pid_fps(value: f64, min_fps: u32, max_fps: u32) -> u32 {
     value.round().clamp(
         f64::from(min_fps.max(1)),
@@ -1298,6 +1302,7 @@ pub struct Gfx {
     adaptive_pid_fps_kp: f64,
     adaptive_pid_fps_ki: f64,
     adaptive_pid_fps_kd: f64,
+    adaptive_pid_fps_deadband_ms: f64,
     /// EWMA weight on each new queue-delay sample in (0,1]: `ewma = α·sample +
     /// (1−α)·ewma`. Smooths the spiky raw signal so single bursts don't pump the
     /// bitrate; lower = more smoothing (slower reaction). Default 0.3;
@@ -1478,6 +1483,11 @@ impl Gfx {
             .and_then(|s| s.parse().ok())
             .filter(|v: &f64| *v >= 0.0)
             .unwrap_or(0.0);
+        let adaptive_pid_fps_deadband_ms = std::env::var("MACRDP_ADAPTIVE_FPS_PID_DEADBAND_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|v: &f64| *v >= 0.0)
+            .unwrap_or(5.0);
         let adaptive_queue_high_ms = std::env::var("MACRDP_ADAPTIVE_QUEUE_HIGH_MS")
             .ok()
             .and_then(|s| s.trim().parse::<f64>().ok())
@@ -1610,6 +1620,7 @@ impl Gfx {
                 fps_pid_kp = adaptive_pid_fps_kp,
                 fps_pid_ki = adaptive_pid_fps_ki,
                 fps_pid_kd = adaptive_pid_fps_kd,
+                fps_pid_deadband_ms = adaptive_pid_fps_deadband_ms,
                 ewma_alpha = adaptive_ewma_alpha,
                 keyboard_idr_interval_ms = keyboard_idr_interval.as_millis() as u64,
                 keyboard_idr_min_spacing_ms = keyboard_idr_min_spacing.as_millis() as u64,
@@ -1655,6 +1666,7 @@ impl Gfx {
             adaptive_pid_fps_kp,
             adaptive_pid_fps_ki,
             adaptive_pid_fps_kd,
+            adaptive_pid_fps_deadband_ms,
             adaptive_ewma_alpha,
             adaptive_retx_tolerance,
             normal_keyframe_frames,
@@ -2455,14 +2467,20 @@ impl Gfx {
         ctx.adaptive_ceiling_bps = new_target;
         // Couple frame-rate actuation to same queue error/PID output. FPS cannot
         // exceed configured cap or fall below operator-confirmed 10 fps floor.
-        let fps_integral = pid_integral_step(
-            ctx.adaptive_pid_fps_integral,
-            fps_error_ms,
-            dt_seconds,
-            2000.0,
-        );
+        let fps_in_deadband = fps_pid_deadband(fps_error_ms, self.adaptive_pid_fps_deadband_ms);
+        let fps_pid_error_ms = if fps_in_deadband { 0.0 } else { fps_error_ms };
+        let fps_integral = if fps_in_deadband {
+            ctx.adaptive_pid_fps_integral
+        } else {
+            pid_integral_step(
+                ctx.adaptive_pid_fps_integral,
+                fps_pid_error_ms,
+                dt_seconds,
+                2000.0,
+            )
+        };
         let fps_rate = pid_delta(
-            fps_error_ms,
+            fps_pid_error_ms,
             ctx.adaptive_pid_fps_previous_error,
             fps_integral,
             dt_seconds,
@@ -2470,11 +2488,15 @@ impl Gfx {
             self.adaptive_pid_fps_ki,
             self.adaptive_pid_fps_kd,
         );
-        let pid_fps = clamp_pid_fps(
-            ctx.adaptive_pid_fps + fps_rate * dt_seconds,
-            self.adaptive_pid_min_fps,
-            self.fps.max(self.adaptive_pid_min_fps),
-        );
+        let pid_fps = if fps_in_deadband {
+            ctx.adaptive_pid_fps.round() as u32
+        } else {
+            clamp_pid_fps(
+                ctx.adaptive_pid_fps + fps_rate * dt_seconds,
+                self.adaptive_pid_min_fps,
+                self.fps.max(self.adaptive_pid_min_fps),
+            )
+        };
         let fps_saturated_outward = (pid_fps == self.fps && fps_error_ms > 0.0)
             || (pid_fps == self.adaptive_pid_min_fps && fps_error_ms < 0.0);
         ctx.adaptive_pid_fps_integral = if fps_saturated_outward {
@@ -2482,7 +2504,9 @@ impl Gfx {
         } else {
             fps_integral
         };
-        ctx.adaptive_pid_fps_previous_error = fps_error_ms;
+        if !fps_in_deadband {
+            ctx.adaptive_pid_fps_previous_error = fps_pid_error_ms;
+        }
         ctx.adaptive_pid_fps = f64::from(pid_fps);
         let next_stage = AdaptiveFpsStage::Configured(pid_fps);
         if next_stage != ctx.adaptive_fps_stage {
@@ -3572,8 +3596,8 @@ fn avcc_to_annex_b(avcc: &[u8], parameter_sets: &[Vec<u8>], is_keyframe: bool) -
 #[cfg(test)]
 mod ceiling_tests {
     use super::{
-        bitrate_pid_should_hold, clamp_pid_fps, fps_pid_has_priority, pid_bitrate_step, pid_delta,
-        pid_integral_step,
+        bitrate_pid_should_hold, clamp_pid_fps, fps_pid_deadband, fps_pid_has_priority,
+        pid_bitrate_step, pid_delta, pid_integral_step,
     };
 
     #[test]
@@ -3684,6 +3708,9 @@ mod ceiling_tests {
 
     #[test]
     fn pid_integral_and_fps_are_clamped() {
+        assert!(fps_pid_deadband(4.9, 5.0));
+        assert!(fps_pid_deadband(-4.9, 5.0));
+        assert!(!fps_pid_deadband(-5.0, 5.0));
         assert_eq!(pid_integral_step(1999.0, 500.0, 1.0, 2000.0), 2000.0);
         assert_eq!(pid_integral_step(-1999.0, -500.0, 1.0, 2000.0), -2000.0);
         assert_eq!(clamp_pid_fps(2.0, 10, 60), 10);
