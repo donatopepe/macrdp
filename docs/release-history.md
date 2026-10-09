@@ -1,5 +1,12 @@
 # Release history
 
+## v0.9.46 — FPS-PID deadband prevents 59/60 chatter
+
+The live PID trace showed repeated 59↔60 FPS transitions while standing queue hovered around its 50ms target. Fixed integer capture FPS was toggling from sub-FPS PID increments on alternating control intervals. Add default 5ms FPS-only deadband (`MACRDP_ADAPTIVE_FPS_PID_DEADBAND_MS`): freeze output and FPS integral/derivative history while error is inside the band. Outside it, FPS recovers/sheds bidirectionally; it remains the first congestion actuator down to 30 FPS. Bitrate PID only cuts once queue error crosses the 100ms material congestion threshold and FPS is already at 30; both rise as queue clears. Separate controller gains retained. Existing config unchanged.
+
+231 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security, arm64 release build/SHA verified. Real sustained-load installation test remains required.
+
+
 ## v0.9.44 — queue-band bitrate hold eliminates PID dither
 
 After FPS reaches hard 30 priority floor, bitrate PID no longer reacts to minor negative errors between target queue 50 ms and congestion high-water 100 ms. This hold avoids repeated 1 kbps down/up corrections and accumulating bitrate integral that could trigger delayed rate plunge. Only sustained congestion crossing `MACRDP_ADAPTIVE_QUEUE_HIGH_MS` (default 100 ms) allows bitrate decrease; clear queue permits bitrate recovery. FPS PID still sheds first and climbs when queue error becomes positive. No config.env changes.
