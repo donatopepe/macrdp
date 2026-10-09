@@ -74,9 +74,11 @@ impl RdpServerInputHandler for MacInputHandler {
             // actually posted to CoreGraphics. Sync/modifier-only callbacks do
             // not count as typed keys. Never retain callback payload.
             crate::stats::record_keyboard_received();
+            let diagnostic = crate::stats::diagnostics().cloned();
+            if let Some(diag) = &diagnostic {
+                diag.mark_keyboard_received();
+            }
             self.inner.keyboard(event);
-            // Counted after callback returns; capture loop observes generation and
-            // emits a fresh EGFX IDR. Increment only actual posted key events below.
         }
         #[cfg(not(target_os = "macos"))]
         trace!(?event, "keyboard event (stub)");
@@ -98,6 +100,10 @@ impl RdpServerInputHandler for MacInputHandler {
         {
             let (width, height) = self.desktop_size.get();
             let letterbox = self.desktop_size.letterbox();
+            let diagnostic = crate::stats::diagnostics().cloned();
+            if let Some(diag) = &diagnostic {
+                diag.mark_mouse_received();
+            }
             let started = std::time::Instant::now();
             self.inner.mouse(event, width, height, letterbox);
             crate::stats::record_input_handler_duration(started.elapsed(), false);

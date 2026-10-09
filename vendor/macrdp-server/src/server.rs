@@ -503,6 +503,11 @@ impl LatencyWindow {
 /// Optional application-owned diagnostics gauges. All fields are atomics so
 /// server instrumentation never takes a lock or changes default behavior when
 /// absent.
+pub fn monotonic_millis() -> u64 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
 #[derive(Clone)]
 pub struct DiagnosticsHandle {
     pub event_queue: Arc<AtomicU32>,
@@ -534,6 +539,79 @@ pub struct DiagnosticsHandle {
     pub outbound_rejected_packets: Arc<AtomicU64>,
     pub outbound_sent_packets: Arc<AtomicU64>,
     pub outbound_sent_bytes: Arc<AtomicU64>,
+    pub input_keyboard_video_count: Arc<AtomicU64>,
+    pub input_keyboard_video_latency: LatencyWindow,
+    pub input_keyboard_video_last_ms: Arc<AtomicU32>,
+    pub input_keyboard_video_max_ms: Arc<AtomicU32>,
+    pub input_mouse_video_count: Arc<AtomicU64>,
+    pub input_mouse_video_latency: LatencyWindow,
+    pub input_mouse_video_last_ms: Arc<AtomicU32>,
+    pub input_mouse_video_max_ms: Arc<AtomicU32>,
+    pub input_keyboard_audio_count: Arc<AtomicU64>,
+    pub input_keyboard_audio_latency: LatencyWindow,
+    pub input_keyboard_audio_last_ms: Arc<AtomicU32>,
+    pub input_keyboard_audio_max_ms: Arc<AtomicU32>,
+    pub input_mouse_audio_count: Arc<AtomicU64>,
+    pub input_mouse_audio_latency: LatencyWindow,
+    pub input_mouse_audio_last_ms: Arc<AtomicU32>,
+    pub input_mouse_audio_max_ms: Arc<AtomicU32>,
+    pub input_keyboard_received_at_ms: Arc<AtomicU64>,
+    pub input_mouse_received_at_ms: Arc<AtomicU64>,
+    pub keyboard_video_pending: Arc<AtomicBool>,
+    pub mouse_video_pending: Arc<AtomicBool>,
+    pub keyboard_audio_pending: Arc<AtomicBool>,
+    pub mouse_audio_pending: Arc<AtomicBool>,
+    pub input_keyboard_video_latency_window: LatencyWindow,
+    pub input_mouse_video_latency_window: LatencyWindow,
+    pub input_keyboard_audio_latency_window: LatencyWindow,
+    pub input_mouse_audio_latency_window: LatencyWindow,
+}
+
+impl DiagnosticsHandle {
+    pub fn mark_keyboard_received(&self) {
+        self.input_keyboard_received_at_ms.store(monotonic_millis(), Ordering::Relaxed);
+        self.keyboard_video_pending.store(true, Ordering::Relaxed);
+        self.keyboard_audio_pending.store(true, Ordering::Relaxed);
+    }
+    pub fn mark_mouse_received(&self) {
+        self.input_mouse_received_at_ms.store(monotonic_millis(), Ordering::Relaxed);
+        self.mouse_video_pending.store(true, Ordering::Relaxed);
+        self.mouse_audio_pending.store(true, Ordering::Relaxed);
+    }
+    pub fn mark_video_wire_send(&self) {
+        let now = monotonic_millis();
+        if self.keyboard_video_pending.swap(false, Ordering::Relaxed) {
+            self.input_keyboard_video_count.fetch_add(1, Ordering::Relaxed);
+            let value = now.saturating_sub(self.input_keyboard_received_at_ms.load(Ordering::Relaxed)).min(u64::from(u32::MAX)) as u32;
+            self.input_keyboard_video_last_ms.store(value, Ordering::Relaxed);
+            self.input_keyboard_video_max_ms.fetch_max(value, Ordering::Relaxed);
+            self.input_keyboard_video_latency.record(value);
+        }
+        if self.mouse_video_pending.swap(false, Ordering::Relaxed) {
+            self.input_mouse_video_count.fetch_add(1, Ordering::Relaxed);
+            let value = now.saturating_sub(self.input_mouse_received_at_ms.load(Ordering::Relaxed)).min(u64::from(u32::MAX)) as u32;
+            self.input_mouse_video_last_ms.store(value, Ordering::Relaxed);
+            self.input_mouse_video_max_ms.fetch_max(value, Ordering::Relaxed);
+            self.input_mouse_video_latency.record(value);
+        }
+    }
+    pub fn mark_audio_wire_send(&self) {
+        let now = monotonic_millis();
+        if self.keyboard_audio_pending.swap(false, Ordering::Relaxed) {
+            self.input_keyboard_audio_count.fetch_add(1, Ordering::Relaxed);
+            let value = now.saturating_sub(self.input_keyboard_received_at_ms.load(Ordering::Relaxed)).min(u64::from(u32::MAX)) as u32;
+            self.input_keyboard_audio_last_ms.store(value, Ordering::Relaxed);
+            self.input_keyboard_audio_max_ms.fetch_max(value, Ordering::Relaxed);
+            self.input_keyboard_audio_latency.record(value);
+        }
+        if self.mouse_audio_pending.swap(false, Ordering::Relaxed) {
+            self.input_mouse_audio_count.fetch_add(1, Ordering::Relaxed);
+            let value = now.saturating_sub(self.input_mouse_received_at_ms.load(Ordering::Relaxed)).min(u64::from(u32::MAX)) as u32;
+            self.input_mouse_audio_last_ms.store(value, Ordering::Relaxed);
+            self.input_mouse_audio_max_ms.fetch_max(value, Ordering::Relaxed);
+            self.input_mouse_audio_latency.record(value);
+        }
+    }
 }
 
 pub struct RdpServer {
@@ -1324,6 +1402,20 @@ impl RdpServer {
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Complete output latency samples at the shared socket boundary.
+    pub fn mark_keyboard_received(&self) { if let Some(d)=&self.diagnostics { d.mark_keyboard_received(); } }
+    pub fn mark_mouse_received(&self) { if let Some(d)=&self.diagnostics { d.mark_mouse_received(); } }
+    pub fn mark_video_wire_send(&self) {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.mark_video_wire_send();
+        }
+    }
+    pub fn mark_audio_wire_send(&self) {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.mark_audio_wire_send();
+        }
     }
 
     /// Install opt-in socket diagnostics supplied by the application.
@@ -2689,7 +2781,7 @@ impl RdpServer {
                             .context("DRDYNVC channel not found")?;
 
                         let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
-                        writer.write_all(&data).await?;
+                        writer.write_all(&data).await?
                     }
                 },
                 ServerEvent::Rdpdr(msg) => match msg {
@@ -2829,6 +2921,7 @@ impl RdpServer {
                                 // fall through to the TCP DRDYNVC path below
                             } else {
                                 self.route_dvc_over_udp(messages)?;
+                                self.mark_video_wire_send();
                                 continue;
                             }
                         }
@@ -2837,6 +2930,7 @@ impl RdpServer {
                             .context("DRDYNVC channel not found")?;
                         let data = server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id)?;
                         writer.write_all(&data).await?;
+                        self.mark_video_wire_send();
                         // (M5c) Now that EGFX is actively shipping (its DVC channel
                         // is open) AND the UDP tunnel is bound, fire the Soft-Sync
                         // request once — the cue to migrate EGFX onto the tunnel.
@@ -3123,6 +3217,7 @@ impl RdpServer {
 
                 let audio_started = Instant::now();
                 audio_writer.write_audio_all(&encoded).await?;
+                if let Some(diag) = &diagnostics { diag.mark_audio_wire_send(); }
                 if let Some(diag) = diagnostics {
                     let elapsed = audio_started.elapsed();
                     if elapsed >= Duration::from_millis(10) {
@@ -3849,17 +3944,29 @@ impl RdpServer {
 
     async fn handle_fastpath(&mut self, input: FastPathInput) {
         for event in input.input_events().iter().copied() {
+            match event {
+                FastPathInputEvent::KeyboardEvent(..)
+                | FastPathInputEvent::UnicodeKeyboardEvent(..)
+                | FastPathInputEvent::SyncEvent(..) => self.mark_keyboard_received(),
+                FastPathInputEvent::MouseEvent(..)
+                | FastPathInputEvent::MouseEventEx(..)
+                | FastPathInputEvent::MouseEventRel(..) => self.mark_mouse_received(),
+                _ => {}
+            }
             let mut handler = self.handler.lock().await;
             match event {
                 FastPathInputEvent::KeyboardEvent(flags, key) => {
+                    self.mark_keyboard_received();
                     handler.keyboard((key, flags).into());
                 }
 
                 FastPathInputEvent::UnicodeKeyboardEvent(flags, key) => {
+                    self.mark_keyboard_received();
                     handler.keyboard((key, flags).into());
                 }
 
                 FastPathInputEvent::SyncEvent(flags) => {
+                    self.mark_keyboard_received();
                     handler.keyboard(flags.into());
                 }
 
@@ -3869,15 +3976,18 @@ impl RdpServer {
                     // touch-mode tap, which sends no preceding move). No-op for
                     // clients that already move-then-click.
                     for ev in crate::handler::mouse_events_from_pdu(mouse) {
+                        self.mark_mouse_received();
                         handler.mouse(ev);
                     }
                 }
 
                 FastPathInputEvent::MouseEventEx(mouse) => {
+                    self.mark_mouse_received();
                     handler.mouse(mouse.into());
                 }
 
                 FastPathInputEvent::MouseEventRel(mouse) => {
+                    self.mark_mouse_received();
                     handler.mouse(mouse.into());
                 }
 
@@ -4020,17 +4130,27 @@ impl RdpServer {
 
     async fn handle_input_event(&mut self, input: InputEventPdu) {
         for event in input.0 {
+            match &event {
+                ironrdp_pdu::input::InputEvent::ScanCode(_) | ironrdp_pdu::input::InputEvent::Unicode(_) | ironrdp_pdu::input::InputEvent::Sync(_) => self.mark_keyboard_received(),
+                ironrdp_pdu::input::InputEvent::Mouse(_)
+                | ironrdp_pdu::input::InputEvent::MouseX(_)
+                | ironrdp_pdu::input::InputEvent::MouseRel(_) => self.mark_mouse_received(),
+                _ => {}
+            }
             let mut handler = self.handler.lock().await;
             match event {
                 ironrdp_pdu::input::InputEvent::ScanCode(key) => {
+                    self.mark_keyboard_received();
                     handler.keyboard((key.key_code, key.flags).into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Unicode(key) => {
+                    self.mark_keyboard_received();
                     handler.keyboard((key.unicode_code, key.flags).into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Sync(sync) => {
+                    self.mark_keyboard_received();
                     handler.keyboard(sync.flags.into());
                 }
 
