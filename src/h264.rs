@@ -984,7 +984,7 @@ fn dual_pid_simulation_step(
     let offered = *bitrate_mbps * (*fps / 60.0);
     *queue_ms = (*queue_ms + (offered - capacity_mbps) * 2.0).clamp(0.0, 2000.0);
     let error = TARGET_MS - *queue_ms;
-    if error < -TARGET_DEADBAND_MS && *fps > 30.0 {
+    if fps_pid_has_priority(error, *fps, 30) && error < -TARGET_DEADBAND_MS {
         *fps_integral = (*fps_integral + error * DT).clamp(-2000.0, 2000.0);
         *fps = (*fps + (FPS_KP * error + FPS_KI * *fps_integral) * DT).clamp(30.0, 60.0);
     } else if error < 0.0 && *fps <= 30.0 {
@@ -2446,33 +2446,38 @@ impl Gfx {
         } else {
             error_ms
         };
-        let (new_target, next_integral, next_error) = if signal_usable && bitrate_pid_can_run {
-            pid_bitrate_step(
-                ctx.adaptive_target_bps,
-                ceiling,
-                min_bps,
-                bitrate_error_ms,
-                dt_seconds,
-                bitrate_pid_kp,
-                bitrate_pid_ki,
-                self.adaptive_pid_kd,
-                ctx.adaptive_pid_integral,
-                ctx.adaptive_pid_previous_error,
-            )
-        } else if bitrate_pid_should_hold(
-            error_ms,
-            ctx.adaptive_pid_fps,
-            self.adaptive_pid_min_fps,
-            self.adaptive_queue_high_ms,
-        ) {
-            (ctx.adaptive_target_bps, 0.0, 0.0)
-        } else {
-            (
-                ctx.adaptive_target_bps,
-                ctx.adaptive_pid_integral,
-                ctx.adaptive_pid_previous_error,
-            )
-        };
+        let fps_priority_hold =
+            fps_pid_has_priority(error_ms, ctx.adaptive_pid_fps, self.adaptive_pid_min_fps);
+        let (new_target, next_integral, next_error) =
+            if signal_usable && bitrate_pid_can_run && !fps_priority_hold {
+                pid_bitrate_step(
+                    ctx.adaptive_target_bps,
+                    ceiling,
+                    min_bps,
+                    bitrate_error_ms,
+                    dt_seconds,
+                    bitrate_pid_kp,
+                    bitrate_pid_ki,
+                    self.adaptive_pid_kd,
+                    ctx.adaptive_pid_integral,
+                    ctx.adaptive_pid_previous_error,
+                )
+            } else if fps_priority_hold
+                || bitrate_pid_should_hold(
+                    error_ms,
+                    ctx.adaptive_pid_fps,
+                    self.adaptive_pid_min_fps,
+                    self.adaptive_queue_high_ms,
+                )
+            {
+                (ctx.adaptive_target_bps, 0.0, 0.0)
+            } else {
+                (
+                    ctx.adaptive_target_bps,
+                    ctx.adaptive_pid_integral,
+                    ctx.adaptive_pid_previous_error,
+                )
+            };
         ctx.adaptive_pid_integral = next_integral;
         ctx.adaptive_pid_previous_error = next_error;
         ctx.adaptive_ceiling_bps = new_target;
@@ -3733,6 +3738,14 @@ mod ceiling_tests {
         assert!(fps_pid_has_priority(-50.0, 31.0, 30));
         assert!(!fps_pid_has_priority(-50.0, 30.0, 30));
         assert!(!fps_pid_has_priority(25.0, 60.0, 30));
+        assert!(
+            fps_pid_has_priority(-100.0, 60.0, 30),
+            "negative standing-queue error must gate bitrate while FPS sheds"
+        );
+        assert!(
+            !fps_pid_has_priority(-100.0, 30.0, 30),
+            "bitrate PID unlocks at FPS floor"
+        );
         assert!(bitrate_pid_should_hold(-20.0, 30.0, 30, 100.0));
         assert!(bitrate_pid_policy_allows_downscale(-100.0, 30.0, 30, 100.0));
         assert!(!bitrate_pid_should_hold(-110.0, 30.0, 30, 100.0));
