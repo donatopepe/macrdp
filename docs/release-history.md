@@ -1,5 +1,11 @@
 # Release history
 
+## v0.9.41 — FPS-first priority enforced at bitrate actuator
+
+Queue-pressure policy now gates bitrate PID itself: while queue error is negative and FPS >30, bitrate target and bitrate PID integral/derivative state stay fixed; only FPS PID sheds load. At 30 FPS, bitrate PID activates and can fall toward adaptive floor. Applies uniformly to ACK queue pressure, retransmits and no-ACK fallback; none can bypass priority gate. Clear queue allows both outputs to recover. Adds explicit policy tests around >30/at-floor/clear cases.
+
+Existing config.env untouched. 231 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security, Apple Silicon build and SHA verified. Restart to test; verify under actual sustained congestion.
+
 ## v0.9.39 — gate ACK-distress bitrate backoff on FPS-first floor
 
 Follow-up audit: no-ACK distress is a safety fallback, but it too must obey the explicit load-actuator order. While FPS is above 30 and queue error is negative, suppress its synthetic bitrate pressure and freeze bitrate PID state; FPS PID sheds first. At FPS 30, measured queue/ACK-distress remains able to lower bitrate to adaptive floor. Retransmit-loss enters same FPS-first treatment. On queue recovery, both rise. Existing config.env unchanged; 50 ms queue target remains.
