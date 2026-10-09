@@ -1,5 +1,11 @@
 # Release history
 
+## v0.9.49 — retransmit cannot count as material bitrate congestion
+
+FPS-first policy now compares actual queue error at high-water before bitrate reduction. Retransmits and no-ACK distress can signal FPS shedding, but alone cannot authorize bitrate drop; bitrate may descend only after FPS reaches 30 and measured queue error crosses `MACRDP_ADAPTIVE_QUEUE_HIGH_MS` (default 100ms). Prevents a loss-only event from bypassing frame-rate-first policy. Queue target 50ms; deadband 5ms; both PIDs recover bidirectionally. Existing config untouched.
+
+231 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security and arm64 artifact SHA verified. Needs install/restart plus real sustained-congestion validation.
+
 ## v0.9.48 — require material congestion before bitrate cuts
 
 Bitrate PID decreases only after FPS has reached 30 and queue error reaches material high-water (`MACRDP_ADAPTIVE_QUEUE_HIGH_MS`, default 100ms). Retransmit / no-ACK distress cannot cut bitrate early; it may continue reducing FPS first. In the 50–100ms dead zone, freeze bitrate target and PID history to avoid bitrate dither and delayed integral plunge. Positive queue error can recover bitrate; FPS uses 5ms target deadband against observed 59↔60 quantization cycle. Existing config untouched.
