@@ -1,5 +1,11 @@
 # Release history
 
+## v0.9.37 — hard FPS floor 30 for FPS-first priority
+
+Clamps `MACRDP_ADAPTIVE_MIN_FPS` to >=30: a stale lower setting can no longer violate explicit FPS-first policy. Queue target is 50 ms; negative queue error reduces FPS toward 30 before bitrate PID is allowed to decrease. After reaching 30, bitrate decreases within adaptive floor..BITRATE. Clear queue reverses both. Existing config.env remains untouched.
+
+230 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security, arm64 build and checksum green. A visible sustained-congestion client test remains outstanding.
+
 ## v0.9.36 — FPS PID sheds load before bitrate PID
 
 Per explicit user priority, negative queue error above 30 FPS now acts only on FPS PID: bitrate remains held while capture rate sheds toward 30. At 30 FPS and continued queue pressure, bitrate PID engages down to existing adaptive floor; clear queue lets both recover toward configured maxima. Separate bounded/anti-windup PIDs, queue target 50 ms by default. Tune gains with `MACRDP_ADAPTIVE_PID_KP/KI/KD` and `MACRDP_ADAPTIVE_FPS_PID_KP/KI/KD`. FPS floor tunable but never below requested 30. Existing config untouched.
