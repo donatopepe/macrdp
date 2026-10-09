@@ -1,5 +1,13 @@
 # Release history
 
+## v0.9.31 — separate input-receive to video/audio send measurements
+
+Adds opt-in endpoint measurements from IronRDP keyboard or mouse event dispatch to the corresponding outbound frame/write or RDPSND audio-wave write. Four separate distributions: keyboard→video, mouse→video, keyboard→audio, mouse→audio; each includes correlated output count and last/max/p50/p95 latency in milliseconds. Origin timestamps are set per input event at handler entry, not later macOS event posting. No key contents, pointer coordinates, or button identity retained.
+
+The endpoint is server-side only: video ends after EGFX socket write; audio ends after RDPSND socket write. It does not mean the remote OS decoded, painted or audibly played the data—RDP does not provide a per-keystroke presentation acknowledgement. Multiple inputs can be correlated to one output; counts are output correlations, not exact one-to-one key acknowledgements. With stats disabled, there is no instrumentation path overhead. No `config.env` changes.
+
+235 Rust (3 ignored), 18 Swift; fmt/clippy and CI green. Release arm64 asset built and SHA-256 verified. Install/restart v0.9.31 and enable `STATS_ENDPOINT=1` to read fields. Existing host has not been upgraded yet.
+
 What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
