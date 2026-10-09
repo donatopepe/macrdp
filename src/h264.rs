@@ -1119,6 +1119,15 @@ fn bitrate_pid_should_hold(
         || (error_ms < 0.0 && error_ms > -queue_high_ms.max(0.0))
 }
 
+fn bitrate_pid_policy_allows_downscale(
+    queue_error_ms: f64,
+    current_fps: f64,
+    fps_floor: u32,
+    queue_high_ms: f64,
+) -> bool {
+    current_fps <= f64::from(fps_floor) && queue_error_ms <= -queue_high_ms.max(0.0)
+}
+
 fn fps_pid_has_priority(queue_error_ms: f64, current_fps: f64, priority_floor_fps: u32) -> bool {
     queue_error_ms < 0.0 && current_fps > f64::from(priority_floor_fps)
 }
@@ -2384,16 +2393,23 @@ impl Gfx {
             error_ms = error_ms.min(-self.adaptive_queue_high_ms.max(50.0));
         }
         let min_bps = self.adaptive_floor_bps.max(1);
-        let fps_sheds_first =
-            fps_pid_has_priority(error_ms, ctx.adaptive_pid_fps, self.adaptive_pid_min_fps);
         let bitrate_error_ms = if error_ms < 0.0 && ctx.adaptive_pid_fps > 30.0 {
             0.0
         } else {
             error_ms
         };
-        let bitrate_pid_can_run = error_ms >= 0.0
-            || (!fps_sheds_first && ctx.adaptive_pid_fps <= self.adaptive_pid_min_fps as f64);
-        let bitrate_error_is_material = error_ms <= -self.adaptive_queue_high_ms;
+        let bitrate_pid_can_run = if error_ms >= 0.0 {
+            true
+        } else if signal_usable {
+            bitrate_pid_policy_allows_downscale(
+                error_ms,
+                ctx.adaptive_pid_fps,
+                self.adaptive_pid_min_fps,
+                self.adaptive_queue_high_ms,
+            )
+        } else {
+            false
+        };
         let bitrate_pid_kp = if ctx.adaptive_pid_fps <= 30.0 {
             self.adaptive_pid_kp * 2.0
         } else {
@@ -2411,10 +2427,7 @@ impl Gfx {
         } else {
             error_ms
         };
-        let (new_target, next_integral, next_error) = if signal_usable
-            && bitrate_pid_can_run
-            && (error_ms >= 0.0 || bitrate_error_is_material)
-        {
+        let (new_target, next_integral, next_error) = if signal_usable && bitrate_pid_can_run {
             pid_bitrate_step(
                 ctx.adaptive_target_bps,
                 ceiling,
@@ -3596,8 +3609,8 @@ fn avcc_to_annex_b(avcc: &[u8], parameter_sets: &[Vec<u8>], is_keyframe: bool) -
 #[cfg(test)]
 mod ceiling_tests {
     use super::{
-        bitrate_pid_should_hold, clamp_pid_fps, fps_pid_deadband, fps_pid_has_priority,
-        pid_bitrate_step, pid_delta, pid_integral_step,
+        bitrate_pid_policy_allows_downscale, bitrate_pid_should_hold, clamp_pid_fps,
+        fps_pid_deadband, fps_pid_has_priority, pid_bitrate_step, pid_delta, pid_integral_step,
     };
 
     #[test]
@@ -3702,7 +3715,12 @@ mod ceiling_tests {
         assert!(!fps_pid_has_priority(-50.0, 30.0, 30));
         assert!(!fps_pid_has_priority(25.0, 60.0, 30));
         assert!(bitrate_pid_should_hold(-20.0, 30.0, 30, 100.0));
+        assert!(bitrate_pid_policy_allows_downscale(-100.0, 30.0, 30, 100.0));
         assert!(!bitrate_pid_should_hold(-110.0, 30.0, 30, 100.0));
+        assert!(!bitrate_pid_policy_allows_downscale(
+            -110.0, 31.0, 30, 100.0
+        ));
+        assert!(!bitrate_pid_policy_allows_downscale(-99.0, 30.0, 30, 100.0));
         assert!(bitrate_pid_should_hold(-200.0, 60.0, 30, 100.0));
     }
 
