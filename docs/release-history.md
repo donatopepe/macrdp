@@ -1,5 +1,13 @@
 # Release history
 
+## v0.9.36 — FPS PID sheds load before bitrate PID
+
+Per explicit user priority, negative queue error above 30 FPS now acts only on FPS PID: bitrate remains held while capture rate sheds toward 30. At 30 FPS and continued queue pressure, bitrate PID engages down to existing adaptive floor; clear queue lets both recover toward configured maxima. Separate bounded/anti-windup PIDs, queue target 50 ms by default. Tune gains with `MACRDP_ADAPTIVE_PID_KP/KI/KD` and `MACRDP_ADAPTIVE_FPS_PID_KP/KI/KD`. FPS floor tunable but never below requested 30. Existing config untouched.
+
+Regression-test evidence motivating ordering: prior single-session backlog hit ~4.6 s queue/74 outstanding decoded frames, bitrate reached 1.25 Mbps and FPS reached 10; this release should shed FPS first, preserve bitrate/detail until FPS reaches 30, then trade bitrate. Blank recovery remains an independent issue: it reacted to 13/16 QoE reports all zero even while EGFX decoder/frame-ACK activity continued; do not conflate this with rate-control success.
+
+230 Rust (3 ignored), 18 Swift; fmt/clippy + CI/security pass; release arm64 artifact SHA verified.
+
 ## v0.9.32 — four typed-input-to-wire-output latency series
 
 Adds separate opt-in metrics from each keyboard/mouse RDP input event reaching IronRDP handler to next relevant outbound media write: keyboard→video, mouse→video, keyboard→audio, mouse→audio. Each output sample contributes count, last/max/p50/p95 ms. Origin is stamped per input event at server dispatch, prior to macOS input handling. No content, keycode, button, text or pointer coordinate retained. Video endpoint is EGFX/H.264 socket write; audio endpoint is RDPSND wave socket write. Neither demonstrates remote client decoded/rendered/displayed the video or audibly played audio; no per-event presentation ACK exists. A single output can correlate with multiple inputs, so count is output correlation sample count, not a delivery ACK per input.
