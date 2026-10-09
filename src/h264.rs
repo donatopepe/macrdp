@@ -245,6 +245,7 @@ struct ConnectionContext {
     /// (the ship-path lock-order invariant: never hold ctx under server_handle).
     last_shipped_frame_id: Arc<AtomicU64>,
     last_acked_frame_id: Arc<AtomicU64>,
+    last_ack_queue_depth: u32,
     egfx_acks_seen: bool,
     /// Ship-time ring for ack-RTT sampling: slot `frame_id % RTT_RING` holds
     /// `(frame_id, shipped_at)`, written by the ship thread right after
@@ -291,24 +292,11 @@ struct ConnectionContext {
     /// last sampled value of the shared cumulative-retransmit loss counter, so the
     /// controller works on per-interval deltas. See [`Gfx::adaptive_bitrate_step`].
     adaptive_target_bps: u32,
-    /// The EFFECTIVE ceiling this session has converged to, as opposed to the
-    /// operator's `--bitrate` (which is the upper bound and stays untouched).
-    ///
-    /// Why it exists, from a measured limit cycle (2026-10-05, ~24 ms ZeroTier
-    /// path, video playing): with an operator ceiling the link could not reach,
-    /// the AIMD hunted between 6000k and 1440k every few seconds, the queue
-    /// delay spiked to 101–180 ms, and every congestion episode triggered the
-    /// IDR backoff (89 suppressions against 89 recoveries in one session), with
-    /// audio dropping 91 times because audio and video share one socket. A
-    /// ceiling above capacity is not headroom, it is a limit cycle. So the
-    /// ceiling converges: down fast under sustained congestion, up slowly when
-    /// the link stays clear, never above the operator's value.
+    /// In-session PID output marker, follows current controlled bitrate.
     adaptive_ceiling_bps: u32,
-    /// Consecutive congested control intervals — the hysteresis that keeps the
-    /// ceiling from tracking every spike (a bound must not move on one burst).
-    adaptive_congested_intervals: u32,
-    /// When the ceiling last stepped, for [`CEILING_STEP_MIN_INTERVAL`].
-    adaptive_last_ceiling_change: Instant,
+    /// Queue-delay PID state; integral uses anti-windup saturation handling.
+    adaptive_pid_integral: f64,
+    adaptive_pid_previous_error: f64,
     adaptive_last_control: Instant,
     adaptive_last_retransmits: u64,
     /// P2a IDR-backoff state: true while the periodic keyframe is suppressed
@@ -336,6 +324,9 @@ struct ConnectionContext {
     /// share the same capture-side gate; no layered limiters or shared VT handle.
     adaptive_fps_stage: AdaptiveFpsStage,
     adaptive_fps_clear_since: Option<Instant>,
+    adaptive_pid_fps: f64,
+    adaptive_pid_fps_integral: f64,
+    adaptive_pid_fps_previous_error: f64,
     last_adaptive_fps_pass: Instant,
     /// Blank-presentation detector state (the mstsc reconnect-blank; see
     /// [`should_blank_recover`]): consecutive zero / nonzero decode+render-time
@@ -984,6 +975,7 @@ fn seeded_initial_bitrate(ceiling: u32, floor: u32, link_rtt_ms: u32, seed_rtt_m
 /// (back off fast, clamp to `floor_bps`); **additive-increase** when clean (climb
 /// slowly, clamp to `ceiling_bps`). Pure (no clock/state) so it's unit-testable.
 /// See [`Gfx::adaptive_bitrate_step`].
+#[cfg(test)]
 fn aimd_bitrate(
     current: u32,
     loss_delta: u64,
@@ -1074,58 +1066,15 @@ fn congested_hysteresis(
 }
 
 /// What the controller does to the bitrate this interval.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RateAction {
-    /// Smoothed lag is above the high mark (or a retransmit) — multiplicative-decrease.
-    Decrease,
-    /// In the hysteresis band (congested, lag decaying between low and high) — hold the
-    /// current bitrate. Stops a single spike from cratering the bitrate as the EWMA
-    /// decays back through the band (it would otherwise decrease every interval → the
-    /// "video sometimes stops" deep dips).
-    Hold,
-    /// Cleared (below the low mark / not in an episode) — additive-increase toward ceiling.
-    Increase,
-}
-
-/// Pure 3-zone bitrate action on the smoothed signal (AIMD with a hold band).
-/// `congested` is the hysteresis state from [`congested_hysteresis`] this interval.
-/// Decrease while genuinely congested (lag above `high`, or retransmits above the
-/// tolerance); hold while
-/// the episode is still latched but the smoothed lag is decaying back through the band;
-/// increase once cleared. So a single spike = one step down then a plateau, while
-/// *sustained* congestion (lag stays above `high`) keeps decreasing toward the floor.
-/// Unit-tested. See [`Gfx::adaptive_bitrate_step`].
-fn rate_action(
-    ewma_lag: f64,
-    high: f64,
-    retransmit_lossy: bool,
-    acks_usable: bool,
-    congested: bool,
-) -> RateAction {
-    if retransmit_lossy || (acks_usable && ewma_lag > high) {
-        RateAction::Decrease
-    } else if !congested {
-        RateAction::Increase
-    } else {
-        RateAction::Hold
-    }
-}
-
-/// One adaptive FPS policy and one capture-side cadence gate. Stages are ordered
-/// by severity; each capture is either admitted or dropped by exactly one check.
-/// This replaces the former independent 60→30 gate and P2b 10-FPS emergency gate,
-/// which shared one timestamp and could reset one another until every capture
-/// was dropped (the observed failure was "audio only").
+/// Single PID-controlled frame cadence. Capture admission uses one monotonic gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AdaptiveFpsStage {
     Configured(u32),
-    Congested30,
 }
 impl AdaptiveFpsStage {
     fn fps(self) -> u32 {
         match self {
             Self::Configured(fps) => fps.max(1),
-            Self::Congested30 => 30,
         }
     }
     fn interval(self) -> Duration {
@@ -1133,46 +1082,38 @@ impl AdaptiveFpsStage {
     }
 }
 
-fn select_fps_stage(
-    configured: u32,
-    congested: bool,
-    _at_bitrate_floor: bool,
-    current: AdaptiveFpsStage,
-) -> AdaptiveFpsStage {
-    let fps30 = ADAPTIVE_FPS_STAGE.min(configured.max(1));
-    if congested && configured > fps30 {
-        AdaptiveFpsStage::Congested30
-    } else if congested {
-        AdaptiveFpsStage::Configured(configured)
-    } else {
-        // A clear control sample alone is not recovery; slow recovery gate below
-        // owns every upward transition.
-        current
-    }
-}
-
 fn fps_stage_should_drop(stage: AdaptiveFpsStage, since_last_admitted: Duration) -> bool {
     since_last_admitted < stage.interval()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FpsRecoveryAction {
-    Hold,
-    RestoreConfigured,
-}
-
 /// Recovery is deliberately slow and only earned at the effective ceiling:
 /// queue-drain after AIMD backed off is not evidence of spare capacity.
-fn fps_recovery_step(
-    is_congested: bool,
-    at_effective_ceiling: bool,
-    clear_for: Duration,
-) -> FpsRecoveryAction {
-    if !is_congested && at_effective_ceiling && clear_for >= ADAPTIVE_FPS_RAISE_CLEAR_FOR {
-        FpsRecoveryAction::RestoreConfigured
+fn pid_integral_step(integral: f64, error_ms: f64, dt_seconds: f64, limit: f64) -> f64 {
+    (integral + error_ms * dt_seconds).clamp(-limit, limit)
+}
+
+fn pid_delta(
+    error_ms: f64,
+    previous_error_ms: f64,
+    integral: f64,
+    dt_seconds: f64,
+    kp: f64,
+    ki: f64,
+    kd: f64,
+) -> f64 {
+    let derivative = if dt_seconds > 0.0 {
+        (error_ms - previous_error_ms) / dt_seconds
     } else {
-        FpsRecoveryAction::Hold
-    }
+        0.0
+    };
+    kp * error_ms + ki * integral + kd * derivative
+}
+
+fn clamp_pid_fps(value: f64, min_fps: u32, max_fps: u32) -> u32 {
+    value.round().clamp(
+        f64::from(min_fps.max(1)),
+        f64::from(max_fps.max(min_fps.max(1))),
+    ) as u32
 }
 
 /// Encoder adjustments the adaptive controller wants applied this frame: the P1
@@ -1184,70 +1125,40 @@ struct AdaptiveActions {
     keyframe_frames: Option<u32>,
 }
 
-/// What the effective ceiling should do this control interval.
-#[derive(Debug, PartialEq, Eq)]
-enum CeilingAction {
-    Hold,
-    Lower(u32),
-}
-
-/// Converge the effective ceiling DOWN toward what the link sustains.
-///
-/// The ceiling never climbs back within a session. That asymmetry is not
-/// timidity, it is the measurement: two climbing versions were shipped to this
-/// Mac and both failed the same way, oscillating (6000k → 750k → 6000k →
-/// 5250k with 50 convergence events in 90 s). The reason is that "congestion
-/// cleared" is not evidence that capacity rose — it clears because the AIMD
-/// dropped the target, which drains the pipe, which then reads as headroom.
-/// Nothing in a link's behaviour distinguishes "the drain emptied it" from "the
-/// link got faster", so any climb rule guesses. Since the ceiling resets per
-/// connection and starts at the operator's `--bitrate` again, a link that was
-/// merely busy gets re-evaluated on the next session, while a link that really
-/// is faster converges there and then.
-///
-/// Rate limiting lives in the caller (this function is pure): one congested
-/// control interval to act, then at most one step per
-/// configured ceiling interval (default 200 ms). The target AIMD can recover
-/// every same control tick; ceiling climb remains separately guarded.
-fn ceiling_step(
+/// Bounded, anti-windup PID update. Error is positive below queue target and
+/// therefore raises bitrate/FPS; negative queue error lowers them.
+#[allow(clippy::too_many_arguments)]
+fn pid_bitrate_step(
     current: u32,
-    operator_ceiling: u32,
-    floor_bps: u32,
-    decrease: f64,
-    congested: bool,
-    congested_holds: u32,
-) -> CeilingAction {
-    // The ceiling's own floor is HALF the operator maximum, never the encoder's
-    // adaptive floor. Measured reason: with a floor at the adaptive floor the
-    // walk-down ran straight past the achievable band and parked there — 6000k →
-    // 1800k → 750k on a link that sustains ~4 Mbit, i.e. it fixed the oscillation
-    // by trading it for permanently wasted detail. Halving is a bounded claim:
-    // "never send more than half of what you asked for", which rescues the case
-    // we actually measured (a ceiling far above capacity) without punishing a
-    // merely bursty link.
-    let ceil_floor = (operator_ceiling / 2).max(floor_bps).max(1);
-    let top = operator_ceiling.max(ceil_floor).max(1);
-    let cur = current.clamp(ceil_floor, top);
-    if !congested || congested_holds < 1 {
-        return CeilingAction::Hold;
-    }
-    if cur <= ceil_floor {
-        return CeilingAction::Hold;
-    }
-    let next = ((cur as f64) * (1.0 - decrease.clamp(0.05, 0.9))).round() as u32;
-    let next = next.clamp(ceil_floor, top);
-    if next == cur {
-        CeilingAction::Hold
-    } else {
-        CeilingAction::Lower(next)
-    }
+    max: u32,
+    min: u32,
+    error_ms: f64,
+    dt_s: f64,
+    kp: f64,
+    ki: f64,
+    kd: f64,
+    integral: f64,
+    previous_error: f64,
+) -> (u32, f64, f64) {
+    let error = error_ms.clamp(-500.0, 500.0);
+    let candidate_integral = pid_integral_step(integral, error, dt_s, 2000.0);
+    let control_mbps = pid_delta(error, previous_error, candidate_integral, dt_s, kp, ki, kd);
+    let low = min.max(1);
+    let high = max.max(low);
+    let next = (f64::from(current) + control_mbps * 1_000_000.0)
+        .round()
+        .clamp(f64::from(low), f64::from(high)) as u32;
+    let outward_saturation = (next == high && error < 0.0) || (next == low && error > 0.0);
+    (
+        next,
+        if outward_saturation {
+            integral
+        } else {
+            candidate_integral
+        },
+        error,
+    )
 }
-
-/// First congestion stage: halve a 60 FPS stream before reducing its bitrate ceiling.
-const ADAPTIVE_FPS_STAGE: u32 = 30;
-/// FPS recovery is slower than bitrate recovery: five uninterrupted minutes at
-/// the effective ceiling before 30 -> configured (usually 60).
-const ADAPTIVE_FPS_RAISE_CLEAR_FOR: Duration = Duration::from_secs(300);
 
 /// Read the ack-recovery config from the environment once. Returns
 /// `(enabled, params)`; disabled (default) keeps the feature off and the path
@@ -1343,20 +1254,17 @@ pub struct Gfx {
     /// secondarily from the shared `congestion_retransmits` counter (a late
     /// RTO-based signal). It live-adjusts the VideoToolbox bitrate within
     /// `[adaptive_floor_bps, bitrate_bps]`: multiplicative-decrease
-    /// `adaptive_decrease` per interval with congestion, additive-increase
-    /// `adaptive_increase_bps` per interval when clean. `bitrate_bps` (the
-    /// `--bitrate` value) is the ceiling. See [`Gfx::adaptive_bitrate_step`].
+    /// The queue-delay PID steers encoder bitrate both directions inside
+    /// `[adaptive_floor_bps, bitrate_bps]`, while a companion PID steers FPS
+    /// inside `[adaptive_pid_min_fps, fps]`. Queue target defaults to 50 ms.
+    /// See [`Gfx::adaptive_bitrate_step`].
     adaptive_enabled: bool,
     adaptive_floor_bps: u32,
-    adaptive_increase_bps: u32,
-    adaptive_decrease: f32,
     adaptive_interval: Duration,
-    ceiling_step_interval: Duration,
     keyboard_idr_interval: Duration,
     keyboard_idr_min_spacing: Duration,
     keyboard_idr_stillness: Duration,
     keyboard_idr_max_per_second: u32,
-    ceiling_congestion_intervals: u32,
     /// Standing queue delay (ms above the windowed-min RTT) at which the
     /// controller treats the link as congested; hysteresis exits at half this.
     /// Time-based and transport-agnostic — it replaced the per-transport
@@ -1368,6 +1276,14 @@ pub struct Gfx {
     /// queue is unambiguous congestion at any RTT (LEDBAT's classic target);
     /// `MACRDP_ADAPTIVE_QUEUE_HIGH_MS` overrides.
     adaptive_queue_high_ms: f64,
+    adaptive_queue_target_ms: f64,
+    adaptive_pid_kp: f64,
+    adaptive_pid_ki: f64,
+    adaptive_pid_kd: f64,
+    adaptive_pid_min_fps: u32,
+    adaptive_pid_fps_kp: f64,
+    adaptive_pid_fps_ki: f64,
+    adaptive_pid_fps_kd: f64,
     /// EWMA weight on each new queue-delay sample in (0,1]: `ewma = α·sample +
     /// (1−α)·ewma`. Smooths the spiky raw signal so single bursts don't pump the
     /// bitrate; lower = more smoothing (slower reaction). Default 0.3;
@@ -1495,22 +1411,7 @@ impl Gfx {
             (bitrate_bps / 8).max(500_000),
         )
         .min(bitrate_bps.max(1));
-        // Responsive AIMD: increase ~1/8 of ceiling per 200 ms control interval
-        // (about 1.6 s to span a fresh 10 Mbit target absent congestion); decrease
-        // defaults 0.5. The effective ceiling has its own once-per-200ms backoff.
-        let adaptive_increase_bps = env_u32(
-            "MACRDP_UDP_ADAPTIVE_INCREASE_BPS",
-            (bitrate_bps / 8).max(250_000),
-        );
-        let adaptive_decrease = std::env::var("MACRDP_UDP_ADAPTIVE_DECREASE")
-            .ok()
-            .and_then(|s| s.trim().parse::<f32>().ok())
-            .filter(|&f| f > 0.0 && f < 1.0)
-            .unwrap_or(0.5);
         let adaptive_interval = watchdog_ms("MACRDP_UDP_ADAPTIVE_INTERVAL_MS", 200);
-        let ceiling_step_interval = watchdog_ms("MACRDP_ADAPTIVE_CEILING_STEP_MS", 200);
-        let ceiling_congestion_intervals =
-            env_u32("MACRDP_ADAPTIVE_CEILING_CONGESTED_INTERVALS", 1);
         // Bound typed-text presentation lag with IDRs triggered by real keyboard
         // posts, not every modifier/sync callback. Latest capture is retained by
         // SCK; a brief quiet wait coalesces character bursts into one IDR.
@@ -1526,6 +1427,43 @@ impl Gfx {
         // per-transport frame-count lag thresholds, which read a long-but-clean
         // pipe (high-RTT VPN/ZeroTier) as permanent congestion. 100 ms of queue
         // is unambiguous at any RTT; exit hysteresis at half.
+        let adaptive_queue_target_ms = std::env::var("MACRDP_ADAPTIVE_QUEUE_TARGET_MS")
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .filter(|v| *v > 0.0)
+            .unwrap_or(50.0);
+        let adaptive_pid_kp = std::env::var("MACRDP_ADAPTIVE_PID_KP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|v: &f64| *v >= 0.0)
+            .unwrap_or(0.001);
+        let adaptive_pid_ki = std::env::var("MACRDP_ADAPTIVE_PID_KI")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|v: &f64| *v >= 0.0)
+            .unwrap_or(0.000_05);
+        let adaptive_pid_kd = std::env::var("MACRDP_ADAPTIVE_PID_KD")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|v: &f64| *v >= 0.0)
+            .unwrap_or(0.0);
+        // Keep FPS no lower than 30: requested first-stage controller actuator.
+        let adaptive_pid_min_fps = env_u32("MACRDP_ADAPTIVE_MIN_FPS", 30).clamp(30, fps.max(30));
+        let adaptive_pid_fps_kp = std::env::var("MACRDP_ADAPTIVE_FPS_PID_KP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|v: &f64| *v >= 0.0)
+            .unwrap_or(0.5);
+        let adaptive_pid_fps_ki = std::env::var("MACRDP_ADAPTIVE_FPS_PID_KI")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|v: &f64| *v >= 0.0)
+            .unwrap_or(0.02);
+        let adaptive_pid_fps_kd = std::env::var("MACRDP_ADAPTIVE_FPS_PID_KD")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|v: &f64| *v >= 0.0)
+            .unwrap_or(0.0);
         let adaptive_queue_high_ms = std::env::var("MACRDP_ADAPTIVE_QUEUE_HIGH_MS")
             .ok()
             .and_then(|s| s.trim().parse::<f64>().ok())
@@ -1627,24 +1565,8 @@ impl Gfx {
         };
         let adaptive_seed_rtt_ms = env_u32_zero_ok("MACRDP_ADAPTIVE_SEED_RTT_MS", 50);
         if let Some(stats) = crate::stats::global() {
-            stats
-                .configured_increase_bps
-                .store(adaptive_increase_bps, Ordering::Relaxed);
-            stats.configured_decrease_percent.store(
-                (adaptive_decrease * 100.0).round() as u32,
-                Ordering::Relaxed,
-            );
             stats.adaptive_control_interval_ms.store(
                 adaptive_interval.as_millis().min(u128::from(u32::MAX)) as u32,
-                Ordering::Relaxed,
-            );
-            stats
-                .effective_fps_ceiling_steps
-                .store(ceiling_congestion_intervals, Ordering::Relaxed);
-            stats.effective_fps_raise_clear_ms.store(
-                ADAPTIVE_FPS_RAISE_CLEAR_FOR
-                    .as_millis()
-                    .min(u128::from(u32::MAX)) as u32,
                 Ordering::Relaxed,
             );
         }
@@ -1664,10 +1586,16 @@ impl Gfx {
             info!(
                 ceiling_bps = bitrate_bps,
                 floor_bps = adaptive_floor_bps,
-                increase_bps = adaptive_increase_bps,
-                decrease = adaptive_decrease,
                 interval_ms = adaptive_interval.as_millis() as u64,
+                queue_target_ms = adaptive_queue_target_ms,
                 queue_high_ms = adaptive_queue_high_ms,
+                pid_kp = adaptive_pid_kp,
+                pid_ki = adaptive_pid_ki,
+                pid_kd = adaptive_pid_kd,
+                min_fps = adaptive_pid_min_fps,
+                fps_pid_kp = adaptive_pid_fps_kp,
+                fps_pid_ki = adaptive_pid_fps_ki,
+                fps_pid_kd = adaptive_pid_fps_kd,
                 ewma_alpha = adaptive_ewma_alpha,
                 keyboard_idr_interval_ms = keyboard_idr_interval.as_millis() as u64,
                 keyboard_idr_min_spacing_ms = keyboard_idr_min_spacing.as_millis() as u64,
@@ -1699,16 +1627,20 @@ impl Gfx {
             demigrate_request,
             adaptive_enabled,
             adaptive_floor_bps,
-            adaptive_increase_bps,
-            adaptive_decrease,
             adaptive_interval,
-            ceiling_step_interval,
             keyboard_idr_interval,
             keyboard_idr_min_spacing,
             keyboard_idr_stillness,
             keyboard_idr_max_per_second,
-            ceiling_congestion_intervals,
             adaptive_queue_high_ms,
+            adaptive_queue_target_ms,
+            adaptive_pid_kp,
+            adaptive_pid_ki,
+            adaptive_pid_kd,
+            adaptive_pid_min_fps,
+            adaptive_pid_fps_kp,
+            adaptive_pid_fps_ki,
+            adaptive_pid_fps_kd,
             adaptive_ewma_alpha,
             adaptive_retx_tolerance,
             normal_keyframe_frames,
@@ -2083,22 +2015,6 @@ impl Gfx {
             // frame while audio continues. All pacing is before encode on this
             // thread; the !Send/!Sync VideoToolbox encoder is never shared/mutated.
             if self.adaptive_enabled {
-                let desired = select_fps_stage(
-                    self.fps,
-                    ctx.adaptive_congested,
-                    ctx.adaptive_target_bps <= self.adaptive_floor_bps,
-                    ctx.adaptive_fps_stage,
-                );
-                if desired != ctx.adaptive_fps_stage {
-                    info!(
-                        previous_fps = ctx.adaptive_fps_stage.fps(),
-                        effective_fps = desired.fps(),
-                        congested = ctx.adaptive_congested,
-                        at_bitrate_floor = ctx.adaptive_target_bps <= self.adaptive_floor_bps,
-                        "EGFX adaptive FPS stage changed"
-                    );
-                    ctx.adaptive_fps_stage = desired;
-                }
                 if fps_stage_should_drop(
                     ctx.adaptive_fps_stage,
                     Instant::now().saturating_duration_since(ctx.last_adaptive_fps_pass),
@@ -2316,6 +2232,10 @@ impl Gfx {
             }
             // Stale UDP-side smoothing state doesn't apply to the fresh TCP path.
             ctx.adaptive_delay_ewma = 0.0;
+            ctx.adaptive_pid_integral = 0.0;
+            ctx.adaptive_pid_previous_error = 0.0;
+            ctx.adaptive_pid_fps_integral = 0.0;
+            ctx.adaptive_pid_fps_previous_error = 0.0;
             ctx.adaptive_congested = false;
         }
         ctx.adaptive_on_udp = on_udp;
@@ -2383,7 +2303,7 @@ impl Gfx {
             && actively_shipping
             && !in_warmup
             && now.saturating_duration_since(ctx.epoch) > Duration::from_secs(3);
-        let signal_usable = acks_usable || distress;
+        let signal_usable = (acks_usable && actively_shipping) || distress || retransmit_lossy;
         // Only fold real samples into the EWMA — during warmup (and idle
         // no-ack periods) the delay is startup backlog / silence, not
         // congestion, and must not pre-load the average.
@@ -2426,121 +2346,63 @@ impl Gfx {
                 "EGFX congestion state transition"
             );
         }
-        // FPS sheds load first: 60→30 on congestion, while `select_fps_stage`
-        // holds that state on a transient clear sample. The bitrate ceiling then
-        // converges downward if congestion persists. Slowly restore 60 only after
-        // five clear minutes at the effective ceiling.
-        let target_at_ceiling = ctx.adaptive_target_bps >= ctx.adaptive_ceiling_bps * 95 / 100;
-        let desired_fps = select_fps_stage(
-            self.fps,
-            congested,
-            ctx.adaptive_target_bps <= self.adaptive_floor_bps,
-            ctx.adaptive_fps_stage,
-        );
-        if desired_fps != ctx.adaptive_fps_stage {
-            let previous = ctx.adaptive_fps_stage;
-            ctx.adaptive_fps_stage = desired_fps;
-            ctx.adaptive_fps_clear_since = None;
-            info!(
-                previous_fps = previous.fps(),
-                effective_fps = desired_fps.fps(),
-                congested,
-                at_bitrate_floor = ctx.adaptive_target_bps <= self.adaptive_floor_bps,
-                "EGFX adaptive FPS stage changed"
-            );
-        } else if !congested
-            && target_at_ceiling
-            && ctx.adaptive_fps_stage != AdaptiveFpsStage::Configured(self.fps)
-        {
-            let since = *ctx.adaptive_fps_clear_since.get_or_insert(now);
-            if fps_recovery_step(
-                congested,
-                target_at_ceiling,
-                now.saturating_duration_since(since),
-            ) == FpsRecoveryAction::RestoreConfigured
-            {
-                let previous = ctx.adaptive_fps_stage;
-                let next = AdaptiveFpsStage::Configured(self.fps);
-                ctx.adaptive_fps_stage = next;
-                ctx.adaptive_fps_clear_since = None;
-                info!(
-                    previous_fps = previous.fps(),
-                    effective_fps = next.fps(),
-                    "EGFX clear at ceiling for 5 min: restoring configured FPS"
-                );
-            }
-        } else if congested || !target_at_ceiling {
-            ctx.adaptive_fps_clear_since = None;
+        // FPS is coupled directly to the queue PID; previous staged recovery gate
+        // no longer controls upward or downward transitions.
+        // PID regulates encoder bitrate directly within fixed operator bounds.
+        // Positive queue error means spare headroom; negative error means queue
+        // above 50 ms target. Integral is anti-windup bounded in pid_bitrate_step.
+        let dt_seconds = self.adaptive_interval.as_secs_f64();
+        let eff_ceiling = ceiling.max(self.adaptive_floor_bps).max(1);
+        let mut error_ms = self.adaptive_queue_target_ms - ctx.adaptive_delay_ewma;
+        if retransmit_lossy {
+            error_ms = error_ms.min(-self.adaptive_queue_high_ms.max(50.0));
         }
-
-        // --- effective ceiling -------------------------------------------------
-        // Converge on a per-interval basis, BEFORE the AIMD reads the ceiling, so
-        // the target inherits the new bound in the same step instead of spending
-        // several intervals overshooting it.
-        if congested {
-            ctx.adaptive_congested_intervals += 1;
+        let min_bps = self.adaptive_floor_bps.max(1);
+        let bitrate_error_ms = if error_ms < 0.0 && ctx.adaptive_pid_fps > 30.0 {
+            0.0
         } else {
-            ctx.adaptive_congested_intervals = 0;
-        }
-        let eff_ceiling = match ceiling_step(
-            ctx.adaptive_ceiling_bps,
-            ceiling,
-            self.adaptive_floor_bps,
-            self.adaptive_decrease as f64,
-            congested && ctx.adaptive_congested_intervals >= self.ceiling_congestion_intervals,
-            ctx.adaptive_congested_intervals,
-        ) {
-            CeilingAction::Hold => ctx.adaptive_ceiling_bps,
-            CeilingAction::Lower(next) => {
-                if now.duration_since(ctx.adaptive_last_ceiling_change) < self.ceiling_step_interval
-                {
-                    ctx.adaptive_ceiling_bps
-                } else {
-                    let prev = ctx.adaptive_ceiling_bps;
-                    ctx.adaptive_ceiling_bps = next;
-                    ctx.adaptive_last_ceiling_change = now;
-                    // info, not debug: the number an operator compares against
-                    // --bitrate, and the one that explains a session that "got
-                    // slower on its own". Rate-limited, so it cannot spam.
-                    info!(
-                        prev_ceiling_bps = prev,
-                        effective_ceiling_bps = next,
-                        operator_ceiling_bps = ceiling,
-                        "EGFX effective ceiling stepped down (--bitrate stays the maximum; \
-                         it is re-evaluated per connection)"
-                    );
-                    next
-                }
-            }
+            error_ms
         };
-        // The AIMD's own action for this interval, unchanged: the effective
-        // ceiling only replaces the constant it used to read.
-        let action = rate_action(
-            ctx.adaptive_delay_ewma,
-            self.adaptive_queue_high_ms,
-            retransmit_lossy,
-            signal_usable,
-            congested,
-        );
-        let new_target = match action {
-            RateAction::Hold => ctx.adaptive_target_bps,
-            RateAction::Decrease => aimd_bitrate(
-                ctx.adaptive_target_bps,
-                1,
-                self.adaptive_floor_bps,
-                eff_ceiling,
-                self.adaptive_increase_bps,
-                self.adaptive_decrease,
-            ),
-            RateAction::Increase => aimd_bitrate(
-                ctx.adaptive_target_bps,
-                0,
-                self.adaptive_floor_bps,
-                eff_ceiling,
-                self.adaptive_increase_bps,
-                self.adaptive_decrease,
-            ),
+        let bitrate_pid_kp = if ctx.adaptive_pid_fps <= 30.0 {
+            self.adaptive_pid_kp * 2.0
+        } else {
+            self.adaptive_pid_kp
         };
+        let bitrate_pid_ki = if ctx.adaptive_pid_fps <= 30.0 {
+            self.adaptive_pid_ki * 2.0
+        } else {
+            self.adaptive_pid_ki
+        };
+        let fps_error_ms = if error_ms < 0.0 && ctx.adaptive_pid_fps > 30.0 {
+            error_ms.min(-self.adaptive_queue_high_ms)
+        } else if error_ms < 0.0 && ctx.adaptive_pid_fps <= 30.0 {
+            0.0
+        } else {
+            error_ms
+        };
+        let (new_target, next_integral, next_error) = if signal_usable {
+            pid_bitrate_step(
+                ctx.adaptive_target_bps,
+                ceiling,
+                min_bps,
+                bitrate_error_ms,
+                dt_seconds,
+                bitrate_pid_kp,
+                bitrate_pid_ki,
+                self.adaptive_pid_kd,
+                ctx.adaptive_pid_integral,
+                ctx.adaptive_pid_previous_error,
+            )
+        } else {
+            (
+                ctx.adaptive_target_bps,
+                ctx.adaptive_pid_integral,
+                ctx.adaptive_pid_previous_error,
+            )
+        };
+        ctx.adaptive_pid_integral = next_integral;
+        ctx.adaptive_pid_previous_error = next_error;
+        ctx.adaptive_ceiling_bps = new_target;
         if new_target != ctx.adaptive_target_bps {
             let prev = ctx.adaptive_target_bps;
             ctx.adaptive_target_bps = new_target;
@@ -2548,23 +2410,64 @@ impl Gfx {
                 transport = if on_udp { "udp" } else { "tcp" },
                 queue_ms = sample_ms,
                 ewma_queue_ms = ctx.adaptive_delay_ewma,
+                queue_target_ms = self.adaptive_queue_target_ms,
                 ack_lag,
                 retransmit_delta,
-                ?action,
                 prev_bps = prev,
                 new_bps = new_target,
                 delta_bps = i64::from(new_target) - i64::from(prev),
-                configured_increase_bps = self.adaptive_increase_bps,
-                configured_decrease = self.adaptive_decrease,
-                signal_usable,
-                distress,
-                interval_ms = self.adaptive_interval.as_millis() as u64,
-                ewma_alpha = self.adaptive_ewma_alpha,
-                queue_high_ms = self.adaptive_queue_high_ms,
-                "EGFX adaptive bitrate adjusted"
+                pid_kp = self.adaptive_pid_kp,
+                pid_ki = self.adaptive_pid_ki,
+                pid_kd = self.adaptive_pid_kd,
+                "EGFX queue-target PID bitrate update"
             );
             actions.bitrate_bps = Some(new_target);
         }
+        ctx.adaptive_ceiling_bps = new_target;
+        // Couple frame-rate actuation to same queue error/PID output. FPS cannot
+        // exceed configured cap or fall below operator-confirmed 10 fps floor.
+        let fps_integral = pid_integral_step(
+            ctx.adaptive_pid_fps_integral,
+            fps_error_ms,
+            dt_seconds,
+            2000.0,
+        );
+        let fps_rate = pid_delta(
+            fps_error_ms,
+            ctx.adaptive_pid_fps_previous_error,
+            fps_integral,
+            dt_seconds,
+            self.adaptive_pid_fps_kp,
+            self.adaptive_pid_fps_ki,
+            self.adaptive_pid_fps_kd,
+        );
+        let pid_fps = clamp_pid_fps(
+            ctx.adaptive_pid_fps + fps_rate * dt_seconds,
+            self.adaptive_pid_min_fps,
+            self.fps.max(self.adaptive_pid_min_fps),
+        );
+        let fps_saturated_outward = (pid_fps == self.fps && fps_error_ms > 0.0)
+            || (pid_fps == self.adaptive_pid_min_fps && fps_error_ms < 0.0);
+        ctx.adaptive_pid_fps_integral = if fps_saturated_outward {
+            ctx.adaptive_pid_fps_integral
+        } else {
+            fps_integral
+        };
+        ctx.adaptive_pid_fps_previous_error = fps_error_ms;
+        ctx.adaptive_pid_fps = f64::from(pid_fps);
+        let next_stage = AdaptiveFpsStage::Configured(pid_fps);
+        if next_stage != ctx.adaptive_fps_stage {
+            let previous = ctx.adaptive_fps_stage.fps();
+            ctx.adaptive_fps_stage = next_stage;
+            ctx.adaptive_fps_clear_since = None;
+            info!(
+                previous_fps = previous,
+                effective_fps = pid_fps,
+                queue_error_ms = fps_error_ms,
+                "EGFX PID FPS update"
+            );
+        }
+
         // P2a IDR backoff: don't inject a big periodic keyframe into a congested
         // pipe. BOTH transports since the queue-delay signal landed: `congested`
         // now means a genuinely backed-up link (not high RTT misread), and on a
@@ -2764,9 +2667,10 @@ impl Gfx {
             s.height.store(u32::from(h), Ordering::Relaxed);
             s.ceiling_bps.store(self.bitrate_bps, Ordering::Relaxed);
             s.effective_ceiling_bps
-                .store(ctx.adaptive_ceiling_bps, Ordering::Relaxed);
-            s.bitrate_bps.store(self.bitrate_bps, Ordering::Relaxed);
-            s.fps.store(self.fps, Ordering::Relaxed);
+                .store(ctx.adaptive_target_bps, Ordering::Relaxed);
+            s.bitrate_bps
+                .store(ctx.adaptive_target_bps, Ordering::Relaxed);
+            s.fps.store(ctx.adaptive_fps_stage.fps(), Ordering::Relaxed);
             s.adaptive.store(self.adaptive_enabled, Ordering::Relaxed);
         }
         Ok(())
@@ -3191,6 +3095,7 @@ impl GfxServerFactory for Gfx {
     fn build_server_with_handle(&self) -> Option<(GfxDvcBridge, GfxServerHandle)> {
         let handler = Box::new(GfxHandler {
             ctx: self.ctx.clone(),
+            congestion_retransmits: self.congestion_retransmits.clone(),
         });
         // A fresh `GraphicsPipelineServer` per connection — its surface-id
         // allocator resets to 0, so every (re)connect creates surface id 0. This
@@ -3250,6 +3155,7 @@ impl GfxServerFactory for Gfx {
             last_recovery_at: Instant::now(),
             last_shipped_frame_id: Arc::new(AtomicU64::new(0)),
             last_acked_frame_id: Arc::new(AtomicU64::new(0)),
+            last_ack_queue_depth: 0,
             egfx_acks_seen: false,
             ship_times: Arc::new(Mutex::new(vec![(u64::MAX, Instant::now()); RTT_RING])),
             rtt_min_cur_ms: f64::INFINITY,
@@ -3262,8 +3168,8 @@ impl GfxServerFactory for Gfx {
             // below the operator ceiling at connect, and the effective ceiling
             // must not then hand the AIMD back the unreachable operator value.
             adaptive_ceiling_bps: initial_target_bps.max(self.adaptive_floor_bps).max(1),
-            adaptive_congested_intervals: 0,
-            adaptive_last_ceiling_change: Instant::now(),
+            adaptive_pid_integral: 0.0,
+            adaptive_pid_previous_error: 0.0,
             adaptive_target_bps: initial_target_bps,
             adaptive_last_control: Instant::now(),
             adaptive_last_retransmits: self.congestion_retransmits.load(Ordering::Relaxed),
@@ -3274,6 +3180,12 @@ impl GfxServerFactory for Gfx {
             adaptive_congested: false,
             adaptive_fps_stage: AdaptiveFpsStage::Configured(self.fps),
             adaptive_fps_clear_since: None,
+            adaptive_pid_fps: f64::from(
+                initial_target_bps.clamp(self.adaptive_floor_bps, self.bitrate_bps.max(1)),
+            ) / f64::from(self.bitrate_bps.max(1))
+                * f64::from(self.fps),
+            adaptive_pid_fps_integral: 0.0,
+            adaptive_pid_fps_previous_error: 0.0,
             last_adaptive_fps_pass: Instant::now(),
             qoe: QoeEvidence::default(),
             last_nonzero_qoe_at: Instant::now(),
@@ -3321,6 +3233,7 @@ fn caps_indicate_avc(caps: &[CapabilitySet]) -> bool {
 /// MUST NOT lock `server_handle` from these — the server mutex is already held.
 struct GfxHandler {
     ctx: Arc<Mutex<Option<ConnectionContext>>>,
+    congestion_retransmits: Arc<AtomicU64>,
 }
 
 impl GraphicsPipelineHandler for GfxHandler {
@@ -3404,6 +3317,10 @@ impl GraphicsPipelineHandler for GfxHandler {
         // whether the client suspended acks (queueDepth == SUSPEND_FRAME_
         // ACKNOWLEDGEMENT 0xFFFFFFFF) — with acks off, loss can't be inferred.
         if let Some(ctx) = self.ctx.lock().unwrap().as_mut() {
+            if !ctx.acks_suspended && queue_depth > ctx.last_ack_queue_depth.saturating_add(2) {
+                self.congestion_retransmits.fetch_add(1, Ordering::Relaxed);
+            }
+            ctx.last_ack_queue_depth = queue_depth;
             ctx.last_ack_at = Instant::now();
             ctx.acks_suspended = queue_depth == 0xFFFF_FFFF;
             // Record decode progress for the UDP frame-ack-lag backpressure gate.
@@ -3625,125 +3542,107 @@ fn avcc_to_annex_b(avcc: &[u8], parameter_sets: &[Vec<u8>], is_keyframe: bool) -
 
 #[cfg(test)]
 mod ceiling_tests {
-    use super::{ceiling_step, CeilingAction};
+    use super::{clamp_pid_fps, pid_bitrate_step, pid_delta, pid_integral_step};
 
-    const FLOOR: u32 = 1_000_000;
-    const TOP: u32 = 6_000_000;
-    /// The ceiling's own floor: half the operator maximum, never below the
-    /// encoder's adaptive floor.
-    const CEIL_FLOOR: u32 = TOP / 2;
-
-    /// The limit cycle we measured: with a fixed 6 Mbit ceiling the AIMD hunted
-    /// 6000k ↔ 1440k. The ceiling only moves on sustained congestion, so this is
-    /// the regression that matters.
     #[test]
-    fn first_congested_interval_lowers_ceiling_before_aimd_backoff() {
+    fn pid_bitrate_moves_both_directions_and_respects_limits() {
+        let (down, _, _) = pid_bitrate_step(
+            5_000_000,
+            10_000_000,
+            1_000_000,
+            -20.0,
+            0.2,
+            0.000_002,
+            0.000_000_2,
+            0.0,
+            0.0,
+            0.0,
+        );
+        let (up, _, _) = pid_bitrate_step(
+            5_000_000,
+            10_000_000,
+            1_000_000,
+            20.0,
+            0.2,
+            0.000_002,
+            0.000_000_2,
+            0.0,
+            0.0,
+            0.0,
+        );
+        assert!(down < 5_000_000);
+        assert!(up > 5_000_000);
         assert_eq!(
-            ceiling_step(6_000_000, TOP, FLOOR, 0.5, true, 1),
-            CeilingAction::Lower(3_000_000)
+            pid_bitrate_step(9_999_999, 10_000_000, 1_000_000, 500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0)
+                .0,
+            10_000_000
         );
         assert_eq!(
-            ceiling_step(6_000_000, TOP, FLOOR, 0.5, true, 0),
-            CeilingAction::Hold
+            pid_bitrate_step(
+                1_000_001, 10_000_000, 1_000_000, -500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0
+            )
+            .0,
+            1_000_000
         );
     }
 
-    /// There is no climb, deliberately: two climbing versions failed their
-    /// measurement by oscillating, because "congestion cleared" cannot be told
-    /// apart from "the AIMD drained the pipe". The ceiling resets per connection.
     #[test]
-    fn a_clear_link_never_raises_the_ceiling() {
-        for holds in [0, 1, 5, 100, 100_000] {
-            assert_eq!(
-                ceiling_step(4_800_000, TOP, FLOOR, 0.2, false, holds),
-                CeilingAction::Hold,
-                "holds={holds}: the ceiling must not climb within a session"
-            );
-        }
+    fn pid_integral_is_bounded_and_fps_is_clamped() {
+        assert_eq!(pid_integral_step(1999.0, 500.0, 1.0, 2000.0), 2000.0);
+        assert_eq!(pid_integral_step(-1999.0, -500.0, 1.0, 2000.0), -2000.0);
+        assert_eq!(clamp_pid_fps(2.0, 10, 60), 10);
+        assert_eq!(clamp_pid_fps(90.0, 10, 60), 60);
+        assert!(pid_delta(1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0).is_finite());
     }
 
     #[test]
-    fn the_ceiling_never_leaves_its_bounds() {
-        // Already at its own floor: nowhere left to go.
-        assert_eq!(
-            ceiling_step(CEIL_FLOOR, TOP, FLOOR, 0.2, true, 9),
-            CeilingAction::Hold
+    fn pid_bitrate_moves_bidirectionally_and_clamps_bounds() {
+        let (down, _, _) = pid_bitrate_step(
+            5_000_000,
+            10_000_000,
+            1_000_000,
+            -20.0,
+            0.2,
+            0.000_002,
+            0.000_000_2,
+            0.0,
+            0.0,
+            0.0,
         );
-        // A decrease that would cross the floor clamps instead of wrapping.
-        assert_eq!(
-            ceiling_step(3_400_000, TOP, FLOOR, 0.9, true, 3),
-            CeilingAction::Lower(CEIL_FLOOR)
+        let (up, _, _) = pid_bitrate_step(
+            5_000_000,
+            10_000_000,
+            1_000_000,
+            20.0,
+            0.2,
+            0.000_002,
+            0.000_000_2,
+            0.0,
+            0.0,
+            0.0,
         );
-        // A zero-valued field clamps to the floor and stops there — never a zero
-        // bitrate, which would stop the stream entirely.
+        assert!(down < 5_000_000);
+        assert!(up > 5_000_000);
         assert_eq!(
-            ceiling_step(0, TOP, FLOOR, 0.2, true, 3),
-            CeilingAction::Hold
+            pid_bitrate_step(9_999_999, 10_000_000, 1_000_000, 500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0)
+                .0,
+            10_000_000
         );
-        // A current ABOVE the operator maximum (a mis-seeded field) is pulled to
-        // the maximum FIRST and only then stepped, so the result can never exceed
-        // `--bitrate` — clamping before the arithmetic, not after.
         assert_eq!(
-            ceiling_step(9_000_000, TOP, FLOOR, 0.2, true, 3),
-            CeilingAction::Lower(4_800_000)
-        );
-        // When the adaptive floor exceeds half the maximum (a small --bitrate),
-        // the encoder floor is the harder bound: a walk-down from 1000 must end
-        // at 800, not at 500.
-        let mut small = 1_000u32;
-        for _ in 0..50 {
-            if let CeilingAction::Lower(n) = ceiling_step(small, 1_000, 800, 0.2, true, 3) {
-                small = n;
-            }
-        }
-        assert_eq!(small, 800, "the encoder floor wins over half --bitrate");
-    }
-
-    /// Sustained congestion walks the bound down and stops at HALF the operator
-    /// maximum: the measured fix (no oscillation) without the second measured
-    /// failure (parking at the encoder floor and throwing away detail).
-    #[test]
-    fn a_walk_down_ends_at_half_the_operator_maximum() {
-        let mut eff = TOP;
-        let mut steps = 0;
-        for _ in 0..200 {
-            match ceiling_step(eff, TOP, FLOOR, 0.5, true, 1) {
-                CeilingAction::Hold => {}
-                CeilingAction::Lower(n) => {
-                    assert!(n < eff, "sustained congestion must only go down");
-                    assert!(n >= CEIL_FLOOR, "and never below half --bitrate");
-                    eff = n;
-                    steps += 1;
-                }
-            }
-        }
-        assert_eq!(eff, CEIL_FLOOR, "settles exactly on half --bitrate");
-        assert_eq!(
-            steps, 1,
-            "responsive default 50% decrease reaches floor in one step"
+            pid_bitrate_step(
+                1_000_001, 10_000_000, 1_000_000, -500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0
+            )
+            .0,
+            1_000_000
         );
     }
 
-    /// The alternating shape of the measured hunt must never move the bound,
-    /// modelled with the real counter semantics (a clear signal resets the
-    /// congestion run, exactly as the controller does).
     #[test]
-    fn alternating_signals_do_not_chase() {
-        let mut eff = TOP;
-        let mut cong = 0u32;
-        for i in 0..400 {
-            let congested = i % 2 == 0;
-            if congested {
-                cong += 1;
-            } else {
-                cong = 0;
-            }
-            if let CeilingAction::Lower(n) = ceiling_step(eff, TOP, FLOOR, 0.5, congested, cong) {
-                eff = n;
-            }
-        }
-        assert!((CEIL_FLOOR..=TOP).contains(&eff));
-        assert_eq!(eff % 1_000_000, 0, "converges in half-ceiling steps");
+    fn pid_integral_and_fps_are_clamped() {
+        assert_eq!(pid_integral_step(1999.0, 500.0, 1.0, 2000.0), 2000.0);
+        assert_eq!(pid_integral_step(-1999.0, -500.0, 1.0, 2000.0), -2000.0);
+        assert_eq!(clamp_pid_fps(2.0, 10, 60), 10);
+        assert_eq!(clamp_pid_fps(90.0, 10, 60), 60);
     }
 }
 
@@ -4158,65 +4057,6 @@ mod tests {
         // (12) — TCP's send buffer adds baseline depth, so it needs a higher mark.
         assert!(congested_hysteresis(10.0, 8.0, 4.0, false, true, false)); // UDP
         assert!(!congested_hysteresis(10.0, 12.0, 6.0, false, true, false)); // TCP
-    }
-
-    // rate_action(ewma_lag, high, retransmit_lossy, acks_usable, congested)
-    #[test]
-    fn rate_action_decreases_above_high_or_on_retransmit() {
-        assert_eq!(
-            rate_action(13.0, 12.0, false, true, true),
-            RateAction::Decrease
-        ); // lag>high
-        assert_eq!(
-            rate_action(0.0, 12.0, true, true, true),
-            RateAction::Decrease
-        ); // loss>tolerance
-        assert_eq!(
-            rate_action(0.0, 12.0, true, false, false),
-            RateAction::Decrease
-        ); // loss>tolerance, acks unusable
-    }
-
-    #[test]
-    fn rate_action_holds_in_band_while_congested() {
-        // Latched congested but the smoothed lag has decayed below high (decaying through
-        // the band) → hold, don't keep cratering. This is the "single spike" fix.
-        assert_eq!(rate_action(9.0, 12.0, false, true, true), RateAction::Hold);
-    }
-
-    #[test]
-    fn rate_action_increases_when_cleared() {
-        // Not congested (cleared below low) → climb back toward the ceiling.
-        assert_eq!(
-            rate_action(2.0, 12.0, false, true, false),
-            RateAction::Increase
-        );
-        // Acks unusable (warmup/suspend) with no retransmit → not congested → increase
-        // (target is already at ceiling at connect, so this is a clamp-no-op there).
-        assert_eq!(
-            rate_action(99.0, 12.0, false, false, false),
-            RateAction::Increase
-        );
-    }
-
-    #[test]
-    fn rate_action_climbs_under_tolerated_wireless_loss() {
-        // The WiFi-ratchet fix end-to-end: low background loss (delta=1) is below the
-        // default tolerance → retransmit_lossy=false → with a low smoothed lag the
-        // controller still INCREASES instead of being pinned in decrease.
-        let lossy = retransmit_is_lossy(1, 2);
-        assert!(!lossy);
-        assert_eq!(
-            rate_action(1.0, 8.0, lossy, true, false),
-            RateAction::Increase
-        );
-        // But sustained loss (delta=5) crosses the tolerance → back off.
-        let lossy = retransmit_is_lossy(5, 2);
-        assert!(lossy);
-        assert_eq!(
-            rate_action(1.0, 8.0, lossy, true, true),
-            RateAction::Decrease
-        );
     }
 
     // ---- Blank-presentation detector (reconnect-blank resize dance) ----
@@ -5193,22 +5033,10 @@ mod tests {
     }
 
     #[test]
-    fn a_clear_sample_does_not_restore_fps_before_the_five_minute_gate() {
-        assert_eq!(
-            select_fps_stage(60, false, false, AdaptiveFpsStage::Congested30),
-            AdaptiveFpsStage::Congested30
-        );
-        // There is no separate emergency FPS stage at the bitrate floor.
-        // The bitrate ceiling is the sole next lever; this prevents two FPS
-        // controllers from fighting over one cadence timer.
-        assert_eq!(
-            select_fps_stage(60, true, true, AdaptiveFpsStage::Congested30),
-            AdaptiveFpsStage::Congested30
-        );
-        assert_eq!(
-            select_fps_stage(60, true, false, AdaptiveFpsStage::Congested30),
-            AdaptiveFpsStage::Congested30
-        );
+    fn pid_bounded_fps_respects_minimum_and_operator_maximum() {
+        assert_eq!(clamp_pid_fps(4.0, 10, 60), 10);
+        assert_eq!(clamp_pid_fps(31.0, 10, 60), 31);
+        assert_eq!(clamp_pid_fps(75.0, 10, 60), 60);
     }
 
     #[test]
