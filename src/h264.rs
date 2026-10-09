@@ -962,6 +962,47 @@ fn blank_params_scaled(p: &BlankRecoveryParams, mult: f64) -> BlankRecoveryParam
 /// recover full quality within seconds) or backs off if it strains. Fast /
 /// unknown links start at the ceiling exactly as before. `seed_rtt_ms == 0`
 /// disables seeding. Pure, unit-tested.
+#[cfg(test)]
+fn dual_pid_simulation_step(
+    fps: &mut f64,
+    bitrate_mbps: &mut f64,
+    queue_ms: &mut f64,
+    capacity_mbps: f64,
+    fps_integral: &mut f64,
+    bitrate_integral: &mut f64,
+) {
+    const DT: f64 = 0.2;
+    const TARGET_MS: f64 = 50.0;
+    const FPS_KP: f64 = 0.5;
+    const FPS_KI: f64 = 0.02;
+    const BR_KP: f64 = 0.001;
+    const BR_KI: f64 = 0.00005;
+    const TARGET_DEADBAND_MS: f64 = 40.0;
+    const BITRATE_FLOOR_MBPS: f64 = 1.25;
+    const BITRATE_CEILING_MBPS: f64 = 10.0;
+    // Deterministic toy plant: excess offered Mbps builds queue; spare capacity drains it.
+    let offered = *bitrate_mbps * (*fps / 60.0);
+    *queue_ms = (*queue_ms + (offered - capacity_mbps) * 2.0).clamp(0.0, 2000.0);
+    let error = TARGET_MS - *queue_ms;
+    if error < -TARGET_DEADBAND_MS && *fps > 30.0 {
+        *fps_integral = (*fps_integral + error * DT).clamp(-2000.0, 2000.0);
+        *fps = (*fps + (FPS_KP * error + FPS_KI * *fps_integral) * DT).clamp(30.0, 60.0);
+    } else if error < 0.0 && *fps <= 30.0 {
+        *bitrate_integral = (*bitrate_integral + error * DT).clamp(-2000.0, 2000.0);
+        *bitrate_mbps = (*bitrate_mbps + (BR_KP * error + BR_KI * *bitrate_integral) * DT)
+            .clamp(BITRATE_FLOOR_MBPS, BITRATE_CEILING_MBPS);
+    } else if error > TARGET_DEADBAND_MS {
+        *fps_integral = (*fps_integral + error * DT).clamp(-2000.0, 2000.0);
+        *bitrate_integral = (*bitrate_integral + error * DT).clamp(-2000.0, 2000.0);
+        *fps = (*fps + (FPS_KP * error + FPS_KI * *fps_integral) * DT).clamp(30.0, 60.0);
+        *bitrate_mbps = (*bitrate_mbps + (BR_KP * error + BR_KI * *bitrate_integral) * DT)
+            .clamp(BITRATE_FLOOR_MBPS, BITRATE_CEILING_MBPS);
+    } else {
+        *fps_integral *= 0.98;
+        *bitrate_integral *= 0.98;
+    }
+}
+
 fn seeded_initial_bitrate(ceiling: u32, floor: u32, link_rtt_ms: u32, seed_rtt_ms: u32) -> u32 {
     if seed_rtt_ms == 0 || link_rtt_ms == 0 || link_rtt_ms < seed_rtt_ms {
         return ceiling;
@@ -1119,6 +1160,7 @@ fn bitrate_pid_should_hold(
         || (error_ms < 0.0 && error_ms > -queue_high_ms.max(0.0))
 }
 
+#[cfg(test)]
 fn bitrate_pid_policy_allows_downscale(
     queue_error_ms: f64,
     current_fps: f64,
@@ -2393,33 +2435,10 @@ impl Gfx {
             error_ms = error_ms.min(-self.adaptive_queue_high_ms.max(50.0));
         }
         let min_bps = self.adaptive_floor_bps.max(1);
-        let bitrate_error_ms = if error_ms < 0.0 && ctx.adaptive_pid_fps > 30.0 {
-            0.0
-        } else {
-            error_ms
-        };
-        let bitrate_pid_can_run = if error_ms >= 0.0 {
-            true
-        } else if signal_usable {
-            bitrate_pid_policy_allows_downscale(
-                error_ms,
-                ctx.adaptive_pid_fps,
-                self.adaptive_pid_min_fps,
-                self.adaptive_queue_high_ms,
-            )
-        } else {
-            false
-        };
-        let bitrate_pid_kp = if ctx.adaptive_pid_fps <= 30.0 {
-            self.adaptive_pid_kp * 2.0
-        } else {
-            self.adaptive_pid_kp
-        };
-        let bitrate_pid_ki = if ctx.adaptive_pid_fps <= 30.0 {
-            self.adaptive_pid_ki * 2.0
-        } else {
-            self.adaptive_pid_ki
-        };
+        let bitrate_error_ms = error_ms;
+        let bitrate_pid_can_run = true;
+        let bitrate_pid_kp = self.adaptive_pid_kp;
+        let bitrate_pid_ki = self.adaptive_pid_ki;
         let fps_error_ms = if error_ms < 0.0 && ctx.adaptive_pid_fps > 30.0 {
             error_ms.min(-self.adaptive_queue_high_ms)
         } else if error_ms < 0.0 && ctx.adaptive_pid_fps <= 30.0 {
@@ -4273,6 +4292,85 @@ mod tests {
             false, // acked_since_attempt — irrelevant unless the post-attempt deadline is under test
             &s
         ));
+    }
+
+    #[test]
+    fn dual_pid_simulated_overload_sheds_fps_before_bitrate_and_recovers() {
+        let (mut fps, mut bitrate, mut queue) = (60.0, 10.0, 50.0);
+        let (mut fps_i, mut bitrate_i) = (0.0, 0.0);
+        let (mut first_fps_cut, mut first_bitrate_cut) = (None, None);
+        for tick in 0..300 {
+            let old_fps = fps;
+            let old_bitrate = bitrate;
+            dual_pid_simulation_step(
+                &mut fps,
+                &mut bitrate,
+                &mut queue,
+                6.0,
+                &mut fps_i,
+                &mut bitrate_i,
+            );
+            if first_fps_cut.is_none() && fps < old_fps {
+                first_fps_cut = Some(tick);
+            }
+            if first_bitrate_cut.is_none() && bitrate < old_bitrate {
+                first_bitrate_cut = Some(tick);
+            }
+            assert!((30.0..=60.0).contains(&fps));
+            assert!((1.25..=10.0).contains(&bitrate));
+            if fps > 30.0 && bitrate < old_bitrate {
+                panic!("bitrate cut before fps reached priority floor at tick={tick}, fps={fps}");
+            }
+        }
+        assert!(first_fps_cut.is_some());
+        assert!(first_bitrate_cut.is_some());
+        assert!(first_fps_cut.unwrap() < first_bitrate_cut.unwrap());
+        for _ in 0..300 {
+            dual_pid_simulation_step(
+                &mut fps,
+                &mut bitrate,
+                &mut queue,
+                12.0,
+                &mut fps_i,
+                &mut bitrate_i,
+            );
+            assert!((30.0..=60.0).contains(&fps));
+            assert!((1.25..=10.0).contains(&bitrate));
+        }
+        assert!(fps > 30.0, "capacity recovery raises FPS");
+        assert!(bitrate > 1.25, "capacity recovery raises bitrate");
+    }
+
+    #[test]
+    fn dual_pid_simulation_near_target_has_no_unbounded_windup() {
+        let (mut fps, mut bitrate): (f64, f64) = (60.0, 8.0);
+        let mut queue: f64;
+        let (mut fps_i, mut bitrate_i) = (0.0, 0.0);
+        let mut fps_min = fps;
+        let mut fps_max = fps;
+        let mut bitrate_min = bitrate;
+        let mut bitrate_max = bitrate;
+        for tick in 0..3000 {
+            let noise: f64 = if tick % 2 == 0 { -2.0 } else { 2.0 };
+            queue = (50.0_f64 + noise).clamp(0.0, 2000.0);
+            dual_pid_simulation_step(
+                &mut fps,
+                &mut bitrate,
+                &mut queue,
+                8.0,
+                &mut fps_i,
+                &mut bitrate_i,
+            );
+            fps_min = fps_min.min(fps);
+            fps_max = fps_max.max(fps);
+            bitrate_min = bitrate_min.min(bitrate);
+            bitrate_max = bitrate_max.max(bitrate);
+        }
+        assert!(fps_max - fps_min <= 4.0, "FPS chatters around setpoint");
+        assert!(
+            bitrate_max - bitrate_min <= 0.1,
+            "bitrate chatters around setpoint"
+        );
     }
 
     #[test]
