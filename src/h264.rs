@@ -1109,6 +1109,16 @@ fn pid_delta(
     kp * error_ms + ki * integral + kd * derivative
 }
 
+fn bitrate_pid_should_hold(
+    error_ms: f64,
+    current_fps: f64,
+    fps_min: u32,
+    queue_high_ms: f64,
+) -> bool {
+    fps_pid_has_priority(error_ms, current_fps, fps_min)
+        || (error_ms < 0.0 && error_ms > -queue_high_ms.max(0.0))
+}
+
 fn fps_pid_has_priority(queue_error_ms: f64, current_fps: f64, priority_floor_fps: u32) -> bool {
     queue_error_ms < 0.0 && current_fps > f64::from(priority_floor_fps)
 }
@@ -2405,7 +2415,12 @@ impl Gfx {
                 ctx.adaptive_pid_integral,
                 ctx.adaptive_pid_previous_error,
             )
-        } else if fps_sheds_first {
+        } else if bitrate_pid_should_hold(
+            error_ms,
+            ctx.adaptive_pid_fps,
+            self.adaptive_pid_min_fps,
+            self.adaptive_queue_high_ms,
+        ) {
             (ctx.adaptive_target_bps, 0.0, 0.0)
         } else {
             (
@@ -3557,7 +3572,8 @@ fn avcc_to_annex_b(avcc: &[u8], parameter_sets: &[Vec<u8>], is_keyframe: bool) -
 #[cfg(test)]
 mod ceiling_tests {
     use super::{
-        clamp_pid_fps, fps_pid_has_priority, pid_bitrate_step, pid_delta, pid_integral_step,
+        bitrate_pid_should_hold, clamp_pid_fps, fps_pid_has_priority, pid_bitrate_step, pid_delta,
+        pid_integral_step,
     };
 
     #[test]
@@ -3661,6 +3677,9 @@ mod ceiling_tests {
         assert!(fps_pid_has_priority(-50.0, 31.0, 30));
         assert!(!fps_pid_has_priority(-50.0, 30.0, 30));
         assert!(!fps_pid_has_priority(25.0, 60.0, 30));
+        assert!(bitrate_pid_should_hold(-20.0, 30.0, 30, 100.0));
+        assert!(!bitrate_pid_should_hold(-110.0, 30.0, 30, 100.0));
+        assert!(bitrate_pid_should_hold(-200.0, 60.0, 30, 100.0));
     }
 
     #[test]
