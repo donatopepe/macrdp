@@ -18,6 +18,12 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.34 — input to outbound video/audio latency telemetry
+
+Four event-correlated server-side distributions: RDP keyboard dispatch→outbound video write, mouse→video, keyboard→audio RDPSND write, mouse→audio. Origin fixed once at IronRDP input dispatch, not overwritten at macOS post; output ends on successful server socket write. Each reports correlation count, last/max/p50/p95 ms. This is not remote display or playback acknowledgement. Payload/key/text/coordinates are not logged; existing config.env unchanged.
+
+235 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security; arm64 build and asset SHA verified.
+
 ## v0.9.27 — key-event-triggered fresh IDR for visible echo
 
 The user distinguishes prompt key delivery from delayed video return: multiple keystrokes become visible several seconds later. v0.9.26 shortened periodic keyframes, but the user still reports no improvement. This release adds direct, content-free input-to-video feedback: after actual CoreGraphics keyboard posts, coalesce the typing burst (default 200 ms) and force an IDR on the freshest captured frame; if ScreenCaptureKit has gone idle, re-encode the last captured pixels as IDR. A real key CGEvent, not the RDP Sync/modifier callbacks, is what triggers it. Caps: no more than 2 keyboard IDRs per second, 500 ms minimum spacing, quiet 50 ms; no per-key IDR. Normal FPS, bitrate, and congestion controller stay unchanged. Existing config.env is untouched.
