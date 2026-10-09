@@ -1,5 +1,11 @@
 # Release history
 
+## v0.9.38 — no-ACK safety cannot bypass FPS priority
+
+Fixes priority interaction: under an extreme ACK stall, the preexisting distress fallback used to invoke bitrate decrease even while the FPS PID was already lowering cadence above 30. While FPS >30 and queue pressure is negative, the bitrate PID is now frozen including integral state and derivative baseline; the FPS actuator owns load shedding to the hard 30 FPS floor. Bitrate PID then may reduce toward its configured adaptive floor. Recovery can raise both normally. Distress signal still operates after reaching 30. Existing config untouched.
+
+230 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security and arm64 build green. Sustained congestion visible validation still pending.
+
 ## v0.9.37 — hard FPS floor 30 for FPS-first priority
 
 Clamps `MACRDP_ADAPTIVE_MIN_FPS` to >=30: a stale lower setting can no longer violate explicit FPS-first policy. Queue target is 50 ms; negative queue error reduces FPS toward 30 before bitrate PID is allowed to decrease. After reaching 30, bitrate decreases within adaptive floor..BITRATE. Clear queue reverses both. Existing config.env remains untouched.
