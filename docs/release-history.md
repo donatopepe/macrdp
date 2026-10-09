@@ -1,5 +1,11 @@
 # Release history
 
+## v0.9.48 — require material congestion before bitrate cuts
+
+Bitrate PID decreases only after FPS has reached 30 and queue error reaches material high-water (`MACRDP_ADAPTIVE_QUEUE_HIGH_MS`, default 100ms). Retransmit / no-ACK distress cannot cut bitrate early; it may continue reducing FPS first. In the 50–100ms dead zone, freeze bitrate target and PID history to avoid bitrate dither and delayed integral plunge. Positive queue error can recover bitrate; FPS uses 5ms target deadband against observed 59↔60 quantization cycle. Existing config untouched.
+
+231 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security, arm64 artifact and SHA verified. Needs install/restart and genuine congested-link validation.
+
 ## v0.9.46 — FPS-PID deadband prevents 59/60 chatter
 
 The live PID trace showed repeated 59↔60 FPS transitions while standing queue hovered around its 50ms target. Fixed integer capture FPS was toggling from sub-FPS PID increments on alternating control intervals. Add default 5ms FPS-only deadband (`MACRDP_ADAPTIVE_FPS_PID_DEADBAND_MS`): freeze output and FPS integral/derivative history while error is inside the band. Outside it, FPS recovers/sheds bidirectionally; it remains the first congestion actuator down to 30 FPS. Bitrate PID only cuts once queue error crosses the 100ms material congestion threshold and FPS is already at 30; both rise as queue clears. Separate controller gains retained. Existing config unchanged.

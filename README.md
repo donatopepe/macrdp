@@ -40,7 +40,7 @@ upstream ownership or upstream license terms.
 
 ## Status and operational contract
 
-This distribution targets one trusted interactive session on a Mac. It is intended for a LAN or a private VPN, not for public exposure, multi-user hosting, or enterprise workloads. The latest release is [v0.9.46](https://github.com/donatopepe/macrdp/releases/tag/v0.9.46) (upstream [clintcan/macrdp](https://github.com/clintcan/macrdp/releases) is at v0.9.7); local changes and live verification notes are tracked in the [release history](docs/release-history.md).
+This distribution targets one trusted interactive session on a Mac. It is intended for a LAN or a private VPN, not for public exposure, multi-user hosting, or enterprise workloads. The latest release is [v0.9.48](https://github.com/donatopepe/macrdp/releases/tag/v0.9.48) (upstream [clintcan/macrdp](https://github.com/clintcan/macrdp/releases) is at v0.9.7); local changes and live verification notes are tracked in the [release history](docs/release-history.md).
 
 **Verified workflow:** TLS/NLA (CredSSP) against the Mac account, per-IP authentication throttling and audit logging, display/input including non-US layouts, bidirectional clipboard and file copy, system audio, optional drive and smart-card redirection, headless virtual displays, and optional hardware H.264/EGFX. The project also ships signed-app/LaunchAgent packaging and a health-check watchdog.
 
@@ -61,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/donatopepe/macrdp/main/packaging/in
 Install an exact release:
 
 ```bash
-MACRDP_VERSION=v0.9.46 curl -fsSL https://raw.githubusercontent.com/donatopepe/macrdp/main/packaging/install-remote.sh | bash
+MACRDP_VERSION=v0.9.48 curl -fsSL https://raw.githubusercontent.com/donatopepe/macrdp/main/packaging/install-remote.sh | bash
 ```
 
 The installer downloads a release `.tar.gz`, verifies its published SHA-256
