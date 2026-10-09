@@ -2369,6 +2369,9 @@ impl Gfx {
         } else {
             error_ms
         };
+        let bitrate_pid_can_run = error_ms >= 0.0
+            || (!fps_sheds_first && ctx.adaptive_pid_fps <= self.adaptive_pid_min_fps as f64);
+        let bitrate_error_is_material = error_ms <= -self.adaptive_queue_high_ms;
         let bitrate_pid_kp = if ctx.adaptive_pid_fps <= 30.0 {
             self.adaptive_pid_kp * 2.0
         } else {
@@ -2386,7 +2389,10 @@ impl Gfx {
         } else {
             error_ms
         };
-        let (new_target, next_integral, next_error) = if signal_usable && !fps_sheds_first {
+        let (new_target, next_integral, next_error) = if signal_usable
+            && bitrate_pid_can_run
+            && (error_ms >= 0.0 || bitrate_error_is_material)
+        {
             pid_bitrate_step(
                 ctx.adaptive_target_bps,
                 ceiling,
