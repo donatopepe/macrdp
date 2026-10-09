@@ -74,8 +74,7 @@ impl RdpServerInputHandler for MacInputHandler {
             // actually posted to CoreGraphics. Sync/modifier-only callbacks do
             // not count as typed keys. Never retain callback payload.
             crate::stats::record_keyboard_received();
-            let diagnostic = crate::stats::diagnostics().cloned();
-            if let Some(diag) = &diagnostic {
+            if let Some(diag) = crate::stats::diagnostics() {
                 diag.mark_keyboard_received();
             }
             self.inner.keyboard(event);
@@ -100,8 +99,7 @@ impl RdpServerInputHandler for MacInputHandler {
         {
             let (width, height) = self.desktop_size.get();
             let letterbox = self.desktop_size.letterbox();
-            let diagnostic = crate::stats::diagnostics().cloned();
-            if let Some(diag) = &diagnostic {
+            if let Some(diag) = crate::stats::diagnostics() {
                 diag.mark_mouse_received();
             }
             let started = std::time::Instant::now();

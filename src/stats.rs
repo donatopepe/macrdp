@@ -693,6 +693,92 @@ fn publish_window(
     max.store(c, Ordering::Relaxed);
 }
 
+pub fn publish_output_boundary_samples(diag: &ironrdp_server::DiagnosticsHandle) {
+    let Some(stats) = global() else { return };
+    for (count, window, last, max, diag_count, diag_window, diag_last, diag_max) in [
+        (
+            &stats.input_keyboard_video_count,
+            &stats.input_to_video_keyboard_window,
+            &stats.input_keyboard_video_latency_last_ms,
+            &stats.input_keyboard_video_latency_max_ms,
+            &diag.input_keyboard_video_count,
+            &diag.input_keyboard_video_latency,
+            &diag.input_keyboard_video_last_ms,
+            &diag.input_keyboard_video_max_ms,
+        ),
+        (
+            &stats.input_mouse_video_count,
+            &stats.input_to_video_mouse_window,
+            &stats.input_mouse_video_latency_last_ms,
+            &stats.input_mouse_video_latency_max_ms,
+            &diag.input_mouse_video_count,
+            &diag.input_mouse_video_latency,
+            &diag.input_mouse_video_last_ms,
+            &diag.input_mouse_video_max_ms,
+        ),
+        (
+            &stats.input_keyboard_audio_count,
+            &stats.input_to_audio_keyboard_window,
+            &stats.input_keyboard_audio_latency_last_ms,
+            &stats.input_keyboard_audio_latency_max_ms,
+            &diag.input_keyboard_audio_count,
+            &diag.input_keyboard_audio_latency,
+            &diag.input_keyboard_audio_last_ms,
+            &diag.input_keyboard_audio_max_ms,
+        ),
+        (
+            &stats.input_mouse_audio_count,
+            &stats.input_to_audio_mouse_window,
+            &stats.input_mouse_audio_latency_last_ms,
+            &stats.input_mouse_audio_latency_max_ms,
+            &diag.input_mouse_audio_count,
+            &diag.input_mouse_audio_latency,
+            &diag.input_mouse_audio_last_ms,
+            &diag.input_mouse_audio_max_ms,
+        ),
+    ] {
+        count.store(diag_count.load(Ordering::Relaxed), Ordering::Relaxed);
+        let (p50, p95, _) = diag_window.percentiles();
+        window.record(p50);
+        last.store(diag_last.load(Ordering::Relaxed), Ordering::Relaxed);
+        max.store(diag_max.load(Ordering::Relaxed), Ordering::Relaxed);
+        match count {
+            c if std::ptr::eq(c, &stats.input_keyboard_video_count) => {
+                stats
+                    .input_keyboard_video_latency_p50_ms
+                    .store(p50, Ordering::Relaxed);
+                stats
+                    .input_keyboard_video_latency_p95_ms
+                    .store(p95, Ordering::Relaxed);
+            }
+            c if std::ptr::eq(c, &stats.input_mouse_video_count) => {
+                stats
+                    .input_mouse_video_latency_p50_ms
+                    .store(p50, Ordering::Relaxed);
+                stats
+                    .input_mouse_video_latency_p95_ms
+                    .store(p95, Ordering::Relaxed);
+            }
+            c if std::ptr::eq(c, &stats.input_keyboard_audio_count) => {
+                stats
+                    .input_keyboard_audio_latency_p50_ms
+                    .store(p50, Ordering::Relaxed);
+                stats
+                    .input_keyboard_audio_latency_p95_ms
+                    .store(p95, Ordering::Relaxed);
+            }
+            _ => {
+                stats
+                    .input_mouse_audio_latency_p50_ms
+                    .store(p50, Ordering::Relaxed);
+                stats
+                    .input_mouse_audio_latency_p95_ms
+                    .store(p95, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
 pub fn publish_latency_windows() {
     let Some(diag) = diagnostics() else { return };
     let Some(stats) = global() else { return };
@@ -820,11 +906,15 @@ pub fn spawn_cpu_sampler() {
         return;
     };
     tokio::spawn(async move {
+        let diagnostics = diagnostics().cloned();
         let mut previous = process_cpu_snapshot();
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
         ticker.tick().await;
         loop {
             ticker.tick().await;
+            if let Some(diag) = &diagnostics {
+                publish_output_boundary_samples(diag);
+            }
             publish_latency_windows();
             let current = process_cpu_snapshot();
             let wall_ns = current.wall_ns.saturating_sub(previous.wall_ns);
