@@ -1109,6 +1109,10 @@ fn pid_delta(
     kp * error_ms + ki * integral + kd * derivative
 }
 
+fn fps_pid_has_priority(queue_error_ms: f64, current_fps: f64, priority_floor_fps: u32) -> bool {
+    queue_error_ms < 0.0 && current_fps > f64::from(priority_floor_fps)
+}
+
 fn clamp_pid_fps(value: f64, min_fps: u32, max_fps: u32) -> u32 {
     value.round().clamp(
         f64::from(min_fps.max(1)),
@@ -2358,6 +2362,8 @@ impl Gfx {
             error_ms = error_ms.min(-self.adaptive_queue_high_ms.max(50.0));
         }
         let min_bps = self.adaptive_floor_bps.max(1);
+        let fps_sheds_first =
+            fps_pid_has_priority(error_ms, ctx.adaptive_pid_fps, self.adaptive_pid_min_fps);
         let bitrate_error_ms = if error_ms < 0.0 && ctx.adaptive_pid_fps > 30.0 {
             0.0
         } else {
@@ -2380,7 +2386,7 @@ impl Gfx {
         } else {
             error_ms
         };
-        let (new_target, next_integral, next_error) = if signal_usable {
+        let (new_target, next_integral, next_error) = if signal_usable && !fps_sheds_first {
             pid_bitrate_step(
                 ctx.adaptive_target_bps,
                 ceiling,
@@ -2393,6 +2399,8 @@ impl Gfx {
                 ctx.adaptive_pid_integral,
                 ctx.adaptive_pid_previous_error,
             )
+        } else if fps_sheds_first {
+            (ctx.adaptive_target_bps, 0.0, 0.0)
         } else {
             (
                 ctx.adaptive_target_bps,
@@ -3542,7 +3550,9 @@ fn avcc_to_annex_b(avcc: &[u8], parameter_sets: &[Vec<u8>], is_keyframe: bool) -
 
 #[cfg(test)]
 mod ceiling_tests {
-    use super::{clamp_pid_fps, pid_bitrate_step, pid_delta, pid_integral_step};
+    use super::{
+        clamp_pid_fps, fps_pid_has_priority, pid_bitrate_step, pid_delta, pid_integral_step,
+    };
 
     #[test]
     fn pid_bitrate_moves_both_directions_and_respects_limits() {
@@ -3635,6 +3645,16 @@ mod ceiling_tests {
             .0,
             1_000_000
         );
+    }
+
+    #[test]
+    fn fps_priority_gates_bitrate_until_floor() {
+        // Queue pressure, retransmit pressure, and no-ACK distress all reach the
+        // same negative queue-error gate: FPS sheds until hard 30 FPS floor.
+        assert!(fps_pid_has_priority(-50.0, 60.0, 30));
+        assert!(fps_pid_has_priority(-50.0, 31.0, 30));
+        assert!(!fps_pid_has_priority(-50.0, 30.0, 30));
+        assert!(!fps_pid_has_priority(25.0, 60.0, 30));
     }
 
     #[test]
