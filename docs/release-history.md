@@ -1,5 +1,11 @@
 # Release history
 
+## v0.9.44 — queue-band bitrate hold eliminates PID dither
+
+After FPS reaches hard 30 priority floor, bitrate PID no longer reacts to minor negative errors between target queue 50 ms and congestion high-water 100 ms. This hold avoids repeated 1 kbps down/up corrections and accumulating bitrate integral that could trigger delayed rate plunge. Only sustained congestion crossing `MACRDP_ADAPTIVE_QUEUE_HIGH_MS` (default 100 ms) allows bitrate decrease; clear queue permits bitrate recovery. FPS PID still sheds first and climbs when queue error becomes positive. No config.env changes.
+
+231 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security, arm64 build + SHA verified. Needs installation/restart; live congested-path test still pending.
+
 ## v0.9.41 — FPS-first priority enforced at bitrate actuator
 
 Queue-pressure policy now gates bitrate PID itself: while queue error is negative and FPS >30, bitrate target and bitrate PID integral/derivative state stay fixed; only FPS PID sheds load. At 30 FPS, bitrate PID activates and can fall toward adaptive floor. Applies uniformly to ACK queue pressure, retransmits and no-ACK fallback; none can bypass priority gate. Clear queue allows both outputs to recover. Adds explicit policy tests around >30/at-floor/clear cases.
