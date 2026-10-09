@@ -155,13 +155,16 @@ Useful CLI flags (see `src/main.rs::Args` for the full set):
                           #   Reuses the Ctrl+Alt+G gather machinery. Config:
                           #   RESTORE_WINDOWS_ON_DISCONNECT. macOS-only.
 --enable-h264             # stream H.264 over EGFX (AVC420) instead of legacy bitmaps
---bitrate N               # H.264 bitrate CEILING in Mbps (default 10; only with
-                          #   --enable-h264). Operator maximum, not target; config
-                          #   key BITRATE. With --adaptive-bitrate the effective
-                          #   ceiling steps down on congestion (max once/5s, floor
-                          #   half --bitrate) and climbs +50 kbit only after 5 clear
-                          #   minutes at the bound. FPS sheds load first, then
-                          #   ceiling; stats expose effective ceiling and FPS.
+--bitrate N               # H.264 bitrate maximum in Mbps (default 10; only with
+                          #   --enable-h264). Config key BITRATE. With adaptive
+                          #   control, queue target defaults to 50 ms. FPS PID
+                          #   sheds load first to 30; bitrate PID holds while FPS
+                          #   is above 30, then can back off to adaptive floor.
+                          #   Both rise again when queue clears. FPS is clamped to
+                          #   30..configured FPS; set ADAPTIVE_MIN_FPS to tune.
+                          #   Queue and gains: MACRDP_ADAPTIVE_QUEUE_TARGET_MS,
+                          #   MACRDP_ADAPTIVE_PID_KP/KI/KD and
+                          #   MACRDP_ADAPTIVE_FPS_PID_KP/KI/KD.
 --keyframe-interval SECS  # periodic IDR safety net (default 2; only with --enable-h264)
 --flush-frames N          # trailing skip-P-frames re-sent after each change to drain
                           #   mstsc's presentation buffer (default 4; 0 disables; --enable-h264)

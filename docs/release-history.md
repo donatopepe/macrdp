@@ -18,6 +18,12 @@ What each release delivered, newest first. (This is the narrative version —
 see the [GitHub releases](https://github.com/donatopepe/macrdp/releases) for
 tags, dates, and downloadable artifacts.)
 
+## v0.9.35 — prioritize FPS PID before bitrate PID
+
+The user requested bitrate and FPS PID autoregulation both directions, then explicitly prioritized reducing FPS to 30 before bitrate. The separate queue-driven PIDs now honor that order: above 30 FPS with positive queue error, bitrate PID output is held; FPS PID reduces cadence. At 30 FPS, bitrate PID may reduce bitrate toward adaptive floor. Recovery raises both under queue headroom. User-authorized defaults: 50 ms queue target, FPS floor 30, configured FPS cap, bitrate between adaptive floor and configured ceiling. Independently bounded/anti-windup PID gains. Existing config.env unchanged. Test build/release in current working version tested live; blank-recovery issue remains a distinct EGFX client presentation fault.
+
+235 Rust (3 ignored), 18 Swift; fmt/clippy and release workflow green; arm64 app SHA verified.
+
 ## v0.9.34 — input to outbound video/audio latency telemetry
 
 Four event-correlated server-side distributions: RDP keyboard dispatch→outbound video write, mouse→video, keyboard→audio RDPSND write, mouse→audio. Origin fixed once at IronRDP input dispatch, not overwritten at macOS post; output ends on successful server socket write. Each reports correlation count, last/max/p50/p95 ms. This is not remote display or playback acknowledgement. Payload/key/text/coordinates are not logged; existing config.env unchanged.
