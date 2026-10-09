@@ -1,5 +1,11 @@
 # Release history
 
+## v0.9.50 — direct bidirectional bitrate and FPS PIDs
+
+Simplifies queue controller to two direct PIDs on one standing-queue-delay signal (50ms setpoint): bitrate bounded to adaptive floor..operator BITRATE and capture FPS bounded to hard 30..configured max. Each PID runs both directions on each usable control interval with independent bounded integral, derivative, gains and anti-windup. Higher FPS PID gains make cadence shed first on pressure; bitrate remains independently PID-controlled. Removes FPS deadband and bitrate material-queue hold bands, whose stacked special cases produced extra state/gating around user-requested controllers. ACK/RTT/no-ACK queue estimator remains; no multiplicative-decrease override.
+
+User-requested 50ms target, FPS 30 floor and bidirectional upper bounds. Existing config.env unchanged. Deterministic controller simulations added; tests and CI green. Arm64 release asset SHA verified. Not yet locally installed; sustained visible-client validation still needed, especially to tune interacting loops without oscillation. Blank-presentation defect remains independent.
+
 ## v0.9.49 — retransmit cannot count as material bitrate congestion
 
 FPS-first policy now compares actual queue error at high-water before bitrate reduction. Retransmits and no-ACK distress can signal FPS shedding, but alone cannot authorize bitrate drop; bitrate may descend only after FPS reaches 30 and measured queue error crosses `MACRDP_ADAPTIVE_QUEUE_HIGH_MS` (default 100ms). Prevents a loss-only event from bypassing frame-rate-first policy. Queue target 50ms; deadband 5ms; both PIDs recover bidirectionally. Existing config untouched.
