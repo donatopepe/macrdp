@@ -1,5 +1,14 @@
 # Release history
 
+## v0.9.56 — correct PID polarity and stage both directions
+
+One signed error is now shared: standing queue delay minus the 50ms target. Positive means congestion; both PIDs reduce their output on it. Negative means headroom; both rise. `rate_pid_actuators` selects one at a time: reduce FPS to hard 30 before bitrate can decrease to adaptive floor; on recovery, raise bitrate to configured ceiling before FPS returns to configured maximum. Separate bounded/anti-windup PID state, with 5ms deadband. Simulator calls same policy helper and verifies both sequences, clamps and near-target stability.
+
+This corrects prior live-v0.9.50 mismatch: signed feedback was inverted in bitrate PID and FPS action, creating 60→50→40→30 then immediate rebound on a drained queue. Blank-reconnect remains independent: latest logs show repeat ~65.4s client TCP reset and EGFX reports “decoding but not presenting”; no blank-recovery code changed here. Existing config.env unchanged.
+
+233 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security and arm64 build pass. Release asset SHA verified. Latest app still requires install/restart before real test.
+
+
 ## v0.9.56 — align both PID actions and stage recovery
 
 Fixes live-observed opposing signs. One signed error is now measured standing queue minus 50 ms target: positive overload reduces outputs; negative headroom increases them. Under overload the FPS PID selects and sheds first to its 30 FPS floor; only then bitrate PID is selected down to its configured adaptive floor. During recovery the reverse sequence is staged: bitrate rises to the operator ceiling first, then FPS rises to the configured maximum. The selector is the single tested actuator policy shared by deterministic model and live controller; no retransmit AIMD bypass. Each PID keeps separate integral state, clamps and deadband. Near-target, bounded overload/recovery tests added.
