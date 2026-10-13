@@ -1,6 +1,6 @@
 # Release history
 
-## v0.9.56 — correct PID polarity and stage both directions
+## v0.9.57 — production stages both PIDs in both directions
 
 One signed error is now shared: standing queue delay minus the 50ms target. Positive means congestion; both PIDs reduce their output on it. Negative means headroom; both rise. `rate_pid_actuators` selects one at a time: reduce FPS to hard 30 before bitrate can decrease to adaptive floor; on recovery, raise bitrate to configured ceiling before FPS returns to configured maximum. Separate bounded/anti-windup PID state, with 5ms deadband. Simulator calls same policy helper and verifies both sequences, clamps and near-target stability.
 
@@ -8,6 +8,11 @@ This corrects prior live-v0.9.50 mismatch: signed feedback was inverted in bitra
 
 233 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security and arm64 build pass. Release asset SHA verified. Latest app still requires install/restart before real test.
 
+
+
+Production and simulator now share one actuator selector. Queue error is standing-queue delay minus 50ms target. Under congestion select FPS down to 30 first, then bitrate down to adaptive floor. Under recovery/headroom select bitrate up to operator ceiling first, then FPS up to configured cap. Deadband selects neither. Applies selector once per usable interval to the actual PID update calls; each controller keeps its own PID memory and anti-windup. Retransmits feed queue-pressure measurement, not a separate AIMD override. This completes both down and recovery sequence requested by user; v0.9.56 fixed signed error but had not yet wired staging through production.
+
+Fresh simulator regression tests exercise both orderings with the shared selector, bounded outputs and near-target stability. Existing config.env unchanged. 233 Rust (3 ignored), 18 Swift; fmt/clippy, CI/security and arm64 build green. Latest deployed app still must be replaced/restarted for live trial; QoE blank remains independent.
 
 ## v0.9.56 — align both PID actions and stage recovery
 
