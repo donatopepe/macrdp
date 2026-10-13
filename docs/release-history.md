@@ -1,5 +1,12 @@
 # Release history
 
+## v0.9.56 — align both PID actions and stage recovery
+
+Fixes live-observed opposing signs. One signed error is now measured standing queue minus 50 ms target: positive overload reduces outputs; negative headroom increases them. Under overload the FPS PID selects and sheds first to its 30 FPS floor; only then bitrate PID is selected down to its configured adaptive floor. During recovery the reverse sequence is staged: bitrate rises to the operator ceiling first, then FPS rises to the configured maximum. The selector is the single tested actuator policy shared by deterministic model and live controller; no retransmit AIMD bypass. Each PID keeps separate integral state, clamps and deadband. Near-target, bounded overload/recovery tests added.
+
+This release corrects v0.9.55 testable sign mismatch; prior live traces of v0.9.50 showed FPS down/up churn while bitrate fell before/after its minimum. New live validation still needed. Independent QoE reconnect-blank remains. Existing config.env untouched. 233 Rust (3 ignored), 18 Swift, fmt/clippy, CI/security and arm64 SHA verified.
+
+
 ## v0.9.50 — direct bidirectional bitrate and FPS PIDs
 
 Simplifies queue controller to two direct PIDs on one standing-queue-delay signal (50ms setpoint): bitrate bounded to adaptive floor..operator BITRATE and capture FPS bounded to hard 30..configured max. Each PID runs both directions on each usable control interval with independent bounded integral, derivative, gains and anti-windup. Higher FPS PID gains make cadence shed first on pressure; bitrate remains independently PID-controlled. Removes FPS deadband and bitrate material-queue hold bands, whose stacked special cases produced extra state/gating around user-requested controllers. ACK/RTT/no-ACK queue estimator remains; no multiplicative-decrease override.
