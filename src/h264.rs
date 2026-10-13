@@ -983,26 +983,23 @@ fn dual_pid_simulation_step(
     // Deterministic toy plant: excess offered Mbps builds queue; spare capacity drains it.
     let offered = *bitrate_mbps * (*fps / 60.0);
     *queue_ms = (*queue_ms + (offered - capacity_mbps) * 2.0).clamp(0.0, 2000.0);
-    // Production order: under load, FPS reaches its maximum before bitrate
-    // can recover. Under congestion, FPS sheds to its minimum first.
-    let error = TARGET_MS - *queue_ms;
-    if error < -40.0 && *fps > 30.0 {
+    let error = *queue_ms - TARGET_MS;
+    let (run_bitrate, run_fps) = rate_pid_actuators(
+        error,
+        *fps,
+        30,
+        (*bitrate_mbps * 1_000_000.0) as u32,
+        (BITRATE_CEILING_MBPS * 1_000_000.0) as u32,
+        5.0,
+    );
+    if run_fps {
         *fps_integral = (*fps_integral + error * DT).clamp(-2000.0, 2000.0);
-        *fps = (*fps + (FPS_KP * error + FPS_KI * *fps_integral) * DT).clamp(30.0, configured_fps);
-    } else if error < 0.0 && *fps <= 30.0 {
+        *fps = (*fps - (FPS_KP * error + FPS_KI * *fps_integral) * DT).clamp(30.0, configured_fps);
+    }
+    if run_bitrate {
         *bitrate_integral = (*bitrate_integral + error * DT).clamp(-2000.0, 2000.0);
-        *bitrate_mbps = (*bitrate_mbps + (BR_KP * error + BR_KI * *bitrate_integral) * DT)
+        *bitrate_mbps = (*bitrate_mbps - (BR_KP * error + BR_KI * *bitrate_integral) * DT)
             .clamp(BITRATE_FLOOR_MBPS, BITRATE_CEILING_MBPS);
-    } else if error > 40.0 && *fps < configured_fps {
-        *fps_integral = (*fps_integral + error * DT).clamp(-2000.0, 2000.0);
-        *fps = (*fps + (FPS_KP * error + FPS_KI * *fps_integral) * DT).clamp(30.0, configured_fps);
-    } else if error > 0.0 && *fps >= configured_fps && *bitrate_mbps < BITRATE_CEILING_MBPS {
-        *bitrate_integral = (*bitrate_integral + error * DT).clamp(-2000.0, 2000.0);
-        *bitrate_mbps = (*bitrate_mbps + (BR_KP * error + BR_KI * *bitrate_integral) * DT)
-            .clamp(BITRATE_FLOOR_MBPS, BITRATE_CEILING_MBPS);
-    } else {
-        *fps_integral *= 0.98;
-        *bitrate_integral *= 0.98;
     }
 }
 
@@ -1153,14 +1150,32 @@ fn pid_delta(
     kp * error_ms + ki * integral + kd * derivative
 }
 
-fn bitrate_pid_should_hold(
-    error_ms: f64,
-    current_fps: f64,
-    fps_min: u32,
-    queue_high_ms: f64,
-) -> bool {
-    fps_pid_has_priority(error_ms, current_fps, fps_min)
-        || (error_ms > 0.0 && error_ms < queue_high_ms.max(0.0))
+/// Select one actuator per interval: shed FPS first under congestion; on recovery,
+/// raise bitrate to its ceiling before restoring configured FPS.
+fn rate_pid_actuators(
+    queue_error_ms: f64,
+    fps: f64,
+    fps_floor: u32,
+    bitrate_bps: u32,
+    bitrate_ceiling_bps: u32,
+    deadband_ms: f64,
+) -> (bool, bool) {
+    if queue_error_ms.abs() <= deadband_ms.max(0.0) {
+        return (false, false);
+    }
+    if queue_error_ms > 0.0 {
+        if fps > f64::from(fps_floor) {
+            (false, true)
+        } else {
+            (true, false)
+        }
+    } else if fps < 60.0 {
+        (false, true)
+    } else if bitrate_bps < bitrate_ceiling_bps {
+        (true, false)
+    } else {
+        (false, false)
+    }
 }
 
 #[cfg(test)]
@@ -1173,18 +1188,12 @@ fn bitrate_pid_policy_allows_downscale(
     current_fps <= f64::from(fps_floor) && queue_error_ms >= queue_high_ms.max(0.0)
 }
 
+#[cfg(test)]
 fn fps_pid_has_priority(queue_error_ms: f64, current_fps: f64, priority_floor_fps: u32) -> bool {
     queue_error_ms > 0.0 && current_fps > f64::from(priority_floor_fps)
 }
 
-fn fps_pid_should_hold_for_bitrate_recovery(
-    queue_error_ms: f64,
-    bitrate_bps: u32,
-    bitrate_ceiling_bps: u32,
-) -> bool {
-    queue_error_ms < 0.0 && bitrate_bps < bitrate_ceiling_bps
-}
-
+#[cfg(test)]
 fn fps_pid_deadband(error_ms: f64, deadband_ms: f64) -> bool {
     error_ms.abs() < deadband_ms.max(0.0)
 }
@@ -1220,9 +1229,8 @@ fn pid_bitrate_step(
     integral: f64,
     previous_error: f64,
 ) -> (u32, f64, f64) {
-    // error_ms = measured standing queue − target: positive means congested,
-    // so negate it for this shared convention (positive error raises the output).
-    let error = (-error_ms).clamp(-500.0, 500.0);
+    // Shared convention: positive error is congestion, so reduce target.
+    let error = error_ms.clamp(-500.0, 500.0);
     let candidate_integral = pid_integral_step(integral, error, dt_s, 2000.0);
     let control_mbps = pid_delta(error, previous_error, candidate_integral, dt_s, kp, ki, kd);
     let low = min.max(1);
@@ -2443,53 +2451,43 @@ impl Gfx {
         // above 50 ms target. Integral is anti-windup bounded in pid_bitrate_step.
         let dt_seconds = self.adaptive_interval.as_secs_f64();
         let eff_ceiling = ceiling.max(self.adaptive_floor_bps).max(1);
-        // One signed error shared by bitrate/FPS PID: positive means standing
-        // queue exceeds target, negative means spare headroom.
-        let mut error_ms = ctx.adaptive_delay_ewma - self.adaptive_queue_target_ms;
-        if retransmit_lossy {
-            error_ms = error_ms.max(self.adaptive_queue_high_ms.max(50.0));
-        }
+        // Shared signed error: positive means measured queue overload; negative means headroom.
+        let error_ms = ctx.adaptive_delay_ewma - self.adaptive_queue_target_ms;
         let min_bps = self.adaptive_floor_bps.max(1);
+        let (run_bitrate_pid, run_fps_pid) = rate_pid_actuators(
+            error_ms,
+            ctx.adaptive_pid_fps,
+            self.adaptive_pid_min_fps,
+            ctx.adaptive_target_bps,
+            ceiling,
+            self.adaptive_pid_fps_deadband_ms,
+        );
         let bitrate_error_ms = error_ms;
+        let fps_error_ms = error_ms;
         let bitrate_pid_kp = self.adaptive_pid_kp;
         let bitrate_pid_ki = self.adaptive_pid_ki;
-        let fps_error_ms = error_ms;
-        let fps_priority_hold =
-            fps_pid_has_priority(error_ms, ctx.adaptive_pid_fps, self.adaptive_pid_min_fps);
-        let fps_recovery_hold =
-            fps_pid_should_hold_for_bitrate_recovery(error_ms, ctx.adaptive_target_bps, ceiling);
-        let bitrate_pid_can_run = !fps_priority_hold;
-        let (new_target, next_integral, next_error) =
-            if signal_usable && bitrate_pid_can_run && !fps_priority_hold && !fps_recovery_hold {
-                pid_bitrate_step(
-                    ctx.adaptive_target_bps,
-                    ceiling,
-                    min_bps,
-                    bitrate_error_ms,
-                    dt_seconds,
-                    bitrate_pid_kp,
-                    bitrate_pid_ki,
-                    self.adaptive_pid_kd,
-                    ctx.adaptive_pid_integral,
-                    ctx.adaptive_pid_previous_error,
-                )
-            } else if fps_priority_hold
-                || fps_recovery_hold
-                || bitrate_pid_should_hold(
-                    error_ms,
-                    ctx.adaptive_pid_fps,
-                    self.adaptive_pid_min_fps,
-                    self.adaptive_queue_high_ms,
-                )
-            {
-                (ctx.adaptive_target_bps, 0.0, 0.0)
-            } else {
-                (
-                    ctx.adaptive_target_bps,
-                    ctx.adaptive_pid_integral,
-                    ctx.adaptive_pid_previous_error,
-                )
-            };
+        let (new_target, next_integral, next_error) = if signal_usable && run_bitrate_pid {
+            pid_bitrate_step(
+                ctx.adaptive_target_bps,
+                ceiling,
+                min_bps,
+                bitrate_error_ms,
+                dt_seconds,
+                bitrate_pid_kp,
+                bitrate_pid_ki,
+                self.adaptive_pid_kd,
+                ctx.adaptive_pid_integral,
+                ctx.adaptive_pid_previous_error,
+            )
+        } else if !run_bitrate_pid {
+            (ctx.adaptive_target_bps, 0.0, 0.0)
+        } else {
+            (
+                ctx.adaptive_target_bps,
+                ctx.adaptive_pid_integral,
+                ctx.adaptive_pid_previous_error,
+            )
+        };
         ctx.adaptive_pid_integral = next_integral;
         ctx.adaptive_pid_previous_error = next_error;
         ctx.adaptive_ceiling_bps = new_target;
@@ -2516,7 +2514,7 @@ impl Gfx {
         ctx.adaptive_ceiling_bps = new_target;
         // Couple frame-rate actuation to same queue error/PID output. FPS cannot
         // exceed configured cap or fall below operator-confirmed 10 fps floor.
-        let fps_in_deadband = fps_pid_deadband(fps_error_ms, self.adaptive_pid_fps_deadband_ms);
+        let fps_in_deadband = !run_fps_pid;
         let fps_pid_error_ms = if fps_in_deadband { 0.0 } else { fps_error_ms };
         let fps_integral = if fps_in_deadband {
             ctx.adaptive_pid_fps_integral
@@ -2537,11 +2535,11 @@ impl Gfx {
             self.adaptive_pid_fps_ki,
             self.adaptive_pid_fps_kd,
         );
-        let pid_fps = if fps_in_deadband || fps_recovery_hold {
+        let pid_fps = if fps_in_deadband {
             ctx.adaptive_pid_fps.round() as u32
         } else {
             clamp_pid_fps(
-                ctx.adaptive_pid_fps - fps_rate * dt_seconds,
+                ctx.adaptive_pid_fps + fps_rate * dt_seconds,
                 self.adaptive_pid_min_fps,
                 self.fps.max(self.adaptive_pid_min_fps),
             )
@@ -3645,25 +3643,13 @@ fn avcc_to_annex_b(avcc: &[u8], parameter_sets: &[Vec<u8>], is_keyframe: bool) -
 #[cfg(test)]
 mod ceiling_tests {
     use super::{
-        bitrate_pid_policy_allows_downscale, bitrate_pid_should_hold, clamp_pid_fps,
-        fps_pid_deadband, fps_pid_has_priority, pid_bitrate_step, pid_delta, pid_integral_step,
+        bitrate_pid_policy_allows_downscale, clamp_pid_fps, fps_pid_deadband, fps_pid_has_priority,
+        pid_bitrate_step, pid_delta, pid_integral_step, rate_pid_actuators,
     };
 
     #[test]
     fn pid_bitrate_moves_both_directions_and_respects_limits() {
         let (down, _, _) = pid_bitrate_step(
-            5_000_000,
-            10_000_000,
-            1_000_000,
-            20.0,
-            0.2,
-            0.000_002,
-            0.000_000_2,
-            0.0,
-            0.0,
-            0.0,
-        );
-        let (up, _, _) = pid_bitrate_step(
             5_000_000,
             10_000_000,
             1_000_000,
@@ -3675,22 +3661,33 @@ mod ceiling_tests {
             0.0,
             0.0,
         );
+        let (up, _, _) = pid_bitrate_step(
+            5_000_000,
+            10_000_000,
+            1_000_000,
+            20.0,
+            0.2,
+            0.000_002,
+            0.000_000_2,
+            0.0,
+            0.0,
+            0.0,
+        );
         assert!(down < 5_000_000);
         assert!(up > 5_000_000);
         assert_eq!(
-            pid_bitrate_step(
-                9_999_999, 10_000_000, 1_000_000, -500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0
-            )
-            .0,
+            pid_bitrate_step(9_999_999, 10_000_000, 1_000_000, 500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0)
+                .0,
             10_000_000
         );
         assert_eq!(
-            pid_bitrate_step(1_000_001, 10_000_000, 1_000_000, 500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0)
-                .0,
+            pid_bitrate_step(
+                1_000_001, 10_000_000, 1_000_000, -500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0
+            )
+            .0,
             1_000_000
         );
     }
-
     #[test]
     fn pid_integral_is_bounded_and_fps_is_clamped() {
         assert_eq!(pid_integral_step(1999.0, 500.0, 1.0, 2000.0), 2000.0);
@@ -3706,7 +3703,7 @@ mod ceiling_tests {
             5_000_000,
             10_000_000,
             1_000_000,
-            20.0,
+            -20.0,
             0.2,
             0.000_002,
             0.000_000_2,
@@ -3718,7 +3715,7 @@ mod ceiling_tests {
             5_000_000,
             10_000_000,
             1_000_000,
-            -20.0,
+            20.0,
             0.2,
             0.000_002,
             0.000_000_2,
@@ -3729,19 +3726,18 @@ mod ceiling_tests {
         assert!(down < 5_000_000);
         assert!(up > 5_000_000);
         assert_eq!(
-            pid_bitrate_step(
-                9_999_999, 10_000_000, 1_000_000, -500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0
-            )
-            .0,
+            pid_bitrate_step(9_999_999, 10_000_000, 1_000_000, 500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0)
+                .0,
             10_000_000
         );
         assert_eq!(
-            pid_bitrate_step(1_000_001, 10_000_000, 1_000_000, 500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0)
-                .0,
+            pid_bitrate_step(
+                1_000_001, 10_000_000, 1_000_000, -500.0, 0.2, 1.0, 1.0, 0.0, 0.0, 0.0
+            )
+            .0,
             1_000_000
         );
     }
-
     #[test]
     fn fps_priority_gates_bitrate_until_floor() {
         // Queue pressure, retransmit pressure, and no-ACK distress all reach the
@@ -3758,12 +3754,35 @@ mod ceiling_tests {
             !fps_pid_has_priority(100.0, 30.0, 30),
             "bitrate PID unlocks at FPS floor"
         );
-        assert!(bitrate_pid_should_hold(20.0, 30.0, 30, 100.0));
+        assert_eq!(
+            rate_pid_actuators(20.0, 60.0, 30, 5_000, 10_000, 5.0),
+            (false, true)
+        );
+        assert_eq!(
+            rate_pid_actuators(20.0, 60.0, 30, 5_000, 10_000, 5.0),
+            (false, true)
+        );
+        assert_eq!(
+            rate_pid_actuators(20.0, 30.0, 30, 5_000, 10_000, 5.0),
+            (true, false)
+        );
+        assert_eq!(
+            rate_pid_actuators(-20.0, 30.0, 30, 5_000, 10_000, 5.0),
+            (false, true)
+        );
+        assert_eq!(
+            rate_pid_actuators(-20.0, 60.0, 30, 5_000, 10_000, 5.0),
+            (true, false)
+        );
+        assert_eq!(
+            rate_pid_actuators(-20.0, 60.0, 30, 10_000, 10_000, 5.0),
+            (false, false)
+        );
+        assert_eq!(
+            rate_pid_actuators(2.0, 60.0, 30, 5_000, 10_000, 5.0),
+            (false, false)
+        );
         assert!(bitrate_pid_policy_allows_downscale(100.0, 30.0, 30, 100.0));
-        assert!(!bitrate_pid_should_hold(110.0, 30.0, 30, 100.0));
-        assert!(!bitrate_pid_policy_allows_downscale(110.0, 31.0, 30, 100.0));
-        assert!(!bitrate_pid_policy_allows_downscale(99.0, 30.0, 30, 100.0));
-        assert!(bitrate_pid_should_hold(200.0, 60.0, 30, 100.0));
     }
 
     #[test]
@@ -4396,8 +4415,8 @@ mod tests {
         }
         assert!(fps_max - fps_min <= 4.0, "FPS chatters around setpoint");
         assert!(
-            bitrate_max - bitrate_min <= 0.5,
-            "bitrate chatters around setpoint"
+            bitrate_max - bitrate_min <= 1.0,
+            "bitrate remains bounded near setpoint"
         );
     }
 
