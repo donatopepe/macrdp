@@ -1169,10 +1169,10 @@ fn rate_pid_actuators(
         } else {
             (true, false)
         }
-    } else if fps < 60.0 {
-        (false, true)
     } else if bitrate_bps < bitrate_ceiling_bps {
         (true, false)
+    } else if fps < 60.0 {
+        (false, true)
     } else {
         (false, false)
     }
@@ -2539,7 +2539,7 @@ impl Gfx {
             ctx.adaptive_pid_fps.round() as u32
         } else {
             clamp_pid_fps(
-                ctx.adaptive_pid_fps + fps_rate * dt_seconds,
+                ctx.adaptive_pid_fps - fps_rate * dt_seconds,
                 self.adaptive_pid_min_fps,
                 self.fps.max(self.adaptive_pid_min_fps),
             )
@@ -3768,7 +3768,7 @@ mod ceiling_tests {
         );
         assert_eq!(
             rate_pid_actuators(-20.0, 30.0, 30, 5_000, 10_000, 5.0),
-            (false, true)
+            (true, false)
         );
         assert_eq!(
             rate_pid_actuators(-20.0, 60.0, 30, 5_000, 10_000, 5.0),
