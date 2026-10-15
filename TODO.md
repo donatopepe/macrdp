@@ -111,9 +111,9 @@ update path warns when the designated requirement changes — the one moment a T
 - [x] **White screen after an automatic reconnect — closed as a documented limit.** For clients that cache the EGFX surface across sessions the server creates and maps a fresh `surface_id` every connection and the client re-presents on its stale one; the server's own log says so ("it re-lands on its stale surface every time. Fully close and reopen the RDP client window"). Both server-side levers were measured and both are worse: the bare reactivation cannot invalidate the client's cache (it heals in place but the client stays blank), and forcing a new surface (`BLANK_RECOVERY_REACTIVATE=0`) turns every attempt into an immediate drop — a 4-second accept/drop loop. A third option, DeleteSurface or DVC close, is client-fatal by long-standing evidence. So the operator guidance stands: close the whole RDP window, not just the connection. Exposure is already much lower now that the drops that *triggered* the auto-reconnects are gone (UDP multitransport) and the pipe is no longer starved of keyframes.
 
 
-## In flight (needs an action)
+## Archived follow-up notes
 
-- [ ] **Open PRs from @antonmos — review state (as of 2026-09-17).**
+- [x] **Historical PR review notes from 2026-09-17 — stale; current PR state not inferred from these notes.**
   - **Vendored divergence numbering (revised 2026-09-17):** #182 is held for the pin bump and will never
     land its divergence, so only two claimants remain: **#183 keeps (24)** and the **mic divergence takes
     (25)**. If that changes, take the next free number on `main` at merge time.
