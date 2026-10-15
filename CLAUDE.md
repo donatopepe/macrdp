@@ -13,7 +13,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > - `@docs/cli.md` — build/run/test commands + the full CLI flag reference
 > - `@docs/conventions.md` — conventions worth keeping when adding code
 > - `docs/oss-rdp-server-comparison.md` — the verified evidence behind the "first OSS
->   RDP server to…" claims (and what NOT to claim). Read before repeating any of them.
+  RDP server to…" claims (and what NOT to claim). Read before repeating any of them.
+> - `docs/operations.md` — the operator runbook: install paths, TCC/`--check-permissions`,
+>   the Keychain password, upgrade + rollback, uninstall, and the security posture. Not
+>   @imported (long, rarely needed mid-task) — read it when touching packaging/install/
+>   permission behaviour.
 >
 > The `vendor/ironrdp-*/` forks each have their own nested `CLAUDE.md` (the
 > divergence logs) that load only when you work inside those directories.

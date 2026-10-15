@@ -11,10 +11,12 @@
       `.sha256`, and only then extracts — no `cargo`, no executed fetched code.
 - [ ] **Rehearse the fresh-machine path** (`MACRDP_VERSION=vX curl -fsSL …/install-remote.sh | bash`) on
       a clean Mac, then first run: TCC prompts, Keychain password, login item, upgrade and rollback.
-- [ ] **One-place user documentation** for the TCC grants, the Keychain password, the VPN/security
-      warning, uninstall and upgrade/rollback. Most of it exists scattered (`README.md`,
-      `docs/known-quirks.md`); the uninstallers are `dist/uninstall.sh` and
-      `packaging/uninstall-launchagent.sh`.
+- [x] **One-place user documentation** — `docs/operations.md` (2026-10-15): the three install paths
+      and why not to mix them, the TCC grants + `--check-permissions`, the Keychain password
+      (set/rotate/remove), upgrade (what the menu verifies and that it updates the SERVER only) and
+      rollback, uninstall with what each flag keeps, the security posture, and the black-picture cure.
+      Verified against the scripts and the Controller's menu rather than restated from memory; wired
+      into the README docs table and CLAUDE.md's map.
 - **Published apps are ad-hoc signed by design** — no Developer ID / notarization in CI (documented in
   `release.yml`), so Gatekeeper prompts and the user opens via right-click → Open, and every published
   build has its own code identity (grants re-prompt after an *archive* install). Stability for *local*

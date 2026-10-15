@@ -209,6 +209,8 @@ Two things to know about this path:
 
 ## Building the full app
 
+> Day-to-day operations — install paths, permissions, password, upgrade, rollback, uninstall — are consolidated in **[docs/operations.md](docs/operations.md)**.
+
 `dist/install.sh` installs a bare binary. For a proper **signed `macrdp.app`** — stable bundle identity (TCC grants survive rebuilds), background-agent behavior, the embedded smart-card IFD handler, optional notarization, the menu-bar controller app, and a distributable DMG:
 
 ```bash
@@ -235,6 +237,7 @@ Both are **ad-hoc signed, not notarized** — open the app once via **right-clic
 
 | Guide | What's in it |
 |-------|--------------|
+| **[Operations runbook](docs/operations.md)** | Install (three paths, and which to avoid mixing), the TCC grants and `--check-permissions`, the Keychain password, upgrade + rollback, uninstall and what each step keeps, the security posture, and what to do when the picture is black. |
 | **[Configuration & CLI](docs/configuration.md)** | Every flag, the auth-hardening environment variables (rate-limit/lockout/audit), headless mode (`--virtual-display`, `--detach-primary`/`--capture-primary`), and a full set of example invocations. |
 | **[Video](docs/video.md)** | The H.264/EGFX pipeline, Retina capture (`--hidpi`), client-resolution auto-adopt and letterboxing, bitrate/keyframe tuning, the mstsc reconnect-blank quirk and its in-place auto-recovery, and the vImage color-conversion benchmarks. |
 | **[Audio](docs/audio.md)** | RDPSND PCM, opt-in AAC compression (`--enable-aac`), the self-healing capture stream, and mute-on-minimize. |
