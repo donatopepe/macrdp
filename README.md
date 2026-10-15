@@ -74,8 +74,13 @@ built one — see [docs/operations.md](docs/operations.md). Maintainers create
 release assets with:
 
 ```bash
-packaging/release-app.sh v0.9.7
+packaging/release-app.sh v0.9.62
 ```
+
+It emits the same two files the workflow publishes —
+`macrdp-<tag>-aarch64-apple-darwin-app.zip` and `SHA256SUMS` — and verifies its
+own output by extracting the zip and running `codesign --verify --deep --strict`
+plus `shasum -c` on it, so a hand-made artifact is one the installer accepts.
 
 For a persistent macOS installation, use the automated app setup. It builds the
 release binary, creates/imports the local signing identity if needed, signs the
