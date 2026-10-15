@@ -369,8 +369,7 @@ update path warns when the designated requirement changes — the one moment a T
   rect (`encoder/mod.rs:520,337`) — reuse a scratch buffer + one `spawn_blocking` per update;
   legacy-clients-only, clean upstream PRs. NOT worth doing: RDPEUDP per-datagram allocs
   (inherent to sans-I/O design), NFS readdir pagination cache, UDP idle tick suppression.
-- [ ] **Congestion-responsive encoder rate control + frame dropping** (highest-value
-  video-under-loss work — helps BOTH the default TCP path and UDP). **P1 (adaptive bitrate)
+- [x] **Adaptive congestion control — implemented baseline; optional research separated below.** Historical rollout notes: **P1 (adaptive bitrate)
   SHIPPED as #94; P2a (IDR backoff + ack-lag signal switch) SHIPPED 2026-06-29;
   P3 (controller runs on the TCP path too) SHIPPED 2026-06-29** (verified on real mstsc:
   with `--bitrate 8` on a pure-TCP session, clean connect via the cold-start guard, gentle
@@ -385,9 +384,9 @@ update path warns when the designated requirement changes — the one moment a T
   on TCP). Pure `frame_drop_at_floor`; `MACRDP_ADAPTIVE_FLOOR_FPS` tunable. Live log
   confirmed: bitrate AIMD → 750k floor under rising ack-lag → P2b caps to ~10 fps
   (choppy-but-steady, in sync) → recovers to the 6M ceiling + full fps when loss clears.
-  Remaining investigated extensions: transport-level RDPEUDP feedback signals (CN, ACK-vector loss, RTT/window) and cross-controller evaluation with real Windows-server captures. The 2026-06-28 queue-depth freeze report is historical and predates the current multi-signal controller; raw queue depth was also elevated on healthy links. Do not add a queue-depth threshold without a fresh Windows baseline.
+  **Current architecture:** bitrate, capture-FPS and UDP IDR pacing use per-frame ack-derived standing queue delay, ack lag/no-ack distress and retransmit evidence. The 2026-06-28 queue-depth freeze report predates the current multi-signal controller; raw queue depth was also elevated on healthy links. Do not add a queue-depth threshold without a fresh Windows baseline.
 
-  Current architecture applies bitrate, capture-FPS and UDP IDR pacing levers using per-frame ack-derived standing queue delay, ack lag/no-ack distress and retransmit evidence. **Experimental controller research (SCReAM / Copa / BBR-lite) is optional, not a current bug fix.** A transport-ack-driven controller requires API/wire-signal review and real mstsc loss testing; do not assume RDPEUDP datagram ACKs are exposed to the app or that this resolves reliable-transport HOL blocking. Keep implementation unchanged unless measurements show AIMD insufficient. See finding #5 in `docs/rdp-udp-multitransport-feasibility.md`; refs SCReAM RFC 8298, NADA RFC 8698.
+  **Optional future research (not a bug fix):** transport-level RDPEUDP feedback (CN, ACK-vector loss, RTT/window) or SCReAM/Copa/BBR-lite; requires API/wire-signal review and real mstsc loss testing. Do not assume datagram ACKs are exposed to the app or that a controller removes reliable-transport HOL blocking. Keep implementation unchanged unless measurements show AIMD insufficient. See finding #5 in `docs/rdp-udp-multitransport-feasibility.md`; refs SCReAM RFC 8298, NADA RFC 8698.
 - [ ] **Experimental controller research (SCReAM / Copa / BBR-lite) — optional enhancement, not current bug fix.** The production AIMD controller already consumes per-frame ack-derived standing queue delay, ack lag/no-ack distress, and retransmit evidence, then adapts bitrate, capture FPS and UDP IDR pacing. A transport-ack-driven open controller could be evaluated later, but requires API/wire-signal review and real mstsc loss testing; do not assume RDPEUDP datagram ACKs are exposed to the app or that this resolves HOL blocking. Keep implementation unchanged unless measurement shows AIMD insufficient. See finding #5 in `docs/rdp-udp-multitransport-feasibility.md`; refs SCReAM RFC 8298, NADA RFC 8698.
 - [x] **A/V offset EWMA + drift telemetry** — source audio/video PTS feed `av_offset_ewma_ms`,
   `av_offset_ewma_samples`, `av_drift_ppm`, and `av_drift_samples`; playback is untouched. A
@@ -453,16 +452,7 @@ update path warns when the designated requirement changes — the one moment a T
   RESULT" notes in `docs/rdp-udp-multitransport-feasibility.md` + `vendor/ironrdp-rdpeudp/CLAUDE.md`.
 
 - [x] **Generic USB redirection — current implemented scope verified; remaining items are separate features/client limitation.** FreeRDP mass-storage drive mounts and read/write verified; mstsc enumerates/configures devices and negotiates camera format, but its camera video frames use a separate camera-redirection channel not implemented here. Isochronous/interrupt endpoints and retract/multi-device remain future scope, not a regression blocker.
-  **mstsc now enumerates, configures, and negotiates format end-to-end** (verified camera `09da:2692`
-  + audio/HID `0573:1573`; FreeRDP mass storage regression-verified — mounts + read/write). Fixes,
-  all FreeRDP-safe: (handshake) per-device channel needs the FULL caps→CHANNEL_CREATED→RIMCALL_RELEASE,
-  accept `UsbDevice=0`, route interface-0 completions by function id; (SelectConfiguration) one
-  interface-info per interface NUMBER at alt 0 (not per alt-setting → dup interface numbers) + carry
-  the FULL config descriptor (`ironrdp-rdpeusb` div 3), was `0x80070057`; (control) map each SETUP to
-  the TYPED URB real Windows uses (`CLASS_INTERFACE`/`GET_DESCRIPTOR_FROM_INTERFACE`/…) not the generic
-  `CONTROL_TRANSFER_EX` mstsc rejects — 135+ transfers succeed, UVC probe/commit completes; (bulk)
-  `USBD_SHORT_TRANSFER_OK`; `RIMCALL_RELEASE` recognized+ignored.
-  This entry records distinct remaining features rather than one failing generic-USB implementation. Webcam frames require mstsc's separate "Video capture devices" camera-redirection channel; isochronous/interrupt endpoints and retract/multi-device support are not implemented. mstsc RemoteFX excludes mass storage (handled by Drives/RDPDR), so use FreeRDP for verified USB bulk mount/read-write testing. Detail: [[project_usb_redirection_feasibility]].
+  **Verified implementation scope:** mstsc enumerates/configures USB devices and negotiates camera format; FreeRDP mass storage mounts and supports read/write. Fixes include per-device channel handshake, interface-0/function-id routing, full configuration descriptors, and Windows-compatible typed URBs. Webcam video requires mstsc's separate "Video capture devices" channel; isochronous/interrupt endpoints and retract/multi-device support remain unimplemented. mstsc RemoteFX excludes mass storage (handled through Drives/RDPDR). Detail: [[project_usb_redirection_feasibility]].
   Path: user-space virtual USB host controller via `IOUSBHostControllerInterface` (a **public,
   headered** IOUSBHost.framework API — NOT private SPI as first assumed; its doc says it
   "create[s] synthetic USB devices"). Entitlement `com.apple.developer.usb.host-controller-
