@@ -1369,6 +1369,11 @@ mod fresh_surface_id {
             }
             id
         }
+
+        /// The id the next connection will claim — for the startup log only.
+        pub(super) fn peek(&self) -> u16 {
+            *self.next.lock().unwrap_or_else(|e| e.into_inner())
+        }
     }
 }
 
@@ -1828,6 +1833,19 @@ impl Gfx {
                  congestion-responsive rate control on both the UDP tunnel and the TCP path"
             );
         }
+        // Opt-in fresh-surface-id policy (see [`fresh_surface_id`]); logged so a
+        // live trial is verifiable from the log alone.
+        let fresh_surface_ids = fresh_surface_id_enabled()
+            .then(|| Arc::new(fresh_surface_id::Counter::load(fresh_surface_id_path())));
+        if let Some(counter) = fresh_surface_ids.as_ref() {
+            info!(
+                next_surface_id = counter.peek(),
+                file = ?fresh_surface_id_path(),
+                "EGFX fresh-surface-id mode ENABLED (MACRDP_EGFX_FRESH_SURFACE_ID): every connection creates its \
+                 surface at a persisted, never-before-used id, so a client that retains surfaces by id cannot \
+                 no-op the CreateSurface (the reconnect-blank)"
+            );
+        }
         Self {
             sender: Arc::new(Mutex::new(None)),
             ctx: Arc::new(Mutex::new(None)),
@@ -1837,8 +1855,7 @@ impl Gfx {
             keyframe_secs,
             max_in_flight,
             wire_format,
-            fresh_surface_ids: fresh_surface_id_enabled()
-                .then(|| Arc::new(fresh_surface_id::Counter::load(fresh_surface_id_path()))),
+            fresh_surface_ids,
             recovery_enabled,
             recovery_params,
             egfx_on_lossy,
