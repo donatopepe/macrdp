@@ -160,7 +160,4 @@ If picking a starting batch, do these three:
    the v0.8.21 auth-guard fix** (pre-fix lockouts captured; post-fix window clean); see Tier 2.4
    above. The old proposal for a **48–72 h re-soak on v0.8.24** is historical; refresh against the current build and risks before scheduling.
 
-That trio takes it from "daily-driver I babysit" to "I can deploy this and walk away on a
-network I control." With 1.1 + 1.2 landed, the foundation core has leak/drift + no-crash
-longevity evidence over 31 h. A current multi-day soak may still be useful, but the old
-v0.8.24-specific plan is not the remaining release gate.
+With TLS and auth hardening shipped, the foundation core has leak/drift + no-crash longevity evidence over 31 h. A current multi-day soak may still be useful, but the old v0.8.24-specific plan is historical, not an active release gate. Current validation items are tracked in TODO.md and must be refreshed against the current build before claiming unattended-production readiness.

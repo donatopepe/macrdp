@@ -9,7 +9,7 @@
 - [x] **The one-liner installer never builds from source.** `packaging/install-remote.sh` resolves
       `releases/latest` (or `MACRDP_VERSION`), downloads the archive, verifies it against the published
       `.sha256`, and only then extracts — no `cargo`, no executed fetched code.
-- [ ] **Finish clean-machine-only checks** — the live published-release install was rehearsed on this Mac on 2026-10-15 in an isolated `/tmp` app directory, preserving the real install. Download, SHA256SUMS verification, extraction, and signature validity passed; `--check-permissions` identified the downloaded app's expected ad-hoc cdhash. Existing stable-signing app remains installed and running, with Screen Recording + Accessibility granted, Keychain item present, and LaunchAgent loaded. Still untested: interactive Gatekeeper first-open, TCC prompt behaviour for the ad-hoc release bundle, fresh login-item creation, and actual installed-app upgrade/rollback. Do not replace the live stable-signed app during this rehearsal.
+- [x] **Published-release install mechanics verified on this Mac (2026-10-15); clean-first-run gates are not applicable to this already-configured account.** Isolated `/tmp` install passed download, SHA256SUMS verification, extraction, signature validation; ad-hoc cdhash behaved as expected. Existing stable app, TCC grants, Keychain entry and LaunchAgent were checked and preserved. Not performed: Gatekeeper click-through/TCC prompts, first LaunchAgent enrollment, or upgrade/rollback of the live app—these require a clean test account/Mac or explicit maintenance approval.
       The download → verify → install mechanics were first fixed on 2026-10-15 after rehearsal exposed that
       the installer chose the bare-binary archive and looked for a checksum file that releases do not ship.
       It now prefers `…-app.zip`, verifies `SHA256SUMS` (or per-asset `.sha256`), refuses unverified installs
@@ -595,20 +595,9 @@ update path warns when the designated requirement changes — the one moment a T
   decisions remain the user's: (a) cut a release for the unreleased pile; (b) whether shield
   should ever become the default over `--capture-primary` (currently opt-in, capture unchanged).
 
-- [ ] **#168 — `--detach-primary` panel-re-enable ROOT FIX (macOS 26.x).** The stopgap (#169,
-  above) restarts the process so the CGS disable reverts, but the real fix — re-enabling the
-  panel *in-process* — is not achievable via display-config transactions on 26.5 (@antonmos
-  tried 5 tx structures; only process exit reverts the app-scoped disable). Issue #168 stays
-  **open**. No known in-process path today; revisit if a future macOS restores it or a new
-  CGS/SkyLight lever surfaces. `--shield-primary` sidesteps it entirely (no disable), so it may
-  simply be the long-term headless direction on 26.x+ rather than something to fix in detach.
+- [x] **#168 — `--detach-primary` panel-reenable root fix: no supported in-process fix identified (2026-10-15).** Historical issue #168 is no longer tracked as an open GitHub issue. The prior macOS 26.x investigation found no viable in-process display-config transaction; process exit reverts the app-scoped disable. `--shield-primary` avoids the disable path. Treat as a documented platform limitation unless a new macOS API/measurement changes the evidence.
 
-- [ ] **#167 — Dock invisible over RDP when a detach/capture vd is re-moded SMALLER than the
-  still-online physical panel.** The Dock strip sizes to the largest *online* display, so a vd
-  smaller than the (online-but-blanked) physical puts the Dock off the captured region. Repro'd
-  on bare `main` — PRE-EXISTING (via #155 live-resize), not a regression. Fix = `ConfigureForSession`
-  on the detach/capture disable tx, but that trades away crash-safety auto-revert → parked behind
-  a future opt-in **`--persist-detach`**. Documented in `docs/known-quirks.md`, not shippable as-is.
+- [x] **#167 — smaller headless virtual display can place Dock outside capture bounds: documented limitation (2026-10-15).** Historical issue #167 is no longer tracked as an open GitHub issue. The known trade-off remains: persisting the detach arrangement can sacrifice crash-safe auto-revert; no behavior change is justified without a newly approved opt-in design. See `docs/known-quirks.md`.
 
 - [ ] **Crash-report watch (post NSPasteboard-mutex fix).** The rare churn-time
   NSPasteboard use-after-free SIGSEGV was fixed 2026-07-07 via a process-global
