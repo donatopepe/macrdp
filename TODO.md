@@ -401,12 +401,7 @@ update path warns when the designated requirement changes — the one moment a T
   duration before/after trim.
   Detail:
   `project_av_sync_under_drops` memory.
-- [ ] **EGFX-over-UDP watchdog — ack-lag-pegged secondary trigger** (refinement of the
-  shipped watchdog above). The watchdog fires on ~3s of *fully silent* acks; a real wedge
-  dribbles a few stray acks before going silent, so it latched at `since_ack_ms≈7.7s` in
-  the clumsy soak (vs. 3s ideal). Add a second trigger that fires when the frame-ack *lag*
-  (shipped−acked) stays pinned above threshold for N s even if odd acks trickle in, to
-  shorten the real-wedge recovery window. Low priority — the freeze already recovers.
+- [x] **EGFX-over-UDP watchdog follow-up — lag-based no-progress trigger already exists.** The current adaptive controller records ack advancement time and uses shipped-minus-acked lag/no-ack distress for bitrate/FPS backoff; the watchdog's transport migration remains gated on fully silent ACKs. This is intentional fail-safe separation, not an unimplemented promised trigger. Revisit only with a fresh soak showing harmful delay from waiting for ack silence.
 - [x] **UDP multitransport — TCP-session-end → listener peer-evict signal** (the deferred half of M3c; the *correct* fix for dead-peer reclaim). **Shipped 2026-10-15.** The shared tunnel-bound flag was already lowered by the server when it retires a connection's tunnel (session teardown) or when tunnel-death detection declares it dead; the peer then sat in `peers`/`bound_addrs` until the 60 s idle GC, i.e. up to a minute of the reliability SM still RTO-retransmitting into a tunnel the server had stopped routing to, with its cookie still reserved. `check_dead_tunnels` now returns the addresses it retired/dead-declared and the new `evict_retired_peers` drops them (peer + cookie mapping, flag re-lowered defensively) on the same retransmit tick; the idle GC stays as the long pure backstop (it covers a peer nothing ever retired). Idempotent + unit-tested (6 tests: retired evicted with its binding, live bound peer untouched, wedge declared dead AND evicted, unbound untouched, GC backstop, eviction idempotent). **Also in this change:** the vendored crate now builds its own tests (`[lib] test = true`, upstream ships `test = false`) and CI runs them standalone (`--features multitransport --lib`, 67 tests) — flipping the flag caught two rotted tests that had never been compiled or run (a `DiagnosticsHandle` initializer missing the four input→output latency windows, and a test that hung because it never dropped the writer half). See `vendor/macrdp-server/CLAUDE.md` "M3c retire-on-session-end".
 
 - [x] **UDP multitransport Phase 2 — lossy `UdpFecL` + DTLS + 1+1 redundancy** (FEC dropped).
@@ -589,23 +584,7 @@ update path warns when the designated requirement changes — the one moment a T
   change. Open design question: true-monitors vs one-big-desktop vs phased. (PAUSED, no code.)
   Also listed as Tier 3 in the production-readiness roadmap below.
 
-- [ ] **Production-readiness roadmap** (scoped 2026-06-29, in progress). What would lift
-  macrdp from "polished v0 daily-driver for trusted LANs" to "reliable, secure, unattended
-  single-session server for a LAN/VPN." Full prioritized plan in
-  `docs/production-readiness-roadmap.md`. Recommended starting trio status: (1) real
-  operator-supplied TLS certs (`--cert`/`--key`) **DONE 2026-06-30 #104**; (2) auth
-  rate-limit + lockout + audit log (`src/auth_guard.rs`) **DONE 2026-06-30 #105**; (3) a
-  48–72 h **soak to shake out leaks/drift — IN FLIGHT (Tier 2.4, running 2026-07-01; see
-  the In flight section above + `scripts/soak-monitor.sh`)**. Also done:
-  log rotation + startup reaper (Tier 2.5, #103) and the **hung-but-alive health-check
-  watchdog (`src/health.rs`) — DONE 2026-07-03** (probes the tokio runtime from a
-  dedicated OS thread; exits code 70 on a sustained wedge → launchd restarts;
-  on by default when headless, env-tunable). **Tier 2.5 now complete.** Tier 2.6
-  (per-connection worker processes) — **the `--fork-workers` model was REMOVED
-  2026-07-17**: the reconnect-blank now self-heals in place via core reactivation
-  (v0.8.27), so its reconnect-freshness rationale was moot and single-process is the
-  only model. Still open beyond the soak: Tier 3 polish. Hard
-  ceiling (NO-GO): multi-user concurrent GUI sessions (macOS limit).
+- [x] **Historical production-readiness roadmap snapshot.** TLS and auth controls shipped; Tier 2.5 health/log operations shipped; multi-user concurrent GUI sessions remain a macOS architectural limit. The dated v0.8.24 soak follow-up is historical and is no longer described as an in-flight gate; see `docs/production-readiness-roadmap.md` for scope and evidence. This checklist snapshot is not a current certification of unattended-production readiness.
 
 ## Parked — scoped, low priority
 
