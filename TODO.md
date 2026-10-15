@@ -7,8 +7,8 @@
       `macrdp.app` with a `.sha256`, and the release carries the `…-app.zip`, the
       `…-aarch64-apple-darwin.tar.gz` and `SHA256SUMS` (checked on v0.9.61).
 - [x] **The one-liner installer never builds from source.** `packaging/install-remote.sh` resolves
-      `releases/latest` (or `MACRDP_VERSION`), downloads the archive, verifies it against the published
-      `.sha256`, and only then extracts — no `cargo`, no executed fetched code.
+      `releases/latest` (or `MACRDP_VERSION`), downloads the app archive, verifies against published
+      `SHA256SUMS` (or a per-asset `.sha256`), and only then extracts — no `cargo`, no fetched code execution.
 - [x] **Published-release install mechanics verified on this Mac (2026-10-15); clean-first-run gates are not applicable to this already-configured account.** Isolated `/tmp` install passed download, SHA256SUMS verification, extraction, signature validation; ad-hoc cdhash behaved as expected. Existing stable app, TCC grants, Keychain entry and LaunchAgent were checked and preserved. Not performed: Gatekeeper click-through/TCC prompts, first LaunchAgent enrollment, or upgrade/rollback of the live app—these require a clean test account/Mac or explicit maintenance approval.
       The download → verify → install mechanics were first fixed on 2026-10-15 after rehearsal exposed that
       the installer chose the bare-binary archive and looked for a checksum file that releases do not ship.
