@@ -2696,16 +2696,11 @@ impl Gfx {
                 flags: MonitorFlags::PRIMARY,
             };
             server.resize_with_monitors(width, height, vec![monitor]);
-            // Create the surface with upstream's auto-allocated id. mstsc retains
-            // EGFX surfaces by id for its whole process lifetime and no-ops a
-            // CreateSurface for an id it already holds, so a reconnect to the
-            // same mstsc process can land on a stale surface and paint blank.
-            // A fresh per-session id (the old vendored `create_surface_with_id`)
-            // only mitigated this *unreliably* on mstsc — sometimes the desktop
-            // drew, sometimes it didn't — for the cost of a permanent upstream
-            // divergence. Since the reliable recovery is the same either way
-            // (close + reopen mstsc, which clears its surface cache), we use the
-            // stock API and document the quirk instead. See [[h264-reconnect-blank]].
+            // Use upstream's auto-allocated surface ID. A previous hypothesis
+            // blamed mstsc's cross-reconnect surface cache, but fresh IDs did not
+            // fix the measured blank; its trigger is still unproven. Keep the
+            // stock wire path unchanged and document the confirmed recovery:
+            // fully close and reopen mstsc. See [[h264-reconnect-blank]].
             let sid = server
                 .create_surface_with_format(width, height, PixelFormat::XRgb)
                 .ok_or_else(|| anyhow!("EGFX: create_surface failed (not ready?)"))?;
