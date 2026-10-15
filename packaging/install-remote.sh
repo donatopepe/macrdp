@@ -9,11 +9,21 @@
 #   MACRDP_APP_DIR=$HOME/Applications
 #   MACRDP_REPO=owner/repo     default: donatopepe/macrdp
 #   MACRDP_SKIP_LAUNCHAGENT=1  download/install app only
+#   MACRDP_ALLOW_UNVERIFIED=1  install even when the release publishes no checksum
 #
-# The script downloads a release archive and verifies its SHA-256 when the
-# release publishes a matching .sha256 file. It never runs a downloaded binary
-# before extraction, and it does not use sudo. macOS TCC permissions remain
-# attached to the stable app bundle identity.
+# The script downloads the APP-BUNDLE archive from a release (not the bare-binary
+# .tar.gz, which contains no macrdp.app), verifies it against the release's
+# published `SHA256SUMS` (falling back to a per-asset `.sha256`, and refusing to
+# install unverified unless MACRDP_ALLOW_UNVERIFIED=1), then installs it
+# atomically. It never runs a downloaded binary before extraction, and it does
+# not use sudo. macOS TCC permissions remain attached to the stable app bundle
+# identity.
+#
+# Safe rehearsal of this path without touching the real install (downloads the
+# newest published release into a throwaway dir, no LaunchAgent):
+#   mkdir -p /tmp/macrdp-rehearsal && cp packaging/install-remote.sh /tmp/macrdp-rehearsal/
+#   (cd /tmp/macrdp-rehearsal && MACRDP_APP_DIR=/tmp/macrdp-rehearsal/app \
+#      MACRDP_SKIP_LAUNCHAGENT=1 bash install-remote.sh)
 set -euo pipefail
 
 REPO="${MACRDP_REPO:-donatopepe/macrdp}"
@@ -43,32 +53,69 @@ PY
 ASSET_URL="$(python3 - "$RELEASE_JSON" <<'PY'
 import json, sys
 assets=json.load(open(sys.argv[1])).get("assets", [])
-for a in assets:
-    n=a["name"].lower()
-    if n.endswith(".tar.gz") and ("macrdp" in n or "app" in n):
-        print(a["browser_download_url"]); break
-else:
-    raise SystemExit("macrdp: release has no macrdp .tar.gz app asset")
+named=[(a["name"], a["browser_download_url"]) for a in assets]
+
+# Prefer the APP-BUNDLE archive. The bare-binary .tar.gz also matches
+# "macrdp"+".tar.gz" and installing it fails with "archive does not contain
+# macrdp.app" — while the app asset is named `…-app.zip`.
+def rank(name):
+    n = name.lower()
+    if not (n.endswith(".zip") or n.endswith(".tar.gz")):
+        return None
+    is_app = "app" in n
+    is_zip = n.endswith(".zip")
+    return 0 if is_app and is_zip else 1 if is_app else 2 if is_zip else 3
+
+candidates = sorted((rank(n), n, u) for n, u in named if rank(n) is not None)
+if not candidates:
+    raise SystemExit("macrdp: release has no .zip/.tar.gz archive")
+print(candidates[0][2])
 PY
 )"
 ASSET_NAME="${ASSET_URL##*/}"
 ARCHIVE="$TMP/$ASSET_NAME"
-CHECKSUM_URL="${ASSET_URL}.sha256"
-CHECKSUM="$TMP/$ASSET_NAME.sha256"
 
 echo "==> macrdp $TAG"
 echo "==> downloading $ASSET_NAME"
 curl -fL --progress-bar "$ASSET_URL" -o "$ARCHIVE"
-if curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM"; then
-    echo "==> verifying SHA-256"
-    (cd "$TMP" && shasum -a 256 -c "$(basename "$CHECKSUM")")
-else
-    echo "==> no release checksum published; continuing with HTTPS transport" >&2
-fi
+
+# Verify against the release's PUBLISHED checksums. `SHA256SUMS` is what
+# release.yml actually ships — the per-asset `…tar.gz.sha256` files are
+# collapsed into it and deleted before the release is created — so checking only
+# `${ASSET_URL}.sha256` (the original behaviour) 404'd on every release and the
+# installer silently fell back to HTTPS. Verification is required unless the
+# operator explicitly opts out with MACRDP_ALLOW_UNVERIFIED=1.
+verify_archive() {
+    if curl -fsSL "${ASSET_URL%/*}/SHA256SUMS" -o "$TMP/SHA256SUMS" \
+        && grep -F "  $ASSET_NAME" "$TMP/SHA256SUMS" > "$TMP/entry.sha256" \
+        && [ -s "$TMP/entry.sha256" ]; then
+        echo "==> verifying SHA-256 (SHA256SUMS)"
+        (cd "$TMP" && shasum -a 256 -c entry.sha256)
+        return 0
+    fi
+    if curl -fsSL "${ASSET_URL}.sha256" -o "$TMP/entry.sha256" \
+        && [ -s "$TMP/entry.sha256" ]; then
+        echo "==> verifying SHA-256 ($ASSET_NAME.sha256)"
+        (cd "$TMP" && shasum -a 256 -c entry.sha256)
+        return 0
+    fi
+    if [ "${MACRDP_ALLOW_UNVERIFIED:-0}" = 1 ]; then
+        echo "==> WARNING: no published checksum for $ASSET_NAME; continuing unverified" >&2
+        return 0
+    fi
+    echo "macrdp: no published checksum for $ASSET_NAME — refusing to install unverified." >&2
+    echo "        Re-run with MACRDP_ALLOW_UNVERIFIED=1 to override (not recommended)." >&2
+    return 1
+}
+verify_archive
 
 EXTRACT="$TMP/extract"
 mkdir -p "$EXTRACT"
-tar -xzf "$ARCHIVE" -C "$EXTRACT"
+case "$ASSET_NAME" in
+    *.zip)    ditto -x -k "$ARCHIVE" "$EXTRACT" ;;
+    *.tar.gz) tar -xzf "$ARCHIVE" -C "$EXTRACT" ;;
+    *)        echo "macrdp: unsupported archive type: $ASSET_NAME" >&2; exit 1 ;;
+esac
 APP="$(find "$EXTRACT" -maxdepth 4 -type d -name macrdp.app -print -quit)"
 [ -n "$APP" ] || { echo "macrdp: archive does not contain macrdp.app" >&2; exit 1; }
 

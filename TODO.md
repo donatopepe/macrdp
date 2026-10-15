@@ -9,8 +9,20 @@
 - [x] **The one-liner installer never builds from source.** `packaging/install-remote.sh` resolves
       `releases/latest` (or `MACRDP_VERSION`), downloads the archive, verifies it against the published
       `.sha256`, and only then extracts — no `cargo`, no executed fetched code.
-- [ ] **Rehearse the fresh-machine path** (`MACRDP_VERSION=vX curl -fsSL …/install-remote.sh | bash`) on
-      a clean Mac, then first run: TCC prompts, Keychain password, login item, upgrade and rollback.
+- [ ] **Rehearse the fresh-machine path on a clean Mac** — first run only what needs a *machine*: the TCC
+      prompts, the Keychain password entry, the login item, upgrade and rollback.
+      **The download → verify → install mechanics were rehearsed and FIXED on 2026-10-15** (in a throwaway
+      dir, `MACRDP_APP_DIR=/tmp/… MACRDP_SKIP_LAUNCHAGENT=1`, so the real install was untouched; the command
+      is in the script header). The rehearsal found the one-liner **broken against the shipped release
+      layout**: it selected the *bare-binary* `.tar.gz` (the only asset matching `macrdp`+`.tar.gz`) and then
+      failed with `archive does not contain macrdp.app`, and its checksum step 404'd because releases publish
+      `SHA256SUMS` while the script looked for the per-asset `…tar.gz.sha256` that `release.yml` collapses and
+      deletes. Fixed: the installer prefers the app archive (`…-app.zip`), verifies against `SHA256SUMS` (or a
+      per-asset `.sha256`) and **refuses to install unverified** without `MACRDP_ALLOW_UNVERIFIED=1`, and
+      extracts zip bundles with `ditto -x -k` (which preserves the signature — `codesign --verify --deep
+      --strict` passes on the result, where `unzip` would not). Rehearsed end to end on v0.9.61: downloads
+      `…-app.zip`, `SHA256SUMS: OK`, installs, exit 0; the installed bundle reports the published **ad-hoc
+      cdhash** requirement, which is what `--check-permissions` flags.
 - [x] **One-place user documentation** — `docs/operations.md` (2026-10-15): the three install paths
       and why not to mix them, the TCC grants + `--check-permissions`, the Keychain password
       (set/rotate/remove), upgrade (what the menu verifies and that it updates the SERVER only) and

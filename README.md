@@ -64,10 +64,14 @@ Install an exact release:
 MACRDP_VERSION=v0.9.61 curl -fsSL https://raw.githubusercontent.com/donatopepe/macrdp/main/packaging/install-remote.sh | bash
 ```
 
-The installer downloads a release `.tar.gz`, verifies its published SHA-256
-when available, installs `macrdp.app` atomically into `~/Applications`, and
-loads the LaunchAgent when run from a checkout. Grant Screen Recording and
-Accessibility after installation. Maintainers create release assets with:
+The installer downloads the release's **app-bundle** archive, verifies it against
+the published `SHA256SUMS` (refusing to install unverified unless you pass
+`MACRDP_ALLOW_UNVERIFIED=1`), installs `macrdp.app` atomically into
+`~/Applications`, and loads the LaunchAgent when run from a checkout. Grant
+Screen Recording and Accessibility after installation. Note that a published
+bundle is **ad-hoc signed**, so it is a different code identity from a locally
+built one — see [docs/operations.md](docs/operations.md). Maintainers create
+release assets with:
 
 ```bash
 packaging/release-app.sh v0.9.7
