@@ -198,12 +198,7 @@ update path warns when the designated requirement changes — the one moment a T
   `--enable-microphone-redirection` (opt-in, default OFF, byte-identical when off), the connecting
   client redirects its mic and **"macrdp Microphone"** appears as a real macOS *input* device that
   QuickTime / Zoom / Voice Memos / dictation can record from.
-  - **Protocol side (server-direction MS-RDPEAI).** Dynamic virtual channel **`AUDIO_INPUT`** over
-    DRDYNVC. macrdp is the **receiver/sink** (the client's mic is the source). Handshake mirrors RDPSND
-    but reversed: `MSG_SNDIN_VERSION` (both ways) → `MSG_SNDIN_FORMATS` (server advertises the formats it
-    accepts; client replies its subset) → `MSG_SNDIN_OPEN` / `MSG_SNDIN_OPEN_REPLY` (pick a format, open
-    the recording) → client streams `MSG_SNDIN_DATA_INCOMING` + `MSG_SNDIN_DATA` (the PCM), with
-    `MSG_SNDIN_FORMATCHANGE` as needed. **ironrdp has no server-side RDPEAI** (it has `ironrdp-rdpsnd`
+  - **Historical protocol sketch (requires spec verification before implementation).** A server-direction audio-input DVC is proposed over DRDYNVC, with macrdp as receiver of client microphone data. The message names (`MSG_SNDIN_*`) below were copied from xrdp's implementation; confirm against the current MS-RDPEAI specification and client behavior before relying on this handshake or PDU ordering. **ironrdp has no server-side RDPEAI** (it has `ironrdp-rdpsnd`
     = output only), so this is new PDU work — a new vendored crate or an `ironrdp-server` module, wired
     through a **new factory seam** (`audin_factory`, mirroring the existing `sound_factory` / `gfx_factory`
     / `camera_factory` `Option<Box<dyn …>>` pattern — zero-overhead/no-op when the flag is off). Start with
@@ -230,14 +225,11 @@ update path warns when the designated requirement changes — the one moment a T
     `feed.rs` = the shared-memory producer into the HAL plug-in), mirroring `src/camera/`. The plug-in bundle:
     `gui/Sources/macrdpmic` (an `AudioServerPlugIn` `.driver`) + a `packaging/make-audio-plugin.sh` +
     `install-audio-plugin.sh` (privileged, like `install-ifd-handler.sh`).
-  - **Client + verification:** **FreeRDP `/microphone`** (the `audin` channel) first — easiest to script,
-    like the USB/camera FreeRDP-first bring-up; then **mstsc** "Remote audio → Settings → Record → *Record from
-    this computer*" for the real-Windows path. Acceptance: select the **A4Tech webcam mic** as the client's
-    default recording device → it shows as **"macrdp Microphone"** on the Mac → record in QuickTime → hear it.
+  - **Client + verification (unverified plan):** determine current FreeRDP microphone-redirection option/channel direction and current mstsc policy/UI first. Then test whether either client opens the proposed server-side DVC and sends audio; do not assume `/microphone` or the cited mstsc menu path is accurate without a version-specific run.
   - **Effort:** comparable to the camera feature (medium–large: new protocol channel + new macOS virtual
     device + install/signing). The **`AudioServerPlugIn` + shared-memory feed + clock-drift** piece is the
-    novel/risky part; the protocol side is well-trodden (RDPSND in reverse). **Biggest unknowns to resolve
-    first:** confirm mstsc/FreeRDP actually stream the mic to a server-direction `AUDIO_INPUT` DVC (P0 GO/NO-GO),
+    novel/risky part; do not assume the protocol is merely RDPSND in reverse until checked against the current specification. **Biggest unknowns to resolve
+    first:** verify MS-RDPEAI protocol direction, then confirm mstsc/FreeRDP stream microphone data to macrdp (P0 GO/NO-GO),
     and that a from-scratch `AudioServerPlugIn` fed from an external process works without licensing the
     BlackHole source. Natural next capability after the camera work — a full webcam **and** mic remote setup.
 
