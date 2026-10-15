@@ -174,25 +174,17 @@ macOS keys the Screen Recording / Accessibility grants to the **code identity**,
 
 ### If the RDP picture is black (with a live cursor)
 
-Close and reopen the **whole RDP client window** — not just the connection. That clears the client's retained
-EGFX surface cache, which is where the problem lives.
+The measured operational recovery on the affected setup is to close and reopen the **whole RDP client window** — not just the connection. This clears that process's session state, but the underlying cause has not been isolated.
 
-macrdp cannot fix this from the server side, and that is a measured statement, not a shrug. On 2026-10-15, on a
-client (Windows build 22621) that blanked from frame one on every reconnect, all of the server's levers were
-tried against the same session and none of them healed it:
+On 2026-10-15, a Windows build 22621 client blanked from frame one on repeated reconnects. Several server interventions were tested, but results do not establish an exclusively client-side cause or rule out other server/client interactions:
 
-- creating the surface at a **never-before-used id** (in case the client was no-op'ing a re-used id) — the id
-  really was fresh (`37888`, `37889`, `37890`), and every connection still blanked;
+- creating the surface at never-before-used IDs (`37888`, `37889`, `37890`) — the client still blanked, disproving the simple retained-ID no-op explanation as a complete cause;
 - the in-place **RDP re-activation** (the default first action) — it healed once that day (that session then ran
   106 minutes) and did nothing on the next four connections;
 - **repeating** that re-activation three times before giving up — same, blank every time;
 - the **drop + auto-reconnect** fallback — three drops in a row reconnected straight back into the blank.
 
-The detector gives up after 3 such drops and says so in `~/Library/Logs/macrdp.log`
-(`EGFX blank persisted across every auto-reconnect … fully close and reopen the RDP client window`). The blank
-is a *reconnect* symptom, so anything that forces one — a network blip, an auto-reconnect, or a macrdp restart
-— can land a still-open client in that state; restarting the server to "try again" therefore makes it worse, not
-better. Full evidence: the H.264 reconnect-blank entry in [docs/known-quirks.md](docs/known-quirks.md).
+The detector gives up after 3 drops and logs `EGFX blank persisted across every auto-reconnect … fully close and reopen the RDP client window`. The blank has been observed on reconnect; network blips, client auto-reconnect, and macrdp restarts may create another exposure, so avoid repeated restarts as an experiment. Full evidence and the current uncertainty are in [docs/known-quirks.md](docs/known-quirks.md).
 
 ## Auto-start at login (launchd)
 
