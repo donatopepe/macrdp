@@ -139,7 +139,12 @@ ironrdp-cliprdr          = { git = "https://github.com/Devolutions/IronRDP.git",
 ironrdp-connector        = { git = "https://github.com/Devolutions/IronRDP.git", rev = "a5d1c682fd1f65287f6f5727bdead2aef7a2bea7" }
 ironrdp-core             = { git = "https://github.com/Devolutions/IronRDP.git", rev = "a5d1c682fd1f65287f6f5727bdead2aef7a2bea7" }
 ironrdp-displaycontrol   = { git = "https://github.com/Devolutions/IronRDP.git", rev = "a5d1c682fd1f65287f6f5727bdead2aef7a2bea7" }
-ironrdp-egfx             = { git = "https://github.com/Devolutions/IronRDP.git", rev = "a5d1c682fd1f65287f6f5727bdead2aef7a2bea7" }
+# ironrdp-egfx is vendored (same upstream rev) for `create_surface_with_id` +
+# `Surfaces::reserve_id` — create an EGFX surface at an explicit, never-before-used
+# id, the only safe server-side lever against mstsc's cross-session surface-id
+# retention (the reconnect-blank). Opt-in at runtime; see
+# vendor/ironrdp-egfx/CLAUDE.md and docs/known-quirks.md.
+ironrdp-egfx = { path = "vendor/ironrdp-egfx" }
 ironrdp-graphics         = { git = "https://github.com/Devolutions/IronRDP.git", rev = "a5d1c682fd1f65287f6f5727bdead2aef7a2bea7" }
 ironrdp-pdu              = { git = "https://github.com/Devolutions/IronRDP.git", rev = "a5d1c682fd1f65287f6f5727bdead2aef7a2bea7" }
 ironrdp-rdpsnd           = { git = "https://github.com/Devolutions/IronRDP.git", rev = "a5d1c682fd1f65287f6f5727bdead2aef7a2bea7" }

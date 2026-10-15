@@ -19,3 +19,7 @@ Cargo.lock.bak
 
 # Soak run logs (scripts/soak-lossy.sh)
 /soak-lossy-*.log
+
+# pi loop / cron scheduling state (created by the /loop tooling in the repo root)
+.pi-loop.json
+.pi-loop.json.lock

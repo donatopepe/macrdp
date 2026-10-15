@@ -495,6 +495,17 @@ MACRDP_BLANK_RECOVERY_RETRY_MS=4000    # spacing between attempts
 MACRDP_BLANK_RECOVERY_MAX_ATTEMPTS=1   # forced to >=2 when REACTIVATE=1 so the fallback drop can fire
 MACRDP_BLANK_RECOVERY_MAX_CONSECUTIVE_DROPS=3  # reconnect-storm guard (0 = uncapped; only the drop fallback counts)
 MACRDP_AUTO_RECONNECT=1                # 0 = don't provision the auto-reconnect cookie (only the drop fallback needs it)
+### EGFX surface id (the other half of the mstsc reconnect-blank)
+# macOS client / mstsc retain EGFX surfaces BY ID for the whole lifetime of the
+# client process and no-op a CreateSurface for an id they already hold, so a
+# reconnect that re-creates id 0 composites a stale surface — black screen with
+# a live cursor. This opt-in creates the connection's surface at a persisted,
+# never-before-used id instead of the stock per-connection id 0, so the no-op
+# cannot happen. It sends NO DeleteSurface (that is client-fatal).
+# Default OFF: unset takes the stock auto-allocated id and the runtime is
+# unchanged. Config key `EGFX_FRESH_SURFACE_ID` / `EGFX_SURFACE_ID_FILE`.
+MACRDP_EGFX_FRESH_SURFACE_ID=0         # 1 = fresh surface id per connection
+MACRDP_EGFX_SURFACE_ID_FILE=           # counter file (default: <temp>/macrdp-egfx-next-surface-id; 0 = don't persist)
 ```
 
 Testing against the server:

@@ -2212,6 +2212,14 @@ fn args_from_config(path: &Path) -> Result<Args> {
         ),
         ("HEALTHCHECK_FAILURES", "MACRDP_HEALTHCHECK_FAILURES"),
         ("EVENT_QUEUE_HIGH", "MACRDP_EVENT_QUEUE_HIGH"),
+        // Opt-in EGFX surface-id policy (see src/h264.rs::fresh_surface_id):
+        // hand the client a never-before-used surface id instead of the stock
+        // per-connection id 0, which mstsc no-ops when it still holds a surface
+        // from an earlier session in the same client process. Opt-in because it
+        // is a live-experiment lever, not a measured default; the file holding
+        // the counter is overridable (and `0` disables persistence).
+        ("EGFX_FRESH_SURFACE_ID", "MACRDP_EGFX_FRESH_SURFACE_ID"),
+        ("EGFX_SURFACE_ID_FILE", "MACRDP_EGFX_SURFACE_ID_FILE"),
         // Blank recovery (the mstsc reconnect-blank auto-heal, needs
         // --enable-h264) + the auto-reconnect cookie. Env-driven like the
         // guard (read in h264.rs per connection / main.rs at server build,

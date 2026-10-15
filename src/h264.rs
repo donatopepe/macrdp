@@ -1271,6 +1271,125 @@ fn recovery_config_from_env() -> (bool, RecoveryParams) {
     (enabled, params)
 }
 
+/// Opt-in EGFX surface-id policy (env `MACRDP_EGFX_FRESH_SURFACE_ID=1`, config
+/// key `EGFX_FRESH_SURFACE_ID`): hand the client a surface id it has never seen
+/// instead of the per-connection auto-allocated id (always 0).
+///
+/// Why this exists: **mstsc retains EGFX surfaces by id for its whole process
+/// lifetime** and no-ops a `CreateSurface` for an id it already holds, so a
+/// reconnect that re-creates id 0 makes it composite the stale retained surface
+/// — a black screen with a live cursor. Live 2026-10-15: every one of 16
+/// connections logged `surface_id=0`, and the in-place reactivation plus the
+/// drop/auto-reconnect recovery could not heal it (the storm guard eventually
+/// gave up with the "close and reopen the client" message). Deliberately sends
+/// no `DeleteSurface`: deleting an id the client does not hold (or one mapped to
+/// the output) tears down its graphics channel instead of repairing it.
+///
+/// The counter is persisted so the id keeps climbing across macrdp restarts —
+/// the client's surface cache survives those too. Default OFF: with the flag
+/// unset `setup_locked` takes upstream's auto-allocated id and the runtime is
+/// unchanged.
+mod fresh_surface_id {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Never hand out an id below this. Small ids are exactly the ones the stock
+    /// auto-allocator (which starts at 0 on every connection) has already left in
+    /// a client's surface cache.
+    pub(super) const FLOOR: u16 = 8;
+
+    /// Next id after `previous`: counts up, and wraps back to the floor instead
+    /// of walking into the low ids a client is most likely to hold already.
+    pub(super) fn next_after(previous: u16) -> u16 {
+        match previous.checked_add(1) {
+            Some(next) if next >= FLOOR => next,
+            _ => FLOOR,
+        }
+    }
+
+    /// Seed used when there is no persisted counter (first run, or a cleaned temp
+    /// dir): spread the wall clock over the usable range, so a fresh install
+    /// starts well above the ids any earlier session is likely to have cached.
+    pub(super) fn seed_from_unix_secs(unix_secs: u64) -> u16 {
+        let span = u64::from(u16::MAX - FLOOR);
+        FLOOR + (unix_secs % span) as u16
+    }
+
+    /// Parse a persisted counter. Garbage, unparsable or below-floor values fall
+    /// back to `seed` rather than guessing.
+    pub(super) fn parse_persisted(text: &str, seed: u16) -> u16 {
+        text.trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|id| *id >= FLOOR)
+            .unwrap_or(seed)
+    }
+
+    fn seed_now() -> u16 {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        seed_from_unix_secs(secs)
+    }
+
+    /// Persisted, cross-connection counter. `path` is `None` in tests / when the
+    /// operator disabled persistence, in which case the counter still climbs
+    /// within the process but a restart re-seeds from the clock.
+    pub(super) struct Counter {
+        next: Mutex<u16>,
+        path: Option<PathBuf>,
+    }
+
+    impl Counter {
+        /// Load the persisted counter (or seed it), unless `path` is `None`.
+        pub(super) fn load(path: Option<PathBuf>) -> Self {
+            let seed = seed_now();
+            let next = path
+                .as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|text| parse_persisted(&text, seed))
+                .unwrap_or(seed);
+            Self {
+                next: Mutex::new(next),
+                path,
+            }
+        }
+
+        /// Claim the next id, persisting the one after it (best effort — a write
+        /// failure only costs a re-seed on the next start).
+        pub(super) fn take(&self) -> u16 {
+            let mut guard = self.next.lock().unwrap_or_else(|e| e.into_inner());
+            let id = *guard;
+            let following = next_after(id);
+            *guard = following;
+            if let Some(path) = self.path.as_ref() {
+                let _ = std::fs::write(path, following.to_string());
+            }
+            id
+        }
+    }
+}
+
+/// `MACRDP_EGFX_FRESH_SURFACE_ID=1` (config `EGFX_FRESH_SURFACE_ID=1`) enables
+/// [`fresh_surface_id`]. Read once, at pipeline construction.
+fn fresh_surface_id_enabled() -> bool {
+    std::env::var("MACRDP_EGFX_FRESH_SURFACE_ID")
+        .is_ok_and(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
+}
+
+/// Where the fresh-surface-id counter is persisted. Default: the per-user temp
+/// dir (it must outlive this process, not the machine); override with
+/// `MACRDP_EGFX_SURFACE_ID_FILE`, and `0`/empty to disable persistence.
+fn fresh_surface_id_path() -> Option<std::path::PathBuf> {
+    match std::env::var("MACRDP_EGFX_SURFACE_ID_FILE") {
+        Ok(v) if v.is_empty() || v.trim() == "0" => None,
+        Ok(v) => Some(std::path::PathBuf::from(v)),
+        Err(_) => Some(std::env::temp_dir().join("macrdp-egfx-next-surface-id")),
+    }
+}
+
 /// Cloneable factory + frame-submit handle. One clone is boxed into
 /// `RdpServer::builder().with_gfx_factory(...)`; another lives on the capture
 /// side as the `submit_bgra` entry point.
@@ -1297,6 +1416,11 @@ pub struct Gfx {
     /// so encoded frames are never dropped, which would break the H.264 chain).
     max_in_flight: u32,
     wire_format: WireFormat,
+    /// Opt-in [`fresh_surface_id`] policy: `Some` when
+    /// `MACRDP_EGFX_FRESH_SURFACE_ID=1`, in which case `setup_locked` creates the
+    /// connection's surface at a never-before-used id instead of upstream's
+    /// per-connection auto-allocated id 0 (the mstsc reconnect-blank cause).
+    fresh_surface_ids: Option<Arc<fresh_surface_id::Counter>>,
     /// Ack-driven IDR recovery (EGFX-on-lossy). `recovery_enabled` is the opt-in
     /// env gate (`MACRDP_UDP_EGFX_ACK_RECOVERY`); `egfx_on_lossy` is the *runtime*
     /// gate the vendored server flips true when it migrates EGFX onto the lossy
@@ -1713,6 +1837,8 @@ impl Gfx {
             keyframe_secs,
             max_in_flight,
             wire_format,
+            fresh_surface_ids: fresh_surface_id_enabled()
+                .then(|| Arc::new(fresh_surface_id::Counter::load(fresh_surface_id_path()))),
             recovery_enabled,
             recovery_params,
             egfx_on_lossy,
@@ -2696,19 +2822,33 @@ impl Gfx {
                 flags: MonitorFlags::PRIMARY,
             };
             server.resize_with_monitors(width, height, vec![monitor]);
-            // Create the surface with upstream's auto-allocated id. mstsc retains
-            // EGFX surfaces by id for its whole process lifetime and no-ops a
-            // CreateSurface for an id it already holds, so a reconnect to the
-            // same mstsc process can land on a stale surface and paint blank.
-            // A fresh per-session id (the old vendored `create_surface_with_id`)
-            // only mitigated this *unreliably* on mstsc — sometimes the desktop
-            // drew, sometimes it didn't — for the cost of a permanent upstream
-            // divergence. Since the reliable recovery is the same either way
-            // (close + reopen mstsc, which clears its surface cache), we use the
-            // stock API and document the quirk instead. See [[h264-reconnect-blank]].
-            let sid = server
-                .create_surface_with_format(width, height, PixelFormat::XRgb)
-                .ok_or_else(|| anyhow!("EGFX: create_surface failed (not ready?)"))?;
+            // Create the surface. Two policies:
+            //
+            // * stock (default): upstream's auto-allocated id, which is 0 for
+            //   every connection (a fresh `GraphicsPipelineServer` per
+            //   connection resets the allocator). mstsc retains EGFX surfaces by
+            //   id for its whole process lifetime and no-ops a CreateSurface for
+            //   an id it already holds, so a reconnect can land on its stale
+            //   retained surface and paint blank; the documented reliable cure
+            //   is to fully close and reopen the client window.
+            // * opt-in (`MACRDP_EGFX_FRESH_SURFACE_ID=1`, see
+            //   [`fresh_surface_id`]): a persisted, never-before-used id, so the
+            //   client cannot no-op the CreateSurface against a cached surface.
+            //   Live 2026-10-15 this was the difference worth testing: with the
+            //   stock id, 16 of 16 connections logged `surface_id=0` and the
+            //   in-place reactivation plus the drop/auto-reconnect recovery could
+            //   not heal the blank at all.
+            let created = match self.fresh_surface_ids.as_ref().map(|ids| ids.take()) {
+                Some(id) => {
+                    info!(
+                        surface_id = id,
+                        "EGFX: using a fresh (never-used) surface id"
+                    );
+                    server.create_surface_with_id(id, width, height, PixelFormat::XRgb)
+                }
+                None => server.create_surface_with_format(width, height, PixelFormat::XRgb),
+            };
+            let sid = created.ok_or_else(|| anyhow!("EGFX: create_surface failed (not ready?)"))?;
             if !server.map_surface_to_output(sid, 0, 0) {
                 return Err(anyhow!("EGFX: map_surface_to_output failed"));
             }
@@ -5306,5 +5446,81 @@ mod tests {
         assert_eq!(&out[11..14], pps.as_slice());
         assert_eq!(&out[14..18], &[0, 0, 0, 1]);
         assert_eq!(&out[18..20], &[0x65, 0x88]);
+    }
+
+    // ---- Fresh EGFX surface ids (opt-in; see `fresh_surface_id`) ----
+
+    #[test]
+    fn fresh_surface_id_counts_up_and_never_lands_in_the_cached_low_band() {
+        // Counting up is the whole point: a client can only no-op a CreateSurface
+        // for an id it already holds, so each connection must move past all ids
+        // any earlier connection used.
+        assert_eq!(
+            fresh_surface_id::next_after(fresh_surface_id::FLOOR),
+            fresh_surface_id::FLOOR + 1
+        );
+        assert_eq!(fresh_surface_id::next_after(1000), 1001);
+        // Wrap at the top and from the low band both return the floor, never 0..7.
+        assert_eq!(
+            fresh_surface_id::next_after(u16::MAX),
+            fresh_surface_id::FLOOR
+        );
+        assert_eq!(fresh_surface_id::next_after(0), fresh_surface_id::FLOOR);
+        assert_eq!(
+            fresh_surface_id::next_after(fresh_surface_id::FLOOR - 1),
+            fresh_surface_id::FLOOR
+        );
+    }
+
+    #[test]
+    fn fresh_surface_id_seed_spreads_the_clock_and_avoids_the_low_band() {
+        // A first run (no persisted counter) must start well above the ids the
+        // stock auto-allocator has already handed out (it always begins at 0).
+        for secs in [0u64, 1, 59, 1_700_000_000, u32::MAX as u64, u64::MAX] {
+            let id = fresh_surface_id::seed_from_unix_secs(secs);
+            assert!(
+                id >= fresh_surface_id::FLOOR,
+                "seed {id} below floor for {secs}"
+            );
+        }
+        // Deterministic, and different clocks land on different ids.
+        assert_eq!(
+            fresh_surface_id::seed_from_unix_secs(1_700_000_000),
+            fresh_surface_id::seed_from_unix_secs(1_700_000_000)
+        );
+        assert_ne!(
+            fresh_surface_id::seed_from_unix_secs(1_700_000_000),
+            fresh_surface_id::seed_from_unix_secs(1_700_000_001)
+        );
+    }
+
+    #[test]
+    fn fresh_surface_id_rejects_garbage_and_low_persisted_values() {
+        let seed = 42_000;
+        // A usable persisted counter is honoured (that is what keeps the id
+        // climbing across macrdp restarts, which the client's cache survives).
+        assert_eq!(fresh_surface_id::parse_persisted("42001", seed), 42001);
+        assert_eq!(fresh_surface_id::parse_persisted(" 42001\n", seed), 42001);
+        // Garbage, empty, negative, out-of-range and below-floor values all fall
+        // back to the seed instead of guessing.
+        for bad in ["", "   ", "not-a-number", "-1", "70000", "0", "7"] {
+            assert_eq!(
+                fresh_surface_id::parse_persisted(bad, seed),
+                seed,
+                "persisted value {bad:?} must fall back to the seed"
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_surface_id_counter_climbs_without_persistence() {
+        // No path (tests / persistence disabled): must still hand out distinct,
+        // climbing ids for the whole process lifetime.
+        let counter = fresh_surface_id::Counter::load(None);
+        let first = counter.take();
+        let second = counter.take();
+        assert!(first >= fresh_surface_id::FLOOR);
+        assert_eq!(second, fresh_surface_id::next_after(first));
+        assert_ne!(first, second);
     }
 }
