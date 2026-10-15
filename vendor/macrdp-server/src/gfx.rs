@@ -124,6 +124,83 @@ impl DvcProcessor for GfxDvcBridge {
 
 impl DvcServerProcessor for GfxDvcBridge {}
 
+#[cfg(test)]
+mod egfx_wire_regression_tests {
+    use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
+    use ironrdp_dvc::{DvcMessage, DvcProcessor};
+    use ironrdp_egfx::pdu::{
+        CapabilitiesAdvertisePdu, CapabilitiesV107Flags, CapabilitySet, GfxPdu, ResetGraphicsPdu,
+    };
+    use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer};
+    use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
+
+
+    struct NoopHandler;
+
+    impl GraphicsPipelineHandler for NoopHandler {
+        fn capabilities_advertise(&mut self, _pdu: &ironrdp_egfx::pdu::CapabilitiesAdvertisePdu) {}
+        fn on_ready(&mut self, _negotiated: &ironrdp_egfx::pdu::CapabilitySet) {}
+    }
+
+    fn decode_wire(data: &[u8]) -> GfxPdu {
+        // GraphicsPipelineServer emits ZGFX uncompressed single-segment framing
+        // (0xE0 descriptor, 0x04 flags) around each encoded GFX PDU.
+        assert_eq!(data[0], 0xE0);
+        assert_eq!(data[1], 0x04);
+        let mut cursor = ReadCursor::new(&data[2..]);
+        let pdu = GfxPdu::decode(&mut cursor).expect("valid EGFX PDU");
+        assert!(cursor.pos() <= data.len() - 2, "EGFX decoder stays within payload");
+        pdu
+    }
+
+    fn decode_messages(messages: Vec<DvcMessage>) -> Vec<GfxPdu> {
+        messages
+            .into_iter()
+            .map(|message| {
+                let mut bytes = vec![0; message.size()];
+                let mut cursor = WriteCursor::new(&mut bytes);
+                message.encode(&mut cursor).expect("message encodes");
+                decode_wire(&bytes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resize_with_explicit_monitor_precedes_surface_create_on_reconnect() {
+        let mut server = GraphicsPipelineServer::new(Box::new(NoopHandler));
+        let _ = server.start(7).expect("DVC starts");
+        let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[
+            CapabilitySet::V10_7 { flags: CapabilitiesV107Flags::empty() },
+        ]));
+        let mut bytes = vec![0; caps.size()];
+        let mut cursor = WriteCursor::new(&mut bytes);
+        caps.encode(&mut cursor).expect("caps encode");
+        let _ = server.process(7, &bytes).expect("caps negotiate");
+
+        // Same production ordering used on every fresh EGFX connection:
+        // RESET_GRAPHICS with an explicit output monitor before Create/MapSurface.
+        let monitor = Monitor {
+            left: 0,
+            top: 0,
+            right: 1709,
+            bottom: 1111,
+            flags: MonitorFlags::PRIMARY,
+        };
+        server.set_output_dimensions(1710, 1112);
+        server.resize_with_monitors(1710, 1112, vec![monitor]);
+        let sid = server.create_surface(1710, 1112).expect("ready after resize");
+        assert!(server.map_surface_to_output(sid, 0, 0));
+
+        let pdus = decode_messages(server.drain_output());
+        assert!(matches!(pdus.first(), Some(GfxPdu::ResetGraphics(ResetGraphicsPdu {
+            width: 1710, height: 1112, monitors, ..
+        })) if monitors.len() == 1 && monitors[0].flags.contains(MonitorFlags::PRIMARY)));
+        assert!(matches!(pdus.get(1), Some(GfxPdu::CreateSurface(_))));
+        assert!(matches!(pdus.get(2), Some(GfxPdu::MapSurfaceToOutput(_))));
+        assert_eq!(pdus.len(), 3);
+    }
+}
+
 /// Message for routing EGFX PDUs to the wire via `ServerEvent`.
 #[derive(Debug)]
 pub enum EgfxServerMessage {
