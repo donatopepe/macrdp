@@ -2223,15 +2223,6 @@ fn args_from_config(path: &Path) -> Result<Args> {
             "BLANK_RECOVERY_REACTIVATE",
             "MACRDP_BLANK_RECOVERY_REACTIVATE",
         ),
-        // How many leading recovery attempts reactivate the core in place before
-        // the drop is allowed (1 = today's reactivate-once-then-drop). Measured
-        // 2026-10-15: the reactivation is the lever that heals (one connection
-        // healed and ran 106.7 minutes) while the drop healed nothing, so >1 is
-        // the thing to A/B.
-        (
-            "BLANK_RECOVERY_REACTIVATE_ATTEMPTS",
-            "MACRDP_BLANK_RECOVERY_REACTIVATE_ATTEMPTS",
-        ),
         (
             "BLANK_RECOVERY_MAX_RTT_MS",
             "MACRDP_BLANK_RECOVERY_MAX_RTT_MS",

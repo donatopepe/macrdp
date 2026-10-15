@@ -480,11 +480,6 @@ so a static blank heals in ~4 s (see the blank-recovery notes in
 ```
 MACRDP_BLANK_RECOVERY=1                # 0 disables the detector entirely
 MACRDP_BLANK_RECOVERY_REACTIVATE=1     # 1 = reactivate-in-place (heals mstsc); 0 = fall back to drop
-MACRDP_BLANK_RECOVERY_REACTIVATE_ATTEMPTS=1  # how many LEADING attempts reactivate in place before the drop is allowed.
-                                       # 1 = today's behaviour (reactivate once, then drop). Measured 2026-10-15: the
-                                       # reactivation is the lever that heals (one connection healed and ran 106.7 min),
-                                       # while the drop healed nothing (three drops reconnected straight back into the
-                                       # blank and the storm guard then disabled recovery), so >1 is the thing to A/B.
 MACRDP_BLANK_RECOVERY_MAX_RTT_MS=80    # withhold recovery at/above this link RTT (0 = no gate)
 MACRDP_BLANK_RECOVERY_MIN_QOE=24       # all-zero QoE reports for the count path (~3 s of active decode) — never/barely-presented sessions only; an ESTABLISHED session uses ESTABLISHED_MIN_QOE instead
 MACRDP_BLANK_RECOVERY_MIN_RENDER_REPORTS=3  # CONSECUTIVE nonzero decode+render reports that count as "presenting" and disarm the detector (a shorter blip doesn't, and a lapse back to zero re-arms it)
