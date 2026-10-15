@@ -557,6 +557,12 @@ struct BlankRecoveryParams {
     /// heal, the second attempt drops. Forces `max_attempts` to ≥2 so the
     /// fallback drop can fire.
     reactivate: bool,
+    /// How many LEADING attempts reactivate the core in place before a drop is
+    /// allowed (`MACRDP_BLANK_RECOVERY_REACTIVATE_ATTEMPTS`, default 1). Only
+    /// consulted when `reactivate` is on; see [`blank_action_reactivating`] for
+    /// why the measured evidence makes >1 worth trying (the reactivation heals
+    /// in ~1-2 s while the detector can escalate to the drop before that shows).
+    reactivate_attempts: u32,
     /// Wall-clock fast-path for detection on a STATIC blank. A blank desktop
     /// changes little, so QoE reports trickle in slowly (~0.3/s vs ~8/s on an
     /// active screen) and the `min_qoe_reports` count alone can take ~70 s to
@@ -645,6 +651,47 @@ fn blank_action(attempt: u32, max_attempts: u32) -> BlankAction {
         BlankAction::Remap
     } else {
         BlankAction::Drop
+    }
+}
+
+/// Which lever to pull for a 1-based attempt when the reactivate-first policy is
+/// on: the first `reactivate_attempts` attempts **reactivate the RDP core in
+/// place** (non-destructive; the client re-maps its retained surface), and only
+/// an attempt after those drops the connection. Pure, unit-tested.
+///
+/// Why this is a knob rather than a hard-coded 1: measured 2026-10-15 on the
+/// affected Windows client, the reactivation DOES heal (one connection healed
+/// and then ran 106.7 minutes), but the detector can escalate before the heal
+/// shows up — the heal is reported ~1-2 s after the attempt while the next
+/// all-zero evidence window can complete in ~1.5 s and the retry interval is
+/// 4 s. The escalation it then chose was the DROP, which that day healed
+/// nothing: three drops in a row all reconnected straight back into the blank,
+/// and the storm guard eventually disabled recovery for the connection. So
+/// "reactivate again" is the cheaper, more promising path where "drop" is known
+/// to be poor — but it is not yet measured, so the default stays 1 (= today's
+/// behaviour: reactivate once, then drop).
+fn blank_action_reactivating(
+    attempt: u32,
+    max_attempts: u32,
+    reactivate_attempts: u32,
+) -> BlankAction {
+    let reactivations = reactivate_attempts.max(1);
+    if attempt <= reactivations && attempt < max_attempts.max(2) {
+        BlankAction::Reactivate
+    } else {
+        BlankAction::Drop
+    }
+}
+
+/// Total attempts per connection: at least one more than the number of
+/// reactivations, so the fallback drop is still reachable when the reactivate
+/// policy is on (`REACTIVATE_ATTEMPTS=3` ⇒ at least 4 attempts). Pure,
+/// unit-tested. Without the policy this is just the operator's value.
+fn blank_max_attempts(configured: u32, reactivate: bool, reactivate_attempts: u32) -> u32 {
+    if reactivate {
+        configured.max(reactivate_attempts.max(1) + 1)
+    } else {
+        configured
     }
 }
 
@@ -1619,6 +1666,10 @@ impl Gfx {
             .ok()
             .map(|s| !matches!(s.trim(), "0" | "false" | "off" | "no"))
             .unwrap_or(true);
+        // How many leading attempts reactivate in place before the drop is
+        // allowed. Default 1 = today's behaviour (reactivate once, then drop);
+        // raise it to test "try the heal again before giving the session up".
+        let reactivate_attempts = env_u32("MACRDP_BLANK_RECOVERY_REACTIVATE_ATTEMPTS", 1);
         let blank_params = BlankRecoveryParams {
             min_qoe_reports: u64::from(env_u32("MACRDP_BLANK_RECOVERY_MIN_QOE", 24)),
             min_render_reports: u64::from(env_u32("MACRDP_BLANK_RECOVERY_MIN_RENDER_REPORTS", 3)),
@@ -1646,18 +1697,20 @@ impl Gfx {
                 "MACRDP_BLANK_RECOVERY_HEAL_CONFIRM_MS",
                 8000,
             ))),
-            // Reactivate-first needs ≥2 attempts so, if the reactivation ever
-            // fails to heal, the fallback drop can still fire on the next window.
-            max_attempts: if blank_reactivate {
-                env_u32("MACRDP_BLANK_RECOVERY_MAX_ATTEMPTS", 1).max(2)
-            } else {
-                env_u32("MACRDP_BLANK_RECOVERY_MAX_ATTEMPTS", 1)
-            },
+            // Reactivate-first: the first `reactivate_attempts` attempts heal in
+            // place; the drop is the fallback after them. `max_attempts` is
+            // forced high enough that the fallback stays reachable.
+            max_attempts: blank_max_attempts(
+                env_u32("MACRDP_BLANK_RECOVERY_MAX_ATTEMPTS", 1),
+                blank_reactivate,
+                reactivate_attempts,
+            ),
             max_consecutive_drops: env_u32("MACRDP_BLANK_RECOVERY_MAX_CONSECUTIVE_DROPS", 3),
             max_rtt_ms: env_u32_zero_ok("MACRDP_BLANK_RECOVERY_MAX_RTT_MS", 80),
             blank_max_wait: watchdog_ms("MACRDP_BLANK_RECOVERY_MAX_WAIT_MS", 4000),
             blank_min_reports: u64::from(env_u32("MACRDP_BLANK_RECOVERY_MIN_WALL_REPORTS", 1)),
             reactivate: blank_reactivate,
+            reactivate_attempts,
         };
         let adaptive_seed_rtt_ms = env_u32_zero_ok("MACRDP_ADAPTIVE_SEED_RTT_MS", 50);
         if let Some(stats) = crate::stats::global() {
@@ -2019,13 +2072,13 @@ impl Gfx {
                 }) {
                     let attempt_no = ctx.blank_recovery_attempts + 1;
                     let action = if self.blank_params.reactivate {
-                        // Experimental: first fire = bare core reactivation;
-                        // later fires fall through to the drop.
-                        if attempt_no == 1 {
-                            BlankAction::Reactivate
-                        } else {
-                            BlankAction::Drop
-                        }
+                        // Reactivate-first: heal in place on the leading attempts
+                        // (see `blank_action_reactivating`); drop only after them.
+                        blank_action_reactivating(
+                            attempt_no,
+                            self.blank_params.max_attempts,
+                            self.blank_params.reactivate_attempts,
+                        )
                     } else {
                         blank_action(attempt_no, self.blank_params.max_attempts)
                     };
@@ -4266,6 +4319,9 @@ mod tests {
             // the wall-clock test asserts against this value.
             blank_min_reports: 3,
             reactivate: false,
+            // Irrelevant while `reactivate` is false (the tests here exercise the
+            // remap/drop policy); the reactivating policy has its own tests.
+            reactivate_attempts: 1,
         }
     }
 
@@ -5154,6 +5210,36 @@ mod tests {
             false, // acked_since_attempt — irrelevant unless the post-attempt deadline is under test
             &p
         ));
+    }
+
+    #[test]
+    fn blank_action_reactivating_heals_first_then_drops() {
+        // Default: exactly ONE reactivation, then the drop (today's behaviour).
+        assert_eq!(blank_action_reactivating(1, 2, 1), BlankAction::Reactivate);
+        assert_eq!(blank_action_reactivating(2, 2, 1), BlankAction::Drop);
+        // Tuned: three reactivations before the drop is even reachable.
+        assert_eq!(blank_action_reactivating(1, 4, 3), BlankAction::Reactivate);
+        assert_eq!(blank_action_reactivating(3, 4, 3), BlankAction::Reactivate);
+        assert_eq!(blank_action_reactivating(4, 4, 3), BlankAction::Drop);
+        // 0/absent means "the default 1", never "no reactivation at all".
+        assert_eq!(blank_action_reactivating(1, 2, 0), BlankAction::Reactivate);
+        assert_eq!(blank_action_reactivating(2, 2, 0), BlankAction::Drop);
+        // The attempt cap always wins: an attempt at/over max_attempts drops even
+        // when the reactivation budget is larger (the drop must stay reachable).
+        assert_eq!(blank_action_reactivating(5, 3, 2), BlankAction::Drop);
+    }
+
+    #[test]
+    fn blank_max_attempts_keeps_the_drop_reachable() {
+        // Policy off: the operator's value is used verbatim.
+        assert_eq!(blank_max_attempts(1, false, 3), 1);
+        assert_eq!(blank_max_attempts(5, false, 3), 5);
+        // Policy on: at least one more than the reactivation budget (default
+        // budget 1 -> 2, which is what v0.8.27 onwards ran).
+        assert_eq!(blank_max_attempts(1, true, 1), 2);
+        assert_eq!(blank_max_attempts(1, true, 3), 4);
+        // A larger operator value is never lowered.
+        assert_eq!(blank_max_attempts(9, true, 3), 9);
     }
 
     #[test]
