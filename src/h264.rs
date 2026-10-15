@@ -2678,6 +2678,11 @@ impl Gfx {
         if ctx.surface_id.is_none() {
             ctx.dims = (width, height);
             let mut server = ctx.server_handle.lock().unwrap();
+            if !server.is_ready() {
+                return Err(anyhow!(
+                    "EGFX: graphics pipeline is not Ready during surface setup"
+                ));
+            }
             server.set_output_dimensions(width, height);
             // Emit RESET_GRAPHICS with an explicit single-monitor layout
             // covering the full desktop, BEFORE create_surface. The auto-reset

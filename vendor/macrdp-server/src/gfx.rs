@@ -168,6 +168,7 @@ mod egfx_wire_regression_tests {
     #[test]
     fn resize_with_explicit_monitor_precedes_surface_create_on_reconnect() {
         let mut server = GraphicsPipelineServer::new(Box::new(NoopHandler));
+        assert!(!server.is_ready(), "pipeline starts before capability negotiation");
         let _ = server.start(7).expect("DVC starts");
         let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[
             CapabilitySet::V10_7 { flags: CapabilitiesV107Flags::empty() },
@@ -176,6 +177,7 @@ mod egfx_wire_regression_tests {
         let mut cursor = WriteCursor::new(&mut bytes);
         caps.encode(&mut cursor).expect("caps encode");
         let _ = server.process(7, &bytes).expect("caps negotiate");
+        assert!(server.is_ready(), "pipeline is Ready after capability negotiation");
 
         // Same production ordering used on every fresh EGFX connection:
         // RESET_GRAPHICS with an explicit output monitor before Create/MapSurface.
