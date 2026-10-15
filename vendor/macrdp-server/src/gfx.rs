@@ -199,6 +199,47 @@ mod egfx_wire_regression_tests {
         assert!(matches!(pdus.get(2), Some(GfxPdu::MapSurfaceToOutput(_))));
         assert_eq!(pdus.len(), 3);
     }
+
+    #[test]
+    fn reset_graphics_round_trips_exact_primary_bounds() {
+        let monitor = Monitor {
+            left: 0,
+            top: 0,
+            right: 1709,
+            bottom: 1111,
+            flags: MonitorFlags::PRIMARY,
+        };
+        let expected = ResetGraphicsPdu {
+            width: 1710,
+            height: 1112,
+            monitors: vec![monitor],
+        };
+        let pdu = GfxPdu::ResetGraphics(expected.clone());
+        let mut bytes = vec![0; pdu.size()];
+        let mut cursor = WriteCursor::new(&mut bytes);
+        pdu.encode(&mut cursor).expect("reset encodes");
+        let wrapped = [0xE0, 0x04].into_iter().chain(bytes).collect::<Vec<_>>();
+        assert_eq!(decode_wire(&wrapped), GfxPdu::ResetGraphics(expected));
+    }
+
+    #[test]
+    fn reset_graphics_decoder_rejects_more_than_sixteen_monitors() {
+        // ResetGraphics fixed size is 340 bytes. Monitor count follows width/height;
+        // 17 is rejected before monitor entries are read.
+        let mut pdu = vec![0u8; 340];
+        pdu[0..4].copy_from_slice(&1710u32.to_le_bytes());
+        pdu[4..8].copy_from_slice(&1112u32.to_le_bytes());
+        pdu[8..12].copy_from_slice(&17u32.to_le_bytes());
+        let wrapped = [0xE0, 0x04].into_iter().chain(pdu).collect::<Vec<_>>();
+        let result = decode_wire_result(&wrapped);
+        assert!(result.is_err(), "protocol limit is 16 monitors");
+    }
+
+    fn decode_wire_result(data: &[u8]) -> ironrdp_core::DecodeResult<GfxPdu> {
+        assert_eq!(data[0], 0xE0);
+        assert_eq!(data[1], 0x04);
+        GfxPdu::decode(&mut ReadCursor::new(&data[2..]))
+    }
 }
 
 /// Message for routing EGFX PDUs to the wire via `ServerEvent`.
