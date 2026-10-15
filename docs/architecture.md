@@ -341,21 +341,19 @@ vendor/ironrdp-dvc/       Local fork of ironrdp-dvc 0.5.0 (added 2026-06-26, 4th
                           Soft-Sync rides drdynvc on the MAIN TCP connection; only
                           channel data after the switch rides the UDP tunnel.
 
-vendor/ironrdp-egfx/       Local fork of ironrdp-egfx 0.3.0 (RE-ADDED
-                          2026-10-15, 6th fork; originally deleted 2026-05-25
-                          when its only divergence — the CapabilitySet::decode
-                          version tolerance — merged upstream as PR #1298). The
-                          new divergence is `create_surface_with_id` +
-                          `Surfaces::reserve_id`: create the EGFX surface at an
-                          explicit, never-before-used id. **mstsc retains EGFX
-                          surfaces by id for its whole process lifetime and no-ops
-                          a CreateSurface for an id it already holds**, and the
-                          per-connection auto-allocator always starts at 0, so a
-                          reconnect inside a still-running mstsc composites its
-                          stale retained surface — black screen with a live
-                          cursor. Opt-in at runtime
-                          (`EGFX_FRESH_SURFACE_ID=1`); sends no DeleteSurface,
-                          which is client-fatal. See its CLAUDE.md.
+(vendor/ironrdp-egfx/     DELETED 2026-05-25. The CapabilitySet::decode
+                          tolerance fix was merged upstream as PR #1298
+                          (Devolutions/IronRDP@67f3c63). We bumped the
+                          ironrdp rev in [patch.crates-io] to that commit
+                          and the vendor dir is gone. If you're seeing this
+                          comment in a stale checkout — the dir is not
+                          missing, it just stopped existing. RE-ADDED briefly
+                          on 2026-10-15 for a `create_surface_with_id` lever
+                          against mstsc's reconnect-blank, then REMOVED again
+                          the same day: a live A/B on the affected client showed
+                          never-before-used surface ids blank exactly like id 0,
+                          so the divergence bought nothing — see the
+                          reconnect-blank note in known-quirks.md.)
 
 (vendor/ironrdp-cliprdr/  DELETED 2026-05-25. All THREE divergences
                           (on_format_list_response hook #1300,
