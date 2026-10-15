@@ -360,15 +360,7 @@ update path warns when the designated requirement changes — the one moment a T
   SharedWriter labels audio socket-write timing separately without changing ownership; owner now
   exposes writer construction, typed ingress-writer handoff, `with_ingress` setup, and explicit
   shutdown/drain signaling tests for a future controlled handoff, but live wiring remains blocked. The cutover boundary is now a single `client_loop` owner task; no producer may retain a `FramedWrite` or `WriteHalf` after activation.
-- [ ] **Perf (upstream candidates, vendored server — do NOT land as new divergences):** from
-  the same audit: (a) `SharedWriter`/dispatch write coalescing — every fragment/event is its
-  own `write_all` = 2 boxed futures + syscall + flush (`server.rs:2643` + git-pinned
-  `ironrdp-tokio`), dozens–hundreds per EGFX batch; coalescing a batch into one write is a
-  med-high win under load but touches the most sensitive path → propose upstream. (b) legacy
-  bitmap encoder: fresh `vec![0; len*2]` per diff-rect + one `spawn_blocking` round-trip per
-  rect (`encoder/mod.rs:520,337`) — reuse a scratch buffer + one `spawn_blocking` per update;
-  legacy-clients-only, clean upstream PRs. NOT worth doing: RDPEUDP per-datagram allocs
-  (inherent to sans-I/O design), NFS readdir pagination cache, UDP idle tick suppression.
+- [x] **Performance review — stale 2026-06-28/29 opportunities rechecked against current tree.** Bounded SharedWriter batching and adjacent EGFX/display-write coalescing are already implemented (commits `0c83d56`, `c9a5457`, `b97a1cf`; capped writes preserve ordering/fairness). Legacy bitmap scratch-buffer/`spawn_blocking` optimization remains unmeasured legacy-client-only work; do not add without profiling. RDPEUDP allocation, NFS pagination and idle-tick changes remain explicitly not worth pursuing.
 - [x] **Adaptive congestion control — implemented baseline; optional research separated below.** Historical rollout notes: **P1 (adaptive bitrate)
   SHIPPED as #94; P2a (IDR backoff + ack-lag signal switch) SHIPPED 2026-06-29;
   P3 (controller runs on the TCP path too) SHIPPED 2026-06-29** (verified on real mstsc:
