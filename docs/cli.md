@@ -507,6 +507,10 @@ MACRDP_AUTO_RECONNECT=1                # 0 = don't provision the auto-reconnect 
 MACRDP_EGFX_FRESH_SURFACE_ID=0         # 1 = fresh surface id per connection
 MACRDP_EGFX_SURFACE_ID_FILE=           # counter file (default: <temp>/macrdp-egfx-next-surface-id; 0 = don't persist)
 ```
+To A/B it live (snapshots config.env, restarts the agent, reads the log, and
+puts the original config back): `scripts/test-egfx-fresh-surface-id.sh on|off|restore`,
+plus `status` for a read-only look at the key, the counter file and the recent
+surface-id/blank lines.
 
 Testing against the server:
 ```bash
