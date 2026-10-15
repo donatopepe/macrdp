@@ -70,7 +70,7 @@ context; the RETIRED ones were NOT re-applied. Server-fork div-9 (honor-size for
     On the next pin bump past it, delete this divergence and adopt the upstream
     API (main.rs switches the `set_honor_client_desktop_size` setter to the
     builder method). Verified redundant vs upstream/master 2026-07-08. (Follow-up
-    #1404 — clamp the honored size to an operator max — is still OPEN.)
+    #1404 — clamp the honored size to an operator max — MERGED 2026-08-02.)
 
     **Extension (2026-07-09): operator ceiling for the honored size**
     (`honor_client_desktop_size_max: Option<DesktopSize>`, setter

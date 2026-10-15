@@ -680,36 +680,19 @@ update path warns when the designated requirement changes — the one moment a T
 
 ## Upstreaming watch (no action unless a release lands)
 
-- **▶ UPDATE 2026-09-16 — supersedes the "ZERO open clintcan PRs" note below.** clintcan has 0 open
-  upstream PRs and 2 open issues (#1484, #1969). Detail: the `project_upstream_ironrdp_open_prs` memory
-  and the divergence notes in `vendor/macrdp-server/CLAUDE.md`.
+- **▶ UPDATE 2026-10-15 — upstream status rechecked via GitHub.** IronRDP issue #1969 is CLOSED (2026-10-01); #1484 remains OPEN. PR stack #1951/#1953/#1954 is CLOSED; do not treat old "open stack" as current. PR #1946 server-side AUDIO_INPUT integration is MERGED (2026-09-22); #1645 protocol crate also merged. Draft macrdp pin bump #194 remains open and awaits live gates. See relevant merge records below.
   - **Divergence (23), second-client preemption, is upstream — with traps.** #1476 MERGED 2026-09-08;
     #1913 MERGED 2026-09-11 replaced its bool with `ConnectionPolicy { Queue (default), Reject, Preempt }`
     via `with_connection_policy`. The bump must add `.with_connection_policy(ConnectionPolicy::Preempt)`
     or takeover silently reverts to the pre-#174 hang. Not drop-in: upstream also invalidates the ARC
-    cookie on eviction, and has the #1969 bug. #1483 CLOSED 2026-09-15 as resolved by #1476 + #1913.
-  - **#1969** (filed 2026-09-16, reproduced + confirmed causal): under `ConnectionPolicy::Preempt`,
-    `on_connection_info` never reaches the handler, because `run()` takes the handler out for the race.
-    **Blocks de-vendoring (22)/(23)** and upstreaming (18). Ships in `ironrdp-server` 0.14.0 unless fixed
-    (release PR #1880); #1934 proposes making preemption the default. Repro test is committed locally on
-    the IronRDP clone branch `repro/preempt-drops-handler-hooks` (not pushed).
-  - **Divergence (18), `on_authenticated`, → #1484.** glamberson green-lit filing the patch 2026-09-05 (a
-    peer, not a maintainer). The held patch is 392 commits stale and conflicts, and is **blocked on #1969**.
-  - **Overlapping upstream work to evaluate at the next bump:** divergence (12) multitransport ↔
-    glamberson's open stack #1951 → #1953 → #1954 (reliable-UDP EGFX only — no lossy audio, no
-    mid-session de-migration); the mic divergence (24→25) ↔ the `ironrdp-rdpeai` crate already on master
-    (#1645, 2026-08-12) plus #1946's `ironrdp-server` integration (open).
-  - Merged since the previous update: #1556, #1690, #1417, #1711, #1769, #1691.
+    cookie on eviction. #1969 closed 2026-10-01; inspect its fix and whether included in target pin. #1483 CLOSED 2026-09-15 as resolved by #1476 + #1913.
+  - **#1969 — CLOSED 2026-10-01.** Its old text describing the hook-loss bug as open/blocking is historical; check the closing fix/release before any de-vendoring decision.
+  - **Divergence (18), `on_authenticated`, → #1484 (OPEN issue).** Prior patch was reported stale/conflicting and blocked on #1969; since #1969 closed 2026-10-01, re-check the issue and current API before deciding whether to refresh or close this divergence.
+  - **Overlapping upstream work to evaluate at the next bump:** the #1951/#1953/#1954 multitransport stack is CLOSED; #1645 RDPEAI crate and #1946 server integration are MERGED. Review their final merged APIs against this pin at migration time.
+  - Historic merged list retained in PR-specific entries below.
 
-- IronRDP forks are effectively permanent (each carries un-upstreamed divergences:
-  multitransport, rdpdr server-direction, smartcard, acceptor KLID+MT, audio-lag/resize/dispatch,
-  server ARC auto-reconnect cookie). **#1359 (rdpsnd) + #1397 (acceptor keyboard-layout on
-  `AcceptorResult`) MERGED 2026-07-01; #1373 (acceptor honor-size) MERGED 2026-07-02 (`d471bd06`).**
-  **MERGE WAVE 2026-07-30/31 (mamoreau + CBenoit): #1453 + #1405 + #1418 + #1420 all MERGED
-  (the rebase unblocked #1420). Now ONLY ONE PR open — #1404 (idle since 07-02, now
-  CONFLICTING after the master advance) — plus tracking issue #1508. Reactive-only:**
-  **▶ UPDATE 2026-08-02: #1404 MERGED (mamoreau) + #1508 CLOSED as completed (done via #1509, MERGED
-  08-02) → ZERO open clintcan PRs. Everything below is now merged; kept as the record.**
+- IronRDP vendored forks carry macrdp-specific divergences; the set changes as upstream releases land. Snapshot: #1359, #1397, #1373 and the 2026-07/08 merge wave below are historical. Recompute the remaining list against the target revision before any pin migration.
+  **Historical merge wave 2026-07-30/31:** #1453, #1405, #1418 and #1420 merged; #1404 merged and #1508 closed via #1509 on 2026-08-02. Later upstream activity is summarized in the refreshed watch entry above.
   - [x] **#1404** `feat(acceptor)!: clamp honored client desktop size to an operator maximum` (**MERGED 2026-08-02, mamoreau**) — the
     honor-size resource-hardening CBenoit green-lit in his #1373 approval. Replaces the `bool` with
     `Option<DesktopSize>` = operator max; client request clamped per-dimension. Upstreams the
@@ -765,30 +748,11 @@ update path warns when the designated requirement changes — the one moment a T
     (#1373) surfacing at all six touch points. No test (matches #1397/#1373 precedent; acceptor lib is
     `test=false`). clippy/fmt clean. The bulky M3c advertise/emit/offer HALF of divergence (3) stays
     vendored as macrdp UDP policy, so even merged+released this does NOT de-vendor the acceptor.
-  Nothing whole-vendor-dir is currently de-vendorable (each fork keeps ≥1 macrdp-specific
-  server-direction divergence). **Divergence logs reconciled vs upstream/master 2026-07-08**
-  (de-drift committed `27c5a84`): six divergences are already merged upstream and become deletions
-  on the next pin bump — dvc (2) close-hook (#1302), acceptor (1)/(2) + server (9)
-  honor-size/keyboard-layout (#1373/#1397), server SuppressOutput (#1319), NSCodec (#1332), QOI
-  (#1335/#1341). Full ranked list: `project_upstream_ironrdp_open_prs` memory.
-  **Pin-bump follow-ups (when the git pin bumps past the merges):**
-  (a) past `2d3bdef` → `src/audio.rs` adopts the new rdpsnd handler API (`choose_format` + fallible
-  `start(&NegotiatedFormat)`), dropping the hand-rolled `wFormatNo` index logic; (b) past `d471bd06`
-  → `main.rs` switches `set_honor_client_desktop_size(bool)` to the builder `with_honor_client_desktop_size`
-  (and, once #1404 lands, re-route the shipped `--max-client-size` clamp — currently a local acceptor/server divergence extension, 2026-07-09 — through the upstream `Option<DesktopSize>` honor-size API).
-- [ ] **IronRDP pin bump — upstream draft PR #194 exists; do not duplicate its migration.** Local tree remains pinned to `a5d1c682` (Cargo.toml); upstream `clintcan/macrdp` PR #194 is an open draft targeting `e258f6a0` (updated 2026-10-02). Its author says code passes locally but live client tests and soak remain. Before any local bump, review that PR's current head/diff and live-test gates; this repo's vendored forks and integration are different, so do not assume it is directly mergeable.
-    <!-- SERVER DIV 16 (URBDRC) — #1394 API-FIT INVESTIGATED 2026-08-02 (see project_upstream_ironrdp_open_prs):
-  NOT a free bump deletion. #1394 landed in ironrdp-rdpeusb (sans-I/O) as UrbdrcControlServer +
-  UrbdrcDeviceServer (DvcServerProcessor + backend traits, sync request-generating). macrdp's div 16
-  is the HIGHER async layer (UsbHandle transfer API + UsbRouter completion router + ServerEvent::Urbdrc
-  integration + urbdrc_factory seam). Path to DELETE div 16 is ALREADY being built upstream by uchouT
-  (do NOT file a competing PR): (a) the ironrdp-server seam = uchouT's OPEN PR #1417 (adds
-  ServerBuilder::with_usb_factory + src/urbdrc.rs + UsbDeviceHandle + per-device backend — near-exact
-  match to div 16; blocked by #1416, stale 07-15); (b) when #1417+#1394 merge + pin bump, macrdp adopts
-  upstream's with_usb_factory/UsbDeviceHandle/backend and DELETES vendor/macrdp-server/src/rdpeusb.rs.
-  Only constructive move for us: VALIDATE #1417 from macrdp's real-URBDRC-server perspective (like the
-  #1509 validation) once it's unblocked. Track it, don't file. Pin-bump-era adoption. -->
-- [ ] **IronRDP pin migration — upstream draft #194; local tree intentionally remains at `a5d1c682`.** Draft proposes `e258f6a0` and reports live-client tests/soak outstanding. A local migration needs a fresh compatibility audit: this repository's vendored forks/integration differ. The following 2026-08 dry-run map is historical; do not use its 879ffed-era pin assumptions, PR statuses, vendor counts or effort estimate as current. Rebuild from current Cargo pins and #194 diff before starting; schedule separate live verification.    **THE SINGLE MOST IMPORTANT FINDING: `ironrdp-core` 0.1→0.2 is ADDITIVE** — `Encode`/`Decode`
+  The July 2026 vendor-removal count and follow-up API list are a historical snapshot of the older pin. Rebuild the exact removable-divergence map against the target revision and current fork CLAUDE.md files before migration; #1404 is now merged.
+    <!-- Historical API-fit note (2026-08-02): IronRDP #1394's sans-I/O URBDRC processors do not by themselves replace macrdp's async UsbHandle/router integration. The server factory integration #1417 later merged; compare current upstream code to the local divergence during pin migration. Do not use the old 'open/blocked' PR status here. -->
+- [ ] **IronRDP pin migration — upstream draft #194; local tree remains at `a5d1c682`.** Draft proposes `e258f6a0`; its description says live-client tests and soak remain. This repository's vendored forks/integration differ, so review its current head and perform a fresh compatibility audit before a local migration. All following dry-run details are historical (Aug 2026) and are not authoritative; schedule separate live verification.
+
+  **Archived dry-run (2026-08; stale):** `ironrdp-core` 0.1→0.2 was assessed as additive — `Encode`/`Decode`
     traits, `ReadCursor`/`WriteCursor`, `ensure_size!`/`invalid_field_err!`, `EncodeError`/`DecodeError`
     all byte-identical (only a `NonEmpty` export added). So the foundational layer does NOT ripple —
     every custom-PDU impl in the forks + rdpeudp re-compiles near-unchanged; the divergences are

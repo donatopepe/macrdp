@@ -168,7 +168,7 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     forwarded to the acceptor alongside the bool — the operator ceiling for
     the honored size (macrdp's `--max-client-size`, defense-in-depth; the
     clamp itself lives in the vendored acceptor, see its divergence (1)
-    extension). Mirrors upstream PR #1404 (OPEN); on the pin bump past it,
+    extension). Mirrors upstream PR #1404 (MERGED 2026-08-02); on the pin bump past it,
     drop this and adopt the upstream `Option<DesktopSize>` honor-size API.
 
 (11) Server-side RDPDR (drive redirection) static channel (NOT upstreamed;
@@ -934,19 +934,7 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     ~60s after a de-migration (its multitransport dead-tunnel timeout on the now-silent
     UDP tunnel) — keepalive or cleanly close the abandoned tunnel on de-migrate.
 
-    **UPSTREAM PATH IN FLIGHT (2026-09-16).** glamberson's stacked PRs, all OPEN:
-    #1951 (server-side UDP multitransport bootstrapping) → #1953
-    (`accept_finalize_with_multitransport` driver) → #1954 (wires it into
-    `ironrdp-server` via `RdpServerBuilder::with_udp_transport`). Per #1954's
-    description it covers reliable-UDP EGFX migration via Soft-Sync with a TCP
-    fallback on setup failure. Differences from this divergence, as described: it
-    migrates EGFX automatically whenever UDP is configured, whereas macrdp keeps that
-    behind `--udp-migrate-egfx` (default off) because a reliable tunnel head-of-line
-    blocks under loss exactly like TCP; it mentions no recovery from a tunnel that
-    wedges mid-session (macrdp's watchdog de-migration + tunnel-death detection); it
-    has no lossy UDP audio (macrdp's DTLS path stays a divergence); and it has no
-    end-to-end UDP handshake test. If the stack merges, the reliable-EGFX half of
-    (12) may de-vendor at a bump; the rest stays.
+    **UPSTREAM STATUS RECHECK (2026-10-15):** glamberson's stack #1951/#1953/#1954 MERGED (2026-09-28–30). Their descriptions cover reliable-UDP EGFX migration via Soft-Sync. The local divergence additionally includes macrdp policy (`--udp-migrate-egfx` opt-in), watchdog de-migration/tunnel-death detection and lossy UDP audio. Compare merged upstream implementation against these remaining requirements at pin migration; do not use the former open-PR snapshot.
 
 (13) Server Auto-Reconnect Cookie (MS-RDPBCGR ARC_SC_PRIVATE_PACKET) — NOT
     upstreamed; added 2026-07-02. `RdpServer` gains `auto_reconnect_cookie:
