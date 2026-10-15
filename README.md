@@ -44,7 +44,7 @@ This distribution targets one trusted interactive session on a Mac. It is intend
 
 **Verified workflow:** TLS/NLA (CredSSP) against the Mac account, per-IP authentication throttling and audit logging, display/input including non-US layouts, bidirectional clipboard and file copy, system audio, optional drive and smart-card redirection, headless virtual displays, and optional hardware H.264/EGFX. The project also ships signed-app/LaunchAgent packaging and a health-check watchdog.
 
-**Known limits:** one session and one user; no multi-monitor or printer redirection; macOS policy can black out DRM video and password-manager windows; synthetic input cannot reach login or secure fields; an `mstsc` reconnect can briefly blank while the server reactivates the RDP core; opt-in UDP paths are newer than the TCP path; no enterprise SLA. Never expose RDP directly on a public IP—use a VPN or RD Gateway.
+**Known limits:** one session and one user; no multi-monitor or printer redirection; macOS policy can black out DRM video and password-manager windows; synthetic input cannot reach login or secure fields; a reconnect into a still-running `mstsc` can leave a **black picture with a live cursor** — the server's in-place RDP re-activation heals that only sometimes (measured 2026-10-15: fresh surface ids, repeated re-activations and the reconnect drop all failed on an affected client); **closing and reopening the RDP client window fixes it every time**. See *If the RDP picture is black* below; opt-in UDP paths are newer than the TCP path; no enterprise SLA. Never expose RDP directly on a public IP—use a VPN or RD Gateway.
 
 See the [production-readiness roadmap](docs/production-readiness-roadmap.md) for remaining gaps and verification evidence.
 
@@ -162,6 +162,28 @@ All good.
 ```
 
 macOS keys the Screen Recording / Accessibility grants to the **code identity**, not to the project, and the System Settings row is named after that identity — so the useful question is never just "is the permission on?" but "which identity is macOS being asked about, and will it be the same one after the next rebuild?". `cdhash H"…"` in the requirement means ad-hoc signing, which is re-keyed on every build and is the usual cause of a re-prompt. The command exits non-zero when a permission is missing or the identity is ad-hoc, so it also works as a health probe. Both `packaging/make-app.sh` and `packaging/install-launchagent.sh` print the same requirement at build/install time and warn when it changes, since that is exactly when a re-grant becomes due.
+
+### If the RDP picture is black (with a live cursor)
+
+Close and reopen the **whole RDP client window** — not just the connection. That clears the client's retained
+EGFX surface cache, which is where the problem lives.
+
+macrdp cannot fix this from the server side, and that is a measured statement, not a shrug. On 2026-10-15, on a
+client (Windows build 22621) that blanked from frame one on every reconnect, all of the server's levers were
+tried against the same session and none of them healed it:
+
+- creating the surface at a **never-before-used id** (in case the client was no-op'ing a re-used id) — the id
+  really was fresh (`37888`, `37889`, `37890`), and every connection still blanked;
+- the in-place **RDP re-activation** (the default first action) — it healed once that day (that session then ran
+  106 minutes) and did nothing on the next four connections;
+- **repeating** that re-activation three times before giving up — same, blank every time;
+- the **drop + auto-reconnect** fallback — three drops in a row reconnected straight back into the blank.
+
+The detector gives up after 3 such drops and says so in `~/Library/Logs/macrdp.log`
+(`EGFX blank persisted across every auto-reconnect … fully close and reopen the RDP client window`). The blank
+is a *reconnect* symptom, so anything that forces one — a network blip, an auto-reconnect, or a macrdp restart
+— can land a still-open client in that state; restarting the server to "try again" therefore makes it worse, not
+better. Full evidence: the H.264 reconnect-blank entry in [docs/known-quirks.md](docs/known-quirks.md).
 
 ## Auto-start at login (launchd)
 
