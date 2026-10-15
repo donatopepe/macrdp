@@ -385,77 +385,10 @@ update path warns when the designated requirement changes — the one moment a T
   on TCP). Pure `frame_drop_at_floor`; `MACRDP_ADAPTIVE_FLOOR_FPS` tunable. Live log
   confirmed: bitrate AIMD → 750k floor under rising ack-lag → P2b caps to ~10 fps
   (choppy-but-steady, in sync) → recovers to the 6M ceiling + full fps when loss clears.
-  Remaining sub-pieces: a **stronger TCP signal** (`TCP_CONNECTION_INFO` RTT+retransmits /
-  write-backpressure — less spiky than ack-lag); the CN/RTT/window signals; and tuning the
-  control law against a real-Windows-server capture. **Concrete
-  manifestation found 2026-06-28:** EGFX-over-UDP reconnect freezes *intermittently*
-  because the server never throttles on the client's EGFX `queueDepth` —
-  `GfxHandler::on_frame_ack` only records ack timing, so macrdp ships at full rate while
-  the client's queue runs away (observed peak ~352k) → frozen display + RDPEUDP ACK
-  storm. A focused **queue_depth-aware throttle / frame-drop** (a sub-piece of this item)
-  is the targeted fix; note raw `queueDepth` is oddly large even when healthy (~30k–82k),
-  so capture a real-Windows-server baseline before picking a threshold. **First sub-piece
-  SHIPPED (#89/v0.8.17):** a frame-ack-lag backpressure gate in `submit_bgra` with a
-  trickle floor (drop most captures when the client's ack lag is high, but never to zero —
-  mstsc needs trailing frames to present/ack) — removes the *load*-induced freeze on a
-  clean link; the fuller congestion-responsive controller below remains. Today macrdp ships
-  a fixed ~60 fps + a 2 s periodic IDR regardless of the client's congestion signal, so
-  under loss the ordered stream HOL-blocks and EGFX **freezes** (finding #3/#4). A real
-  Windows server under the same ~8% loss **degrades gracefully** — skips frames / drops
-  framerate, never freezes — via **URCP congestion control + encoder-side frame dropping**,
-  and *without* FEC (observed 2026-06-28, finding #5). The lever: feed a controller the
-  RDPEUDP feedback macrdp **already receives and ignores** → dynamically lower
-  VideoToolbox bitrate, skip frames to a lower effective fps, and back off the periodic
-  IDR under congestion. Concrete signals already on the wire:
-  - `RDPUDP_FLAG_CN` (congestion notification; reply `RDPUDP_FLAG_CWR`) — **the exact
-    "CN" mstsc sent in finding #4 before abandoning the tunnel, which we ignored**;
-  - loss = gaps in `RDPUDP_ACK_VECTOR_HEADER` (+ retransmit events);
-  - RTT / queuing-delay trend from ACK timing (+ RDPEUDP2 ack timestamps / AckOfAcks);
-  - flow ceiling = peer's advertised `uReceiveWindowSize`.
-  Needs *a* controller on those (delay+loss+CN), **not** a full URCP reimplementation.
-  Design shape:
-  - **`--bitrate`/`--fps` become the clean-link *ceiling*, not fixed targets** (today
-    both are set once at session start). Controller operates in `[floor, ceiling]`; clean
-    link = full configured rate (unchanged from today), congestion pulls down, recovery
-    climbs back. Needs a **floor** (~0.5–1 Mbps / a few fps) so it degrades to "choppy
-    but alive," not dead.
-  - **Lever order:** (1) lower bitrate first — `kVTCompressionPropertyKey_AverageBitRate`
-    is **live-settable**, no encoder rebuild (softer image, smooth motion); (2) drop
-    frames (don't submit captured frames) for lower effective fps when bitrate cuts aren't
-    enough — fewer frames + fewer packets, the visible "skipping"; (3) **back off / stretch
-    the periodic IDR while congested** (a ~240 KB keyframe is the worst thing to inject —
-    it's what wedges macrdp today), force one only on real recovery.
-  - **Two feedback adapters, same output.** UDP path reads the RDPEUDP signals above
-    (CN / ACK-vector loss / ack-timing RTT). **TCP path can't see per-packet loss** (kernel
-    hides it) → read **write backpressure** (SharedWriter blocking / send-buffer full) +
-    `TCP_CONNECTION_INFO` (RTT, retransmits via `getsockopt`, macOS). Same controller +
-    same VT-bitrate/frame-drop/IDR-backoff levers; only the input source differs per transport.
-  Bigger than FEC (dead) or auto-fallback (band-aid). Worth a real-server↔mstsc capture
-  first to read the URCP signaling. See finding #5 in `docs/rdp-udp-multitransport-feasibility.md`.
-- [ ] **SCReAM-style controller upgrade (replace the AIMD control law)** — scoped
-  2026-06-30, the concrete next step of the rate-control item above. Swap the current
-  `--adaptive-bitrate` AIMD law for an **open, real-time congestion controller**: SCReAM
-  (RFC 8298, self-clocked off acks + one-way-delay + loss — best fit for RDPEUDP feedback)
-  or a loss+RTT hybrid (Copa/BBR-lite). **Do NOT implement "URCP" by name** (no public
-  reference impl; outside the MS-RDPEUDP2 Open Specifications Promise → patent/licensing
-  gray zone) and **do NOT link libwebrtc/GCC** (huge C++ dep; GCC also fits worst — its
-  delay controller wants TWCC per-packet arrival timestamps RDPEUDP doesn't natively
-  produce). Steps: (1) extract the control law behind the existing controller seam, keeping
-  AIMD as an A/B fallback; (2) implement the SCReAM core in Rust (~a few hundred lines):
-  target rate / congestion window from OWD trend + loss + `RDPUDP_FLAG_CN`, self-clocked
-  off acks; (3) **feed it from the transport-level RDPEUDP datagram acks** (already parsed
-  in vendored `ironrdp-rdpeudp`), not today's coarse one-per-frame GFX `FrameAcknowledge`
-  lag — TCP path keeps its `TCP_CONNECTION_INFO` / write-backpressure signal; (4) outputs to
-  the existing VT levers (live `AverageBitRate`, `frame_drop_at_floor`, IDR backoff — already
-  wired); (5) tune + verify on real mstsc under loss, A/B vs AIMD. **Value:** better graceful
-  degradation on BOTH the reliable UDP tunnel AND the TCP path. **Caveat (the easy half):**
-  this does NOT stop the reliable-ordered-tunnel HOL-block *freeze* — that needs the deferred
-  lossy-video substrate (these CCs assume a droppable flow); a better controller on a reliable
-  stream still HOL-blocks. So it's a standalone graceful-degradation win, not the freeze cure;
-  `UDP_MIGRATE_EGFX=0` + watchdog→TCP stay the robust answer until the substrate exists.
-  mstsc-primary for the UDP path (Mac/FreeRDP are TCP-only). See finding #5 (the open-CC
-  analysis + signal-mapping table) in `docs/rdp-udp-multitransport-feasibility.md`; refs
-  SCReAM RFC 8298, NADA RFC 8698.
+  Remaining investigated extensions: transport-level RDPEUDP feedback signals (CN, ACK-vector loss, RTT/window) and cross-controller evaluation with real Windows-server captures. The 2026-06-28 queue-depth freeze report is historical and predates the current multi-signal controller; raw queue depth was also elevated on healthy links. Do not add a queue-depth threshold without a fresh Windows baseline.
+
+  Current architecture applies bitrate, capture-FPS and UDP IDR pacing levers using per-frame ack-derived standing queue delay, ack lag/no-ack distress and retransmit evidence. **Experimental controller research (SCReAM / Copa / BBR-lite) is optional, not a current bug fix.** A transport-ack-driven controller requires API/wire-signal review and real mstsc loss testing; do not assume RDPEUDP datagram ACKs are exposed to the app or that this resolves reliable-transport HOL blocking. Keep implementation unchanged unless measurements show AIMD insufficient. See finding #5 in `docs/rdp-udp-multitransport-feasibility.md`; refs SCReAM RFC 8298, NADA RFC 8698.
+- [ ] **Experimental controller research (SCReAM / Copa / BBR-lite) — optional enhancement, not current bug fix.** The production AIMD controller already consumes per-frame ack-derived standing queue delay, ack lag/no-ack distress, and retransmit evidence, then adapts bitrate, capture FPS and UDP IDR pacing. A transport-ack-driven open controller could be evaluated later, but requires API/wire-signal review and real mstsc loss testing; do not assume RDPEUDP datagram ACKs are exposed to the app or that this resolves HOL blocking. Keep implementation unchanged unless measurement shows AIMD insufficient. See finding #5 in `docs/rdp-udp-multitransport-feasibility.md`; refs SCReAM RFC 8298, NADA RFC 8698.
 - [x] **A/V offset EWMA + drift telemetry** — source audio/video PTS feed `av_offset_ewma_ms`,
   `av_offset_ewma_samples`, `av_drift_ppm`, and `av_drift_samples`; playback is untouched. A
   telemetry-only drift hysteresis classifier now uses 80/40 ms and 500/250 ppm enter/exit
