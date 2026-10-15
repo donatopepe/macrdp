@@ -23,13 +23,15 @@
 //!   (M3c): a peer with no *inbound* datagram for `PEER_IDLE_TIMEOUT_MS` is evicted
 //!   by `gc_idle_peers` (its `peers` entry + any `bound_addrs` cookie→addr mapping),
 //!   so a dead RDP session's reliability SM stops RTO-retransmitting to a gone client
-//!   and the maps don't leak for the process lifetime. The prompt server→listener
-//!   "instant retire-on-disconnect" signal is the still-deferred other half of M3c
-//!   (the idle GC is the needed backstop regardless).
+//!   and the maps don't leak for the process lifetime. On top of that backstop, the
+//!   **retire-on-session-end signal is implemented** (the other half of M3c, shipped
+//!   2026-10-15): the server lowers the shared tunnel-bound flag when it retires a
+//!   connection's tunnel, and `check_dead_tunnels` + `evict_retired_peers` drop that
+//!   peer on the next tick instead of letting it linger for up to the GC window.
 //!
 //! Cross-platform (pure tokio/std networking), so Linux CI exercises it too — see
-//! the loopback integration test in the macrdp crate (the vendored server is
-//! built `test = false`).
+//! the loopback integration test in the macrdp crate and the unit tests at the
+//! bottom of this file (the crate now builds with `[lib] test = true`).
 
 use std::collections::HashMap;
 use std::io;
@@ -309,20 +311,29 @@ const PEER_IDLE_TIMEOUT_MS: u64 = 60_000;
 ///
 /// A peer whose shared flag has ALREADY been lowered by the server (the
 /// post-connection reset retires the tunnel when its owning TCP session ends)
-/// is benign teardown, not a wedge: the marker is dropped silently and the
-/// peer just ages out via the idle GC — no death declaration, no cooldown.
+/// is benign teardown, not a wedge: the marker is dropped silently and the peer
+/// is **evicted on the spot** (the deferred half of M3c, shipped 2026-10-15 —
+/// it used to wait for the 60 s idle GC).
 /// Without that distinction every ended session's abandoned tunnel "died"
 /// ~30 s later and put healthy links into the 10-min offer cooldown (observed
 /// live 2026-07-06 on LAN after a blank-recovery drop).
+///
+/// Returns the addresses whose tunnel is now unusable (retired teardown *and*
+/// freshly-declared dead wedges) so the caller can evict them immediately — a
+/// bound peer whose flag went false can never be used again (the client's next
+/// datagram is a keepalive, not a SYN, so it never re-binds), and until it is
+/// gone the reliability SM keeps RTO-retransmitting into it.
+#[must_use]
 fn check_dead_tunnels(
     peers: &mut HashMap<SocketAddr, Peer>,
     cookie_registry: Option<&CookieRegistry>,
     now_ms: u64,
     dead_ms: u64,
     cooldown_secs: u64,
-) {
+) -> Vec<SocketAddr> {
+    let mut retired: Vec<SocketAddr> = Vec::new();
     if dead_ms == 0 {
-        return;
+        return retired;
     }
     for (addr, peer) in peers.iter_mut() {
         let Some(flag_ref) = peer.bound_flag.as_ref() else {
@@ -364,6 +375,7 @@ fn check_dead_tunnels(
                     "abandoned UDP tunnel from an ended session — retiring quietly (no cooldown)"
                 );
             }
+            retired.push(*addr);
             continue;
         }
         if idle_ms <= dead_ms {
@@ -386,7 +398,51 @@ fn check_dead_tunnels(
              offers are suppressed for the cooldown so the client's likely \
              dead-tunnel session reset reconnects as a stable plain-TCP session"
         );
+        retired.push(*addr);
     }
+    retired
+}
+
+/// (M3c, the deferred half — shipped 2026-10-15) Evict the peers
+/// [`check_dead_tunnels`] just retired, along with their `bound_addrs`
+/// cookie→addr mappings, instead of leaving them to the 60 s idle GC.
+///
+/// Why it matters: the flag going false means the server has already stopped
+/// routing to that tunnel (session ended, or the tunnel was declared dead), so
+/// the peer can never be used again — but while it sits in `peers` the
+/// reliability SM keeps pumping RTO retransmits into it (bounded by the GC, up
+/// to a minute of pointless traffic), and the `bound_addrs` entry keeps the
+/// cookie reserved. Eviction is idempotent and safe on the soft-bound / test
+/// paths (no flag ⇒ not a candidate). Returns the number evicted. Pure enough
+/// to unit-test: no I/O, no clock.
+fn evict_retired_peers(
+    peers: &mut HashMap<SocketAddr, Peer>,
+    bound_addrs: &mut HashMap<[u8; 16], SocketAddr>,
+    retired: &[SocketAddr],
+) -> usize {
+    let mut evicted = 0;
+    for addr in retired {
+        // Re-lower defensively: `check_dead_tunnels` takes the flag when it
+        // declares death, and the server may have re-raised nothing — but a
+        // future caller that only observed the lowered flag must not leave the
+        // server-side boolean stuck true (lossy audio would keep routing into a
+        // tunnel this eviction just removed).
+        if let Some(peer) = peers.get(addr)
+            && let Some(flag) = peer.bound_flag.as_ref()
+        {
+            flag.store(false, core::sync::atomic::Ordering::Relaxed);
+        }
+        if peers.remove(addr).is_some() {
+            bound_addrs.retain(|_, a| a != addr);
+            evicted += 1;
+            debug!(
+                peer_addr = %addr,
+                "evicted UDP peer whose tunnel was retired (owning session ended or declared \
+                 dead) — no longer waiting for the idle GC"
+            );
+        }
+    }
+    evicted
 }
 
 /// (M3c) Idle-timeout garbage collection. Drop every peer whose last *inbound*
@@ -736,13 +792,20 @@ async fn run_recv_loop(
                 // (M3c) Reap peers whose client has gone away (no inbound for
                 // PEER_IDLE_TIMEOUT_MS) so the dead-peer retransmits above stop and
                 // peers/bound_addrs don't leak. Same tick — cheap, peers is small.
-                check_dead_tunnels(
+                let retired = check_dead_tunnels(
                     &mut peers,
                     cookie_registry.as_ref(),
                     now_ms,
                     tunnel_dead_ms,
                     mt_cooldown_secs,
                 );
+                // (M3c, deferred half) The peers whose tunnel just went unusable
+                // are evicted NOW rather than in up to 60 s — the flag already
+                // false means nothing will ever route to them again.
+                let evicted = evict_retired_peers(&mut peers, &mut bound_addrs, &retired);
+                if evicted > 0 {
+                    debug!(evicted, "evicted retired UDP peers on the retransmit tick");
+                }
                 gc_idle_peers(&mut peers, &mut bound_addrs, now_ms);
                 continue;
             }
@@ -1172,5 +1235,148 @@ async fn run_recv_loop(
                 "RDPEUDP DATA datagram delivered nothing (receive-sequence mismatch)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    /// A minimal but complete `Peer` for the reaping tests: only `bound_flag`
+    /// and `last_seen_ms` matter to them, everything else is inert.
+    fn test_peer(bound: Option<bool>, last_seen_ms: u64) -> Peer {
+        Peer {
+            sm: RdpeudpState::new(
+                Role::Server,
+                Config {
+                    recv_window: 64,
+                    mtu: 1232,
+                    initial_seq: 1,
+                    rto_ms: 300,
+                    mode: DeliveryMode::Reliable,
+                    duplicate_lossy_sends: false,
+                },
+            ),
+            inbound: Vec::new(),
+            tls_hello_logged: false,
+            tls: None,
+            tls_done_logged: false,
+            emt_inbound: Vec::new(),
+            tunnel_created: false,
+            inbound_sink: None,
+            bound_flag: bound.map(|v| Arc::new(AtomicBool::new(v))),
+            dtls_observed: false,
+            dtls: None,
+            dtls_done_logged: false,
+            last_seen_ms,
+        }
+    }
+
+    /// The deferred half of M3c: a tunnel the SERVER has retired (its owning TCP
+    /// session ended, so the shared flag went false) is reported for eviction and
+    /// then actually removed — peers map plus the cookie→addr binding — instead of
+    /// waiting for the 60 s idle GC. Recently-active + lowered flag is benign
+    /// teardown, so no offer cooldown is started either (`cookie_registry: None`
+    /// here would panic in `suppress_multitransport` if it took that branch).
+    #[test]
+    fn retired_tunnel_is_evicted_and_its_cookie_mapping_dropped() {
+        let live: SocketAddr = "127.0.0.1:5001".parse().unwrap();
+        let gone: SocketAddr = "127.0.0.1:5002".parse().unwrap();
+        let mut peers = HashMap::new();
+        peers.insert(live, test_peer(Some(true), 0));
+        peers.insert(gone, test_peer(Some(false), 0));
+        let mut bound_addrs = HashMap::new();
+        bound_addrs.insert([1u8; 16], live);
+        bound_addrs.insert([2u8; 16], gone);
+
+        let retired = check_dead_tunnels(&mut peers, None, 1_000, 30_000, 600);
+        assert_eq!(retired, vec![gone], "only the retired peer is reported");
+        assert_eq!(evict_retired_peers(&mut peers, &mut bound_addrs, &retired), 1);
+
+        assert!(peers.contains_key(&live), "a live bound peer stays");
+        assert!(!peers.contains_key(&gone));
+        assert_eq!(bound_addrs.get(&[1u8; 16]), Some(&live));
+        assert!(!bound_addrs.contains_key(&[2u8; 16]));
+    }
+
+    /// A bound tunnel whose flag is still raised and which was recently active is
+    /// neither declared dead nor retired — the whole point of keeping the two
+    /// signals apart.
+    #[test]
+    fn live_bound_tunnel_is_left_alone() {
+        let addr: SocketAddr = "127.0.0.1:5003".parse().unwrap();
+        let mut peers = HashMap::new();
+        peers.insert(addr, test_peer(Some(true), 999_000));
+        let mut bound_addrs = HashMap::new();
+        bound_addrs.insert([3u8; 16], addr);
+
+        let retired = check_dead_tunnels(&mut peers, None, 1_000_000, 30_000, 600);
+        assert!(retired.is_empty());
+        assert_eq!(evict_retired_peers(&mut peers, &mut bound_addrs, &retired), 0);
+        assert!(peers.contains_key(&addr));
+    }
+
+    /// The wedge case: flag still raised but inbound-silent past the threshold.
+    /// It is declared dead (audio falls back, cooldown armed) AND now evicted.
+    #[test]
+    fn inbound_silent_bound_tunnel_is_declared_dead_and_evicted() {
+        let addr: SocketAddr = "127.0.0.1:5004".parse().unwrap();
+        let mut peers = HashMap::new();
+        peers.insert(addr, test_peer(Some(true), 0));
+        let mut bound_addrs = HashMap::new();
+        bound_addrs.insert([4u8; 16], addr);
+
+        let retired = check_dead_tunnels(&mut peers, None, 1_000_000, 30_000, 600);
+        assert_eq!(retired, vec![addr]);
+        assert_eq!(evict_retired_peers(&mut peers, &mut bound_addrs, &retired), 1);
+        assert!(!peers.contains_key(&addr));
+        assert!(bound_addrs.is_empty());
+    }
+
+    /// Peers that never bound (still handshaking, or the soft-bound test path)
+    /// have no flag to lower, so retirement must not touch them.
+    #[test]
+    fn unbound_peers_are_untouched_by_retirement() {
+        let addr: SocketAddr = "127.0.0.1:5005".parse().unwrap();
+        let mut peers = HashMap::new();
+        peers.insert(addr, test_peer(None, 0));
+        let mut bound_addrs = HashMap::new();
+
+        let retired = check_dead_tunnels(&mut peers, None, 1_000_000, 30_000, 600);
+        assert!(retired.is_empty());
+        assert_eq!(evict_retired_peers(&mut peers, &mut bound_addrs, &retired), 0);
+        assert!(peers.contains_key(&addr));
+    }
+
+    /// The idle GC is the backstop and still reaps a peer nobody told us about
+    /// (the retired-signal path only covers sessions whose flag was lowered).
+    #[test]
+    fn idle_gc_still_reaps_peers_with_no_inbound() {
+        let addr: SocketAddr = "127.0.0.1:5006".parse().unwrap();
+        let mut peers = HashMap::new();
+        peers.insert(addr, test_peer(None, 0));
+        let mut bound_addrs = HashMap::new();
+        bound_addrs.insert([6u8; 16], addr);
+
+        gc_idle_peers(&mut peers, &mut bound_addrs, PEER_IDLE_TIMEOUT_MS + 1);
+        assert!(peers.is_empty());
+        assert!(bound_addrs.is_empty());
+    }
+
+    /// `evict_retired_peers` on an address that is already gone is a no-op, so the
+    /// tick can pass the same list twice without double-counting.
+    #[test]
+    fn eviction_is_idempotent() {
+        let addr: SocketAddr = "127.0.0.1:5007".parse().unwrap();
+        let mut peers = HashMap::new();
+        peers.insert(addr, test_peer(Some(false), 0));
+        let mut bound_addrs = HashMap::new();
+        bound_addrs.insert([7u8; 16], addr);
+
+        assert_eq!(evict_retired_peers(&mut peers, &mut bound_addrs, &[addr]), 1);
+        assert_eq!(evict_retired_peers(&mut peers, &mut bound_addrs, &[addr]), 0);
+        assert!(peers.is_empty() && bound_addrs.is_empty());
     }
 }

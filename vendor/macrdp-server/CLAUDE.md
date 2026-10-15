@@ -819,15 +819,40 @@ de-vendor note before doing it: upstream defaults to `ConnectionPolicy::Queue` a
     leak becomes ≤60s instead of indefinite). **Verified on real mstsc**: a live peer
     idle ~45s recovered on activity with no eviction, while the *abandoned* peer from a
     prior reconnect was correctly reaped at idle_ms≈60042. The fully robust fix is an
-    explicit TCP-session-close → evict signal (deferred half of M3c); until then the
-    activity-based backstop must stay generous. This is the listener-only backstop half
-    of M3c; the prompt server→listener "instant retire-on-disconnect" signal is still
-    deferred (the GC is needed regardless). Logs `evicted idle UDP peer` at `debug`
+    explicit TCP-session-close → evict signal (deferred half of M3c) — **SHIPPED
+    2026-10-15**, see "M3c retire-on-session-end" below; the activity-based backstop
+    stays generous regardless, because it is the only thing covering a peer nothing
+    ever retired (a crashed server-side session, a path that died with the client still
+    sending). Logs `evicted idle UDP peer` at `debug`
     (`ironrdp_server::multitransport=debug`). Does NOT by itself fix the mstsc EGFX
     reconnect-blank (a client-side surface-retention quirk + the clean-link limit may
     compound it); the robust WiFi config remains `--udp-migrate-egfx` off (EGFX on TCP).
     All `multitransport`-gated; feature-off byte-unchanged. See feasibility doc
     "M3c peer GC".
+
+    M3c retire-on-session-end — the deferred half, SHIPPED 2026-10-15 (`listener.rs`).
+    The server already lowers the shared tunnel-bound flag when a connection's tunnel
+    is retired (session teardown) or declared dead (`check_dead_tunnels`); until now
+    that peer then sat in `peers`/`bound_addrs` until the 60 s idle GC, i.e. up to a
+    minute of the reliability SM still RTO-retransmitting into a tunnel the server had
+    already stopped routing to, with its cookie still reserved.
+    `check_dead_tunnels` now RETURNS the addresses it retired/dead-declared and the new
+    `evict_retired_peers` removes them (peer + `bound_addrs` mapping, flag re-lowered
+    defensively) on the same retransmit tick. A peer whose flag went false can never be
+    used again — the client's next datagram is a keepalive, not a SYN, so it never
+    re-binds — and the SYN-on-established-address path already rebuilds a fresh peer if
+    the client really does reopen. Idempotent, no I/O, no clock (unit-tested:
+    `retired_tunnel_is_evicted_and_its_cookie_mapping_dropped`, `live_bound_tunnel_is_left_alone`,
+    `inbound_silent_bound_tunnel_is_declared_dead_and_evicted`,
+    `unbound_peers_are_untouched_by_retirement`, `idle_gc_still_reaps_peers_with_no_inbound`,
+    `eviction_is_idempotent`).
+    **Also in this change:** this crate now builds its own tests (`[lib] test = true`,
+    upstream ships `test = false`), which immediately caught two rotted tests that had
+    never been compiled or run — the `DiagnosticsHandle` initializer in `outbound.rs`
+    was missing the four input→output latency windows added later, and
+    `owner_session_wraps_typed_handoff_and_shutdown` hung forever because it never
+    dropped the writer half. Both fixed; CI now runs the crate standalone
+    (`--features multitransport --lib`, 67 tests).
 
     M3c reconnect state-reset — EGFX-over-UDP went blank/black on the 2nd
     connection (2026-06-28, `server.rs` + `listener.rs`; verified on real mstsc).

@@ -1659,7 +1659,12 @@ mod tests {
     async fn owner_session_wraps_typed_handoff_and_shutdown() {
         let (session, ingress, mut writers) = OutboundOwnerSession::channel(FakeWriter::default(), 64, 8);
         writers.control.write_all(&[1]).await.unwrap();
+        // The owner session finishes when EVERY producer handle is gone, so the
+        // writer half has to be dropped too — without this the await never
+        // returns (which is why this test hung and the crate shipped with
+        // `[lib] test = false`).
         drop(ingress);
+        drop(writers);
         let writer = session.run().await.unwrap();
         assert_eq!(writer.writes, vec![vec![1]]);
     }
@@ -1726,6 +1731,14 @@ mod tests {
             mouse_video_pending: Arc::new(AtomicBool::new(false)),
             keyboard_audio_pending: Arc::new(AtomicBool::new(false)),
             mouse_audio_pending: Arc::new(AtomicBool::new(false)),
+            // The per-direction input→output latency windows this test does not
+            // exercise (it only publishes queue/sent counters). They were added to
+            // `DiagnosticsHandle` after this initializer was written, which is why
+            // the crate's tests stopped compiling until `[lib] test = true` was set.
+            input_keyboard_video_latency_window: Default::default(),
+            input_mouse_video_latency_window: Default::default(),
+            input_keyboard_audio_latency_window: Default::default(),
+            input_mouse_audio_latency_window: Default::default(),
         };
         let (owner, ingress, mut receiver) = OutboundOwner::channel(FakeWriter::default(), 64, 2);
         ingress.send(packet(OutboundClass::Control, 7)).await.unwrap();

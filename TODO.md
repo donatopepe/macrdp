@@ -485,17 +485,7 @@ update path warns when the designated requirement changes — the one moment a T
   the clumsy soak (vs. 3s ideal). Add a second trigger that fires when the frame-ack *lag*
   (shipped−acked) stays pinned above threshold for N s even if odd acks trickle in, to
   shorten the real-wedge recovery window. Low priority — the freeze already recovers.
-- [ ] **UDP multitransport — explicit TCP-close → listener peer-evict signal** (the
-  deferred half of M3c; the *correct* fix for dead-peer reclaim). Today the listener only
-  reclaims a peer via the activity-based idle-GC, whose timeout had to be raised to 60s
-  (2026-06-29) because mstsc goes near-silent on the UDP flow when idle (~15s keepalive)
-  and a shorter timeout reaped *live* idle peers → permanent EGFX freeze. With a real
-  TCP-session-close signal (server marks the connection's cookie retired in the shared
-  `CookieRegistry` → listener drops that peer), a dead peer is reclaimed *immediately* on
-  disconnect and the idle-GC can be a long pure backstop (no risk of reaping a live idle
-  client regardless of its keepalive interval). Shared-state signal mirrors the existing
-  per-cookie tunnel-bound flag. See vendor `listener.rs` `PEER_IDLE_TIMEOUT_MS` + the
-  feasibility doc "M3c peer GC".
+- [x] **UDP multitransport — TCP-session-end → listener peer-evict signal** (the deferred half of M3c; the *correct* fix for dead-peer reclaim). **Shipped 2026-10-15.** The shared tunnel-bound flag was already lowered by the server when it retires a connection's tunnel (session teardown) or when tunnel-death detection declares it dead; the peer then sat in `peers`/`bound_addrs` until the 60 s idle GC, i.e. up to a minute of the reliability SM still RTO-retransmitting into a tunnel the server had stopped routing to, with its cookie still reserved. `check_dead_tunnels` now returns the addresses it retired/dead-declared and the new `evict_retired_peers` drops them (peer + cookie mapping, flag re-lowered defensively) on the same retransmit tick; the idle GC stays as the long pure backstop (it covers a peer nothing ever retired). Idempotent + unit-tested (6 tests: retired evicted with its binding, live bound peer untouched, wedge declared dead AND evicted, unbound untouched, GC backstop, eviction idempotent). **Also in this change:** the vendored crate now builds its own tests (`[lib] test = true`, upstream ships `test = false`) and CI runs them standalone (`--features multitransport --lib`, 67 tests) — flipping the flag caught two rotted tests that had never been compiled or run (a `DiagnosticsHandle` initializer missing the four input→output latency windows, and a test that hung because it never dropped the writer half). See `vendor/macrdp-server/CLAUDE.md` "M3c retire-on-session-end".
 
 - [x] **UDP multitransport Phase 2 — lossy `UdpFecL` + DTLS + 1+1 redundancy** (FEC dropped).
   **Lossy AUDIO is DONE + verified.** Phase 1 (reliable EGFX-over-UDP) shipped (v0.8.15,

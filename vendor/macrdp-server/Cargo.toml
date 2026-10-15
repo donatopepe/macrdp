@@ -17,7 +17,14 @@ categories = ["network-programming"]
 
 [lib]
 doctest = true
-test = false
+# test = true (upstream ships `test = false`, keeping its tests in the testsuite
+# crates) so this fork's own unit tests run — CI has a standalone step for this
+# crate. Enabling it exposed two broken tests that had never been compiled or
+# run: the DiagnosticsHandle initializer in outbound.rs was missing the four
+# input→output latency windows added later, and
+# owner_session_wraps_typed_handoff_and_shutdown hung because it never dropped
+# the writer half, so the owner session never finished. Both are fixed.
+test = true
 
 [features]
 default = ["rayon", "qoi", "qoiz"]

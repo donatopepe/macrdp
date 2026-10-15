@@ -74,6 +74,21 @@ jobs:
           cargo fmt --manifest-path vendor/ironrdp-rdpeudp/Cargo.toml -- --check
           cargo test --manifest-path vendor/ironrdp-rdpeudp/Cargo.toml
 
+      # vendor/macrdp-server is ALSO a standalone crate (not a workspace member,
+      # so the root `cargo test` builds it as a dependency without its tests).
+      # `[lib] test = true` is a deliberate divergence from upstream's
+      # `test = false`: this fork's own unit tests cover the UDP multitransport
+      # listener's peer reaping (retired-tunnel eviction + the idle-GC backstop)
+      # and the outbound queue, and two of them had silently rotted behind that
+      # flag until it was flipped (a non-compiling initializer and a test that
+      # hung forever). The `multitransport` feature is required for the listener
+      # tests; no fmt gate here on purpose — this fork's hand-formatted upstream
+      # files are not rustfmt-clean and reformatting them is churn.
+      - name: Test ironrdp-server (standalone vendored crate)
+        env:
+          RUSTFLAGS: ''
+        run: cargo test --manifest-path vendor/macrdp-server/Cargo.toml --features multitransport --lib
+
   test-macos:
     name: test (macos)
     runs-on: macos-14   # Apple Silicon
