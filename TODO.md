@@ -198,11 +198,7 @@ update path warns when the designated requirement changes — the one moment a T
   `--enable-microphone-redirection` (opt-in, default OFF, byte-identical when off), the connecting
   client redirects its mic and **"macrdp Microphone"** appears as a real macOS *input* device that
   QuickTime / Zoom / Voice Memos / dictation can record from.
-  - **Historical protocol sketch (requires spec verification before implementation).** A server-direction audio-input DVC is proposed over DRDYNVC, with macrdp as receiver of client microphone data. The message names (`MSG_SNDIN_*`) below were copied from xrdp's implementation; confirm against the current MS-RDPEAI specification and client behavior before relying on this handshake or PDU ordering. **ironrdp has no server-side RDPEAI** (it has `ironrdp-rdpsnd`
-    = output only), so this is new PDU work — a new vendored crate or an `ironrdp-server` module, wired
-    through a **new factory seam** (`audin_factory`, mirroring the existing `sound_factory` / `gfx_factory`
-    / `camera_factory` `Option<Box<dyn …>>` pattern — zero-overhead/no-op when the flag is off). Start with
-    **PCM** (like the RDPSND default), add the client's compressed format later.
+  - **Historical protocol sketch (requires spec verification before implementation).** A server-direction audio-input DVC is proposed over DRDYNVC, with macrdp as receiver of client microphone data. The message names (`MSG_SNDIN_*`) below were copied from xrdp's implementation; confirm against the current MS-RDPEAI specification and client behavior before relying on this handshake or PDU ordering. **Upstream status changed:** IronRDP merged its `ironrdp-audin` protocol crate (#1645, 2026-08-12) and server integration (#1946, 2026-09-22). This local tree remains pinned at a5d1c682, so these APIs are not yet available here. Re-audit the merged upstream API during the planned pin migration; do not create parallel PDU/factory plumbing before then. macOS virtual-input device/feed remains new work. Confirm the actual MS-RDPEAI spec and client direction/order against upstream code before implementing. Start with **PCM** only after that validation.
   - **macOS side (the hard, novel part — a virtual INPUT device).** There is **no self-serviceable CoreMediaIO
     equivalent for audio**, so the camera playbook does NOT copy 1:1. Two routes: **(A) `AudioServerPlugIn`**
     — a userspace Core Audio HAL plug-in (`.driver` bundle in `/Library/Audio/Plug-Ins/HAL/`, loaded by
@@ -743,9 +739,7 @@ update path warns when the designated requirement changes — the one moment a T
     a 4-case raw-decode rstest. 2026-07-17: uchouT ENDORSED merge (pinged CBenoit "can we just merge
     this?") — community review done, awaiting only CBenoit's merge click. Do NOT double-nudge.**
     Scoped to (1) only —
-    rdpeusb (2) `UsbDevice=0` is now its own PR (**#1513**, below). On merge+release, most of rdpeusb
-    divergence (1) drops. **Pin-bump churn: macrdp-side call sites shift `SupportedUsbVer::Usb32`→`::USB_32`
-    consts (mechanical, only at bump).**
+    The old follow-up for rdpeusb `UsbDevice=0` (#1513) and call-site migration is historical; check the current upstream PR state before planning any local cherry-pick or pin bump.
   - [x] **#1420** `feat(rdpeusb)!: carry the full configuration descriptor in UsbConfigDesc` —
     FILED 2026-07-09 (was the drafted rdpeusb div (3)). `UsbConfigDesc` gains `trailing: Vec<u8>`
     (bytes 9..wTotalLength) so `TS_URB_SELECT_CONFIGURATION` carries the full configuration
@@ -761,17 +755,7 @@ update path warns when the designated requirement changes — the one moment a T
     (Local clippy false-alarm during verify: `unfulfilled_lint_expectations` in `ironrdp-str` — a
     crate #1420 doesn't touch — from local rustc 1.97 vs CI's pinned 1.89; reproduces on pristine
     master, CI unaffected.)
-  - [ ] **#1513** `fix(rdpeusb): accept UsbDevice == 0 in AddDevice` — OPENED 2026-08-02
-    (branch `clintcan:fix/rdpeusb-usb-device-zero`, MERGEABLE, CI green). Upstreams the LAST rdpeusb
-    holdout, divergence (2): real mstsc sends `UsbDevice == 0` but #1321's `0x0..=0x3 => Err`
-    special-case rejects it → every mstsc ADD_DEVICE fails to parse (FreeRDP uses >=0x4 so it hid).
-    **The elegant fix is a NET REMOVAL:** `InterfaceId::try_from` already enforces the valid range
-    (`<= 0x3FFF_FFFF`, includes 0; rejects the mask range), so the whole match collapses to
-    `let usb_device = InterfaceId::try_from(src.read_u32())?;` — simpler than upstream AND than
-    macrdp's own vendored 2-arm match (adopt the upstream one-liner on the pin bump). NOT breaking
-    (decoder accepts a previously-rejected value). Test `add_device_accepts_usb_device_zero`; 48
-    rdpeusb tests pass. **With #1418+#1420 merged + div (4) drop-on-bump, #1513 merging makes the
-    ENTIRE `vendor/ironrdp-rdpeusb` fork de-vendorable at the next pin bump (first whole fork to go).**
+  - Historical #1513 note: old discussion proposed upstreaming `UsbDevice == 0` handling and then dropping the local rdpeusb fork. The current pin and upstream state must be checked before relying on that proposal.
   - [x] **#1453** `feat(acceptor): expose client multitransport flags on AcceptorResult` — opened
     2026-07-17, **MERGED 2026-07-30 (mamoreau).** Upstreams the READ-side of vendored `ironrdp-acceptor` divergence (3): surfaces
     `pub multitransport_flags: gcc::MultiTransportFlags` (the client's GCC `MultiTransportChannelData`,
@@ -792,33 +776,8 @@ update path warns when the designated requirement changes — the one moment a T
   `start(&NegotiatedFormat)`), dropping the hand-rolled `wFormatNo` index logic; (b) past `d471bd06`
   → `main.rs` switches `set_honor_client_desktop_size(bool)` to the builder `with_honor_client_desktop_size`
   (and, once #1404 lands, re-route the shipped `--max-client-size` clamp — currently a local acceptor/server divergence extension, 2026-07-09 — through the upstream `Option<DesktopSize>` honor-size API).
-- [ ] **THE PIN BUMP — scoped 2026-07-08, harvest-triggered, DECIDED: hold for now (do NOT bump
-  opportunistically).** Current pin `879ffed` (2026-05-25, ~6 wk stale); a bump is all-or-nothing
-  (15 git pins + all 6 vendor forks are version-coupled; breaking `core 0.1→0.2` / `pdu 0.7→0.8` /
-  `dvc 0.5→0.7` / `server 0.10→0.12`) and churns every vendored crate, so it runs as its OWN
-  dedicated effort + release, never a side task.
-  **Trigger (whichever first):** (i) the small-PR wave merges — **FIRED 2026-07-30/31:
-  #1453 + #1405 + #1418 + #1420 all MERGED; only #1404 still open (idle, now CONFLICTING).** So the
-  harvest is now ripe — a bump past these merges deletes the acceptor (2)/(3-read)
-  KLID+MT-flags, server (13) ARC-cookie, and rdpeusb (1) lenient-caps + (3)
-  full-config divergences, on top of the six already-merged ones (#1302/#1373/#1397/#1319/#1332/
-  #1335/#1341) — order ~11–12 deletions in ONE migration. NB rdpeusb (1)'s upstream form is the
-  NEWTYPE reshape, so the bump REPLACES the vendored `Other(u32)` and shifts call sites
-  `Usb32`→`USB_32`. **With rdpeusb (2) `usb_device==0` now filed as #1513, once it merges the ENTIRE
-  `vendor/ironrdp-rdpeusb` fork de-vendors on the bump (div 1/2/3 upstream + div 4 drop-on-bump) —
-  the first whole fork to go; other vendored forks (server div 16 etc.) still carry macrdp-specific
-  divergences and stay.** Or (ii) a **~6-week staleness cap
-  (early Aug 2026)** — upstream is refactoring code our divergences sit on (e.g. #1407 restructured
-  rdpeusb), so waiting past the cap makes the re-vendor diff hairier; bump anyway if reviews stall.
-  **Precondition:** the Tier 2.4 48–72 h soak has signed off the current baseline (don't churn the
-  base mid-soak / before sign-off).
-  **Execution checklist:** dedicated branch → re-copy the 6 forks at the new rev → DELETE the
-  upstreamed divergences (the six reconciled 2026-07-08 + whatever the trigger wave adds) →
-  re-apply the ~14 surviving divergences onto the refactored upstream code → adopt new APIs:
-  follow-ups (a)+(b) above, plus EVALUATE upstream's new `autodetect_rtt` (builder,
-  `Option<Arc<AtomicU32>>`) as a replacement for server divergence (15) RTT-cell → full gates
-  (fmt/clippy/tests both OSes) → **live re-verification on real mstsc + FreeRDP** (H.264, audio,
-  <!-- SERVER DIV 16 (URBDRC) — #1394 API-FIT INVESTIGATED 2026-08-02 (see project_upstream_ironrdp_open_prs):
+- [ ] **IronRDP pin bump — upstream draft PR #194 exists; do not duplicate its migration.** Local tree remains pinned to `a5d1c682` (Cargo.toml); upstream `clintcan/macrdp` PR #194 is an open draft targeting `e258f6a0` (updated 2026-10-02). Its author says code passes locally but live client tests and soak remain. Before any local bump, review that PR's current head/diff and live-test gates; this repo's vendored forks and integration are different, so do not assume it is directly mergeable.
+    <!-- SERVER DIV 16 (URBDRC) — #1394 API-FIT INVESTIGATED 2026-08-02 (see project_upstream_ironrdp_open_prs):
   NOT a free bump deletion. #1394 landed in ironrdp-rdpeusb (sans-I/O) as UrbdrcControlServer +
   UrbdrcDeviceServer (DvcServerProcessor + backend traits, sync request-generating). macrdp's div 16
   is the HIGHER async layer (UsbHandle transfer API + UsbRouter completion router + ServerEvent::Urbdrc
@@ -829,17 +788,7 @@ update path warns when the designated requirement changes — the one moment a T
   upstream's with_usb_factory/UsbDeviceHandle/backend and DELETES vendor/macrdp-server/src/rdpeusb.rs.
   Only constructive move for us: VALIDATE #1417 from macrdp's real-URBDRC-server perspective (like the
   #1509 validation) once it's unblocked. Track it, don't file. Pin-bump-era adoption. -->
-  clipboard, RDPDR, blank-recovery, USB if entitled) → ship as its own release with nothing else
-  in it. **Watch items:** issue #1352 (pdu spec-line split would rename macrdp's direct
-  `ironrdp-pdu` dep) and egfx breaking changes. Est. 1–2 focused days + verification.
-  - **▶▶▶ DRY-RUN RECON DONE 2026-08-03 (3-agent read-only sweep vs upstream `a5d1c682fd`; NOTHING
-    built/merged — a breakage MAP, not the bump).** Corrected facts (the guessed versions above were
-    low): pin `879ffed8`→`a5d1c682fd` = **133 commits** (May 25→Aug 3, mix 47 fix/47 feat/**6 refactor**
-    /13 breaking-`!`). Real version bumps: **core 0.1.5→0.2.1, pdu 0.7→0.9, dvc 0.5→0.8, svc 0.6→0.8,
-    egfx 0.1→0.3, graphics 0.7→0.9, rdpsnd 0.7→0.9, acceptor/async/tokio/connector 0.8→0.10,
-    server 0.10→0.13, rdpdr 0.5→0.7** (all breaking — all-or-nothing confirmed). **MSRV 1.89→1.94**
-    (local rustc 1.97.1 ✅ not a blocker). Toolchain adds: `rand 0.9` direct dep + tokio `time` feature.
-    **THE SINGLE MOST IMPORTANT FINDING: `ironrdp-core` 0.1→0.2 is ADDITIVE** — `Encode`/`Decode`
+- [ ] **IronRDP pin migration — upstream draft #194; local tree intentionally remains at `a5d1c682`.** Draft proposes `e258f6a0` and reports live-client tests/soak outstanding. A local migration needs a fresh compatibility audit: this repository's vendored forks/integration differ. The following 2026-08 dry-run map is historical; do not use its 879ffed-era pin assumptions, PR statuses, vendor counts or effort estimate as current. Rebuild from current Cargo pins and #194 diff before starting; schedule separate live verification.    **THE SINGLE MOST IMPORTANT FINDING: `ironrdp-core` 0.1→0.2 is ADDITIVE** — `Encode`/`Decode`
     traits, `ReadCursor`/`WriteCursor`, `ensure_size!`/`invalid_field_err!`, `EncodeError`/`DecodeError`
     all byte-identical (only a `NonEmpty` export added). So the foundational layer does NOT ripple —
     every custom-PDU impl in the forks + rdpeudp re-compiles near-unchanged; the divergences are
