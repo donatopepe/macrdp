@@ -119,6 +119,8 @@ Piano staccato su richiesta. Ordine = dipendenze, non preferenze.
 
   **What the blank actually is:** the client's own graphics-pipeline state — no server-side surface id / reactivation / drop lever touches it.
 
+  **Later evidence the same day — the reactivation heals SOMETIMES, the state is the client's (13:28–15:45Z).** After the config was restored and the agent restarted, the reconnect at 13:28:26 blanked twice (`13:28:30`, `13:28:34`) — the reactivation **healed it**, and that session then ran **106.7 minutes** with no further blank warning and ended `transport_error=none` (a silent end: client close or a path drop — no RST). 22 minutes later the client reconnected into the same process and every connection blanked again: `15:37:06` (8.5 s) and `15:37:25` (8.0 s) went reactivate → drop, and the current session (`15:37:44`) blanked at `15:37:48`, reactivated, then the storm guard tripped (`consecutive_blank_drops=3`) and **disarmed the detector for the connection** — so the screen stays black with nothing further attempted server-side. Same binary, same config, same client: heal or no-heal depends on the client's own graphics-pipeline state, which is why no server-side lever (id, activation, drop) moves it.
+
   **Next test (needs the user at the client, which they must do anyway to see anything):** fully close and reopen the RDP client. Expected: it paints on the stock path (id 0, nothing retained), which closes the client-state question. If a **fresh** client still blanks on a stock connection, the cause is server-side after all and the next probe is the wire (`ResetGraphics` monitor list / first `WireToSurface1` vs what the client acks) with `ironrdp_server::server=debug`.
 
 ## In flight — open follow-ups from the 2026-10-04/05 session
