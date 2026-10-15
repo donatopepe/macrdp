@@ -452,7 +452,7 @@ update path warns when the designated requirement changes — the one moment a T
   machines, which isn't a realistic target. See the "Industry status" + "P2.3 FEC capture
   RESULT" notes in `docs/rdp-udp-multitransport-feasibility.md` + `vendor/ironrdp-rdpeudp/CLAUDE.md`.
 
-- [ ] **Generic USB redirection (MS-RDPEUSB) — FreeRDP: DRIVE MOUNTS ✅✅ (Phase 3.2 bulk). mstsc: ENUMERATES + CONFIGURES + negotiates FORMAT ✅ (2026-07-07); only gap = client doesn't deliver bulk frames (mstsc-side). Remaining: camera-redirection channel, device-class streaming (isoch/interrupt), retract/multi-device.**
+- [x] **Generic USB redirection — current implemented scope verified; remaining items are separate features/client limitation.** FreeRDP mass-storage drive mounts and read/write verified; mstsc enumerates/configures devices and negotiates camera format, but its camera video frames use a separate camera-redirection channel not implemented here. Isochronous/interrupt endpoints and retract/multi-device remain future scope, not a regression blocker.
   **mstsc now enumerates, configures, and negotiates format end-to-end** (verified camera `09da:2692`
   + audio/HID `0573:1573`; FreeRDP mass storage regression-verified — mounts + read/write). Fixes,
   all FreeRDP-safe: (handshake) per-device channel needs the FULL caps→CHANNEL_CREATED→RIMCALL_RELEASE,
@@ -462,12 +462,7 @@ update path warns when the designated requirement changes — the one moment a T
   the TYPED URB real Windows uses (`CLASS_INTERFACE`/`GET_DESCRIPTOR_FROM_INTERFACE`/…) not the generic
   `CONTROL_TRANSFER_EX` mstsc rejects — 135+ transfers succeed, UVC probe/commit completes; (bulk)
   `USBD_SHORT_TRANSFER_OK`; `RIMCALL_RELEASE` recognized+ignored.
-  **Remaining gap (client/mstsc-side, NOT a server bug):** a camera enumerates + negotiates format but
-  mstsc never returns bulk video frames — webcams stream over mstsc's **separate "Video capture devices"
-  camera-redirection channel** (a different high-level protocol macrdp doesn't implement). True webcam
-  support = implement that channel (separate feature). isoch (camera/audio) + interrupt (HID) endpoints
-  also unimplemented. mstsc's RemoteFX list EXCLUDES mass storage (rides Drives/RDPDR), so the verified
-  bulk path can't be exercised from mstsc. Detail: [[project_usb_redirection_feasibility]].
+  This entry records distinct remaining features rather than one failing generic-USB implementation. Webcam frames require mstsc's separate "Video capture devices" camera-redirection channel; isochronous/interrupt endpoints and retract/multi-device support are not implemented. mstsc RemoteFX excludes mass storage (handled by Drives/RDPDR), so use FreeRDP for verified USB bulk mount/read-write testing. Detail: [[project_usb_redirection_feasibility]].
   Path: user-space virtual USB host controller via `IOUSBHostControllerInterface` (a **public,
   headered** IOUSBHost.framework API — NOT private SPI as first assumed; its doc says it
   "create[s] synthetic USB devices"). Entitlement `com.apple.developer.usb.host-controller-
