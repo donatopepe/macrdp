@@ -149,7 +149,7 @@ mod egfx_wire_regression_tests {
         assert_eq!(data[1], 0x04);
         let mut cursor = ReadCursor::new(&data[2..]);
         let pdu = GfxPdu::decode(&mut cursor).expect("valid EGFX PDU");
-        assert!(cursor.pos() <= data.len() - 2, "EGFX decoder stays within payload");
+        assert_eq!(cursor.pos(), data.len() - 2, "EGFX payload fully consumed");
         pdu
     }
 
@@ -226,15 +226,23 @@ mod egfx_wire_regression_tests {
 
     #[test]
     fn reset_graphics_decoder_rejects_more_than_sixteen_monitors() {
-        // ResetGraphics fixed size is 340 bytes. Monitor count follows width/height;
-        // 17 is rejected before monitor entries are read.
-        let mut pdu = vec![0u8; 340];
-        pdu[0..4].copy_from_slice(&1710u32.to_le_bytes());
-        pdu[4..8].copy_from_slice(&1112u32.to_le_bytes());
-        pdu[8..12].copy_from_slice(&17u32.to_le_bytes());
-        let wrapped = [0xE0, 0x04].into_iter().chain(pdu).collect::<Vec<_>>();
-        let result = decode_wire_result(&wrapped);
-        assert!(result.is_err(), "protocol limit is 16 monitors");
+        // Encode a valid full GFX PDU first. The former fixture omitted the
+        // eight-byte GFX header, so it failed on unknown command, not count.
+        let valid = GfxPdu::ResetGraphics(ResetGraphicsPdu {
+            width: 1710,
+            height: 1112,
+            monitors: vec![],
+        });
+        let mut bytes = vec![0; valid.size()];
+        valid.encode(&mut WriteCursor::new(&mut bytes)).unwrap();
+        let mut wrapped = [0xE0, 0x04].into_iter().chain(bytes).collect::<Vec<_>>();
+        assert_eq!(decode_wire_result(&wrapped).unwrap(), valid);
+        // ZGFX header (2) + GFX header (8) + width/height (8).
+        wrapped[18..22].copy_from_slice(&17u32.to_le_bytes());
+        let error = decode_wire_result(&wrapped).unwrap_err();
+        assert!(matches!(error.kind(), ironrdp_core::DecodeErrorKind::InvalidField {
+            field: "monitor_count", ..
+        }), "unexpected rejection: {error:?}");
     }
 
     fn decode_wire_result(data: &[u8]) -> ironrdp_core::DecodeResult<GfxPdu> {

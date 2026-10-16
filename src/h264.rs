@@ -1821,7 +1821,7 @@ impl Gfx {
         // `server_handle`, which is never taken while holding ctx — the ship/ack
         // lock-order invariant). The decision extracts what the action needs here.
         let mut blank_recovery: Option<(BlankAction, GfxServerHandle, u16, u16, u32)> = None;
-        let force_keyframe = {
+        let force_keyframe = 'admission: {
             let mut guard = self.ctx.lock().unwrap();
             let Some(ctx) = guard.as_mut() else {
                 return Ok(false); // no active connection
@@ -2106,6 +2106,13 @@ impl Gfx {
                     }
                 }
             }
+            // The detector already committed the attempt and drop counters.
+            // Do not let a capture throttle return before the action executes:
+            // leave ctx now and dispatch below, without consuming need_keyframe.
+            if blank_recovery.is_some() {
+                break 'admission false;
+            }
+
             // ONE FPS gate, shared by configured / 30 / emergency 10 FPS stages.
             // Select stage from the controller state, then make one drop/allow
             // decision against one timestamp. Timestamp changes only when capture
