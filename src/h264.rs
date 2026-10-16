@@ -166,12 +166,40 @@ impl WireFormat {
 
 /// Per-connection state, shared between the `Gfx` factory/handle (capture
 /// side) and the `GfxHandler` callbacks (protocol side) via `Arc<Mutex<>>`.
+static NEXT_DIAGNOSTIC_SESSION: AtomicU64 = AtomicU64::new(1);
+
+/// Independent of recovery resets: at most one summary per stream per 5 s,
+/// plus the first callback. Never logs frame contents or input data.
+#[derive(Default)]
+struct DiagnosticWindow {
+    reports: u64,
+    last_log: Option<Instant>,
+}
+
+impl DiagnosticWindow {
+    fn record(&mut self, now: Instant) -> bool {
+        self.reports = self.reports.saturating_add(1);
+        if self
+            .last_log
+            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(5))
+        {
+            self.last_log = Some(now);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 struct ConnectionContext {
     server_handle: GfxServerHandle,
     encoder: Option<Encoder>,
     surface_id: Option<u16>,
     is_ready: bool,
     epoch: Instant,
+    diagnostic_session: u64,
+    ack_diagnostics: DiagnosticWindow,
+    qoe_diagnostics: DiagnosticWindow,
     /// True once the next shipped frame must be a forced keyframe (IDR):
     /// before the first frame, and after any backpressure-induced skip, so
     /// the client never applies P-frame deltas against frames it never got.
@@ -2234,8 +2262,10 @@ impl Gfx {
                 BlankAction::Drop => self.perform_blank_drop(),
                 BlankAction::Reactivate => self.perform_blank_reactivate(width, height),
             };
-            if let Err(e) = result {
-                warn!(error = ?e, ?action, attempt, "EGFX blank recovery failed");
+            match result {
+                Ok(()) => info!(?action, attempt, width, height,
+                    "EGFX recovery dispatched after releasing ctx (request only; heal not confirmed)"),
+                Err(e) => warn!(error = ?e, ?action, attempt, "EGFX blank recovery failed"),
             }
             return Ok(true);
         }
@@ -2724,7 +2754,10 @@ impl Gfx {
                 surface_id = sid,
                 w = width,
                 h = height,
-                "EGFX surface created + mapped"
+                session = ctx.diagnostic_session,
+                monitor_right = i32::from(width).saturating_sub(1),
+                monitor_bottom = i32::from(height).saturating_sub(1),
+                "EGFX surface created + mapped (ResetGraphics/Create/Map queued, not delivery confirmation)"
             );
         }
         // Encoder dims always follow the surface's creation dims, so an
@@ -3248,6 +3281,9 @@ impl GfxServerFactory for Gfx {
             surface_id: None,
             is_ready: false,
             epoch: Instant::now(),
+            diagnostic_session: NEXT_DIAGNOSTIC_SESSION.fetch_add(1, Ordering::Relaxed),
+            ack_diagnostics: DiagnosticWindow::default(),
+            qoe_diagnostics: DiagnosticWindow::default(),
             need_keyframe: true,
             client_supports_avc: false,
             egfx_declined: egfx_declined.clone(),
@@ -3424,6 +3460,22 @@ impl GraphicsPipelineHandler for GfxHandler {
         // whether the client suspended acks (queueDepth == SUSPEND_FRAME_
         // ACKNOWLEDGEMENT 0xFFFFFFFF) — with acks off, loss can't be inferred.
         if let Some(ctx) = self.ctx.lock().unwrap().as_mut() {
+            if ctx.ack_diagnostics.record(Instant::now()) {
+                info!(
+                    session = ctx.diagnostic_session,
+                    age_ms = ctx.epoch.elapsed().as_millis() as u64,
+                    reports = ctx.ack_diagnostics.reports,
+                    frame_id,
+                    total_frames_decoded = _total_frames_decoded,
+                    queue_depth,
+                    suspended = queue_depth == u32::MAX,
+                    last_queued_frame = ctx.last_shipped_frame_id.load(Ordering::Relaxed),
+                    previous_ack = ctx.last_acked_frame_id.load(Ordering::Relaxed),
+                    since_previous_ack_ms = ctx.last_ack_at.elapsed().as_millis() as u64,
+                    recovery_attempts = ctx.blank_recovery_attempts,
+                    "EGFX diagnostic ACK (client report; not proof of presentation)"
+                );
+            }
             if !ctx.acks_suspended && queue_depth > ctx.last_ack_queue_depth.saturating_add(2) {
                 self.congestion_retransmits.fetch_add(1, Ordering::Relaxed);
             }
@@ -3517,6 +3569,19 @@ impl GraphicsPipelineHandler for GfxHandler {
         if let Some(ctx) = self.ctx.lock().unwrap().as_mut() {
             let was = ctx.qoe;
             ctx.qoe.record(metrics.time_diff_dr);
+            if ctx.qoe_diagnostics.record(Instant::now()) {
+                info!(
+                    session = ctx.diagnostic_session,
+                    age_ms = ctx.epoch.elapsed().as_millis() as u64,
+                    reports = ctx.qoe_diagnostics.reports,
+                    frame_id = metrics.frame_id,
+                    time_diff_se = metrics.time_diff_se,
+                    time_diff_dr = metrics.time_diff_dr,
+                    recovery_attempts = ctx.blank_recovery_attempts,
+                    zero_streak = ctx.qoe.zero_streak,
+                    "EGFX diagnostic QoE (timing report; zero alone does not prove blank)"
+                );
+            }
             if metrics.time_diff_dr > 0 {
                 ctx.last_nonzero_qoe_at = Instant::now();
             }
@@ -3807,6 +3872,20 @@ mod ceiling_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_window_logs_first_then_at_most_every_five_seconds() {
+        let start = Instant::now();
+        let mut window = DiagnosticWindow::default();
+        assert!(window.record(start));
+        for i in 1..5000 {
+            assert!(!window.record(start + Duration::from_millis(i)));
+        }
+        assert!(window.record(start + Duration::from_secs(5)));
+        assert!(!window.record(start + Duration::from_secs(5)));
+        assert_eq!(window.reports, 5002);
+        assert!(window.record(start + Duration::from_secs(10)));
+    }
 
     fn recovery_params() -> RecoveryParams {
         RecoveryParams {
